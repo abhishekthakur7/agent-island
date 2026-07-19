@@ -1,0 +1,11 @@
+captured_at_utc=2026-07-18T19:20:08Z
+binary=/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/release/NativeIslandOverlay
+macos=27.0
+architecture=arm64
+script=build.sh
+swift_version:
+Apple Swift version 6.4 (swiftlang-6.4.0.25.4 clang-2100.3.25.1)
+Target: arm64-apple-macosx27.0.0
+
+build_configuration=release
+command=swift build --package-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay -c release

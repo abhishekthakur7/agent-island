@@ -1,0 +1,25 @@
+# macOS metadata
+.DS_Store
+
+# Swift Package Manager build products
+.build/
+
+# Xcode user-specific files and generated data
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Local environment configuration (keep the documented template)
+.env
+.env.*
+!.env.example
+
+# JavaScript dependencies, if used by repository utilities
+node_modules/
+
+# Tool-generated local captures and caches
+.playwright-cli/
+.serena/cache/
+.serena/project.local.yml

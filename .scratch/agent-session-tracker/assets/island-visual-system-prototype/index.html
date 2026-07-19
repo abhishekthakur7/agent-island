@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Island — visual-system prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #f4f5f7;
+      --muted: #999da7;
+      --quiet: #6f747e;
+      --panel: #0b0c0e;
+      --layer: #131519;
+      --layer-2: #1a1d22;
+      --line: rgba(255,255,255,.09);
+      --active: #63a8ff;
+      --done: #65d6a1;
+      --attention: #ffbd66;
+      --error: #ff6b74;
+      --text-scale: 1;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      background: #e9e8e4;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; }
+    body { color: var(--ink); overflow-x: hidden; }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible { outline: 2px solid #a8ccff; outline-offset: 2px; }
+
+    .desktop {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 16% 15%, rgba(255,255,255,.8), transparent 27%),
+        linear-gradient(135deg, #b9c9ca 0%, #d8c9b5 42%, #a6b5af 100%);
+      padding: 92px 7vw 110px;
+      position: relative;
+    }
+    .desktop::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(105deg, rgba(255,255,255,.12), transparent 45%);
+      pointer-events: none;
+    }
+    .host-window {
+      max-width: 1120px;
+      height: 650px;
+      margin: 0 auto;
+      border: 1px solid rgba(0,0,0,.15);
+      border-radius: 15px;
+      background: rgba(245,245,243,.82);
+      box-shadow: 0 30px 80px rgba(32,42,42,.24);
+      backdrop-filter: blur(24px);
+      color: #1f2529;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+    }
+    .host-sidebar { padding: 56px 18px 18px; background: rgba(230,231,227,.75); border-right: 1px solid rgba(0,0,0,.08); }
+    .host-sidebar i { display: block; height: 11px; border-radius: 8px; background: #bdc1bf; margin: 0 0 16px; }
+    .host-sidebar i:nth-child(2) { width: 78%; }
+    .host-sidebar i:nth-child(3) { width: 88%; }
+    .host-content { padding: 64px 56px; }
+    .host-content h1 { margin: 0 0 26px; font-size: 34px; letter-spacing: -.035em; }
+    .host-code { border-radius: 12px; background: #20272a; padding: 28px; height: 330px; }
+    .host-code i { display: block; width: 67%; height: 9px; margin: 0 0 15px; border-radius: 5px; background: #667177; }
+    .host-code i:nth-child(3n) { width: 84%; background: #506d70; }
+    .host-code i:nth-child(4n) { width: 51%; background: #80705e; }
+
+    .review-rail {
+      position: fixed;
+      z-index: 50;
+      top: 14px;
+      left: 18px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px;
+      border: 1px solid rgba(255,255,255,.13);
+      border-radius: 12px;
+      background: rgba(24,26,30,.88);
+      box-shadow: 0 10px 32px rgba(0,0,0,.22);
+      backdrop-filter: blur(20px) saturate(150%);
+    }
+    .review-rail button {
+      min-height: 30px;
+      border: 0;
+      border-radius: 8px;
+      padding: 0 9px;
+      background: transparent;
+      color: #aeb2bb;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .review-rail button[aria-pressed="true"] { background: #f1f2f4; color: #17191c; }
+    .review-rail .rail-divider { width: 1px; height: 18px; background: rgba(255,255,255,.14); margin: 0 2px; }
+    .review-rail .utility { color: #d9dbe0; }
+
+    #stage {
+      position: fixed;
+      z-index: 20;
+      inset: 0 0 auto;
+      pointer-events: none;
+      display: flex;
+      justify-content: center;
+    }
+    .island {
+      pointer-events: auto;
+      width: min(760px, calc(100vw - 48px));
+      font-size: calc(14px * var(--text-scale));
+      filter: drop-shadow(0 16px 26px rgba(0,0,0,.26));
+      transform-origin: 50% 0;
+    }
+    .island.external { margin-top: 10px; }
+    .shell {
+      background: var(--panel);
+      border-radius: 0 0 26px 26px;
+      overflow: hidden;
+      position: relative;
+    }
+    .external .shell { border-radius: 18px 18px 26px 26px; }
+    .state-clean .island { width: min(390px, calc(100vw - 48px)); }
+    .state-detailed .island { width: min(520px, calc(100vw - 48px)); }
+
+    .collapsed {
+      height: 38px;
+      display: grid;
+      grid-template-columns: 1fr var(--notch, 148px) 1fr;
+      align-items: center;
+      padding: 0 15px;
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: .78em;
+      letter-spacing: .01em;
+    }
+    .external .collapsed { --notch: 34px; height: 42px; }
+    .collapsed .leading, .collapsed .trailing { min-width: 0; display: flex; align-items: center; gap: 8px; }
+    .collapsed .trailing { justify-content: flex-end; white-space: nowrap; }
+    .collapsed .count { font-weight: 700; color: #fff; }
+    .collapsed .count-label { color: var(--muted); }
+    .state-clean .collapsed .state-word { display: none; }
+    .state-clean .collapsed { --notch: 136px; }
+    .state-clean .external .collapsed { --notch: 26px; }
+    .state-clean .shell, .state-detailed .shell { min-height: 38px; }
+
+    .mark { width: 15px; height: 15px; position: relative; flex: none; color: var(--active); }
+    .mark::before, .mark::after { content: ""; position: absolute; border: 1.5px solid currentColor; transform: rotate(45deg); }
+    .mark::before { inset: 1px; border-radius: 4px; opacity: .55; }
+    .mark::after { inset: 5px; background: currentColor; border: 0; border-radius: 1px; }
+    .mark.done { color: var(--done); }
+    .mark.attention { color: var(--attention); }
+    .mark.error { color: var(--error); }
+    .mark.pending { color: #686e78; }
+    .state-word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d7d9de; font-weight: 620; }
+    .pulse { width: 4px; height: 4px; border-radius: 50%; background: currentColor; box-shadow: 0 0 9px currentColor; }
+
+    .panel { display: none; max-height: min(690px, calc(100vh - 26px)); }
+    .state-focused .panel, .state-expanded .panel, .state-selected .panel, .state-subagents .panel, .state-scale .panel { display: block; }
+    .state-focused .collapsed, .state-expanded .collapsed, .state-selected .collapsed, .state-subagents .collapsed, .state-scale .collapsed { height: 34px; }
+    .panel-header {
+      min-height: 42px;
+      padding: 5px 15px 9px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+    }
+    .usage { display: flex; align-items: center; gap: 7px; font: 650 .72em ui-monospace, monospace; color: var(--muted); }
+    .usage b { color: var(--done); }
+    .utilities { display: flex; gap: 3px; }
+    .icon-button { border: 0; width: 31px; height: 31px; border-radius: 9px; background: transparent; color: #a9adb6; cursor: pointer; }
+    .icon-button:active { transform: scale(.94); background: rgba(255,255,255,.08); }
+    .panel-body { max-height: min(575px, calc(100vh - 136px)); overflow: auto; overscroll-behavior: contain; scrollbar-color: #4b5058 transparent; }
+    .panel-footer { min-height: 44px; display: flex; align-items: center; justify-content: center; border-top: 1px solid var(--line); }
+    .footer-button { border: 0; border-radius: 9px; background: transparent; color: #bdc1c9; padding: 7px 12px; font-size: .78em; cursor: pointer; }
+    .footer-button:hover { background: rgba(255,255,255,.06); color: #fff; }
+
+    .session-title { font-weight: 680; letter-spacing: -.012em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .session-title small { color: var(--muted); font-weight: 520; }
+    .prompt { color: var(--muted); font-size: .84em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .prompt b { color: #c6c9d0; }
+    .activity { color: #868b94; font: .75em ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .activity b { color: var(--active); font-weight: 650; }
+    .badges { display: flex; gap: 4px; justify-content: flex-end; align-items: center; white-space: nowrap; }
+    .badge { padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.06); color: #969ba5; font: 600 .64em ui-monospace, monospace; }
+    .badge.product { color: #a8cfff; background: rgba(77,145,255,.12); }
+    .badge.claude { color: #edc496; background: rgba(203,129,62,.12); }
+    .badge.cursor { color: #c4b8ff; background: rgba(140,116,255,.13); }
+    .status-text { font: 650 .67em ui-monospace, monospace; text-transform: uppercase; letter-spacing: .05em; }
+    .status-text.active { color: var(--active); }
+    .status-text.done { color: var(--done); }
+    .status-text.attention { color: var(--attention); }
+    .task-progress { height: 4px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.08); }
+    .task-progress > span { display: block; width: 60%; height: 100%; border-radius: inherit; background: var(--active); }
+    .subagent-role { color: #858b95; font: 650 .64em ui-monospace, monospace; text-transform: uppercase; letter-spacing: .06em; }
+
+    /* Direction A — Horizon: chronological flow, detail opens in place. */
+    .variant-a .shell { background: linear-gradient(180deg, #0b0d10, #090a0c); }
+    .variant-a .collapsed { border-bottom: 1px solid rgba(255,255,255,.035); }
+    .variant-a .panel-body { padding: 9px 13px 13px; }
+    .variant-a .a-row {
+      display: grid;
+      grid-template-columns: 27px minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 10px 9px;
+      position: relative;
+      border-radius: 11px;
+    }
+    .variant-a .a-row:hover, .variant-a .a-row.selected { background: #171a1f; }
+    .variant-a .a-row .track { display: flex; flex-direction: column; align-items: center; color: var(--active); }
+    .variant-a .a-row .track::after { content: ""; width: 1px; flex: 1; min-height: 20px; margin-top: 6px; background: linear-gradient(currentColor, transparent); opacity: .25; }
+    .variant-a .a-row:last-child .track::after { display: none; }
+    .variant-a .a-row.compact { padding-block: 8px; color: #b9bdc5; }
+    .variant-a .a-row.compact .prompt, .variant-a .a-row.compact .activity { display: none; }
+    .variant-a .row-copy { min-width: 0; display: grid; gap: 4px; }
+    .variant-a .recap {
+      grid-column: 2 / -1;
+      margin-top: 5px;
+      border-radius: 10px;
+      background: #0c0e11;
+      border: 1px solid rgba(255,255,255,.07);
+      padding: 12px;
+      max-height: 164px;
+      overflow: auto;
+      color: #c8cbd1;
+      font-size: .83em;
+      line-height: 1.55;
+    }
+    .variant-a .recap p { margin: 0 0 9px; }
+    .variant-a .recap p:last-child { margin: 0; }
+    .variant-a .focus-label { padding: 6px 9px 2px 46px; color: var(--quiet); font: 650 .66em ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; }
+    .variant-a .a-subagent-group { margin: 2px 9px 12px 46px; padding: 10px 11px 5px; border-left: 1px solid rgba(99,168,255,.28); border-radius: 0 10px 10px 0; background: rgba(99,168,255,.035); }
+    .variant-a .a-task-summary { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 7px 12px; align-items: center; padding: 0 4px 10px; }
+    .variant-a .a-task-summary b { font-size: .79em; }
+    .variant-a .a-task-summary span { color: var(--muted); font: .68em ui-monospace, monospace; }
+    .variant-a .a-task-summary .task-progress { grid-column: 1 / -1; }
+    .variant-a .a-todos { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 3px 12px; padding: 5px 4px 10px; border-top: 1px solid rgba(255,255,255,.055); }
+    .variant-a .a-todos-title { grid-column: 1 / -1; margin: 2px 0 4px; color: #858b95; font: 650 .64em ui-monospace, monospace; text-transform: uppercase; letter-spacing: .07em; }
+    .variant-a .a-todo { min-width: 0; display: grid; grid-template-columns: 12px minmax(0,1fr) auto; gap: 6px; align-items: center; min-height: 25px; }
+    .variant-a .a-todo .mark { width: 9px; height: 9px; }
+    .variant-a .a-todo .mark::before { inset: 1px; }
+    .variant-a .a-todo .mark::after { inset: 3px; }
+    .variant-a .a-todo b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .7em; font-weight: 590; }
+    .variant-a .a-todo.done b { color: #737983; text-decoration: line-through; }
+    .variant-a .a-todo-state { color: #6f7580; font: .61em ui-monospace, monospace; }
+    .variant-a .a-runs-title { padding: 7px 4px 4px; border-top: 1px solid rgba(255,255,255,.055); color: #858b95; font: 650 .64em ui-monospace, monospace; text-transform: uppercase; letter-spacing: .07em; }
+    .variant-a .a-subagent { display: grid; grid-template-columns: 15px minmax(0,1fr) auto; gap: 8px; align-items: center; min-height: 42px; border-top: 1px solid rgba(255,255,255,.055); }
+    .variant-a .a-subagent .mark { width: 11px; height: 11px; }
+    .variant-a .a-subagent .mark::after { inset: 4px; }
+    .variant-a .a-subagent-copy { min-width: 0; }
+    .variant-a .a-subagent-copy b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78em; }
+    .variant-a .a-subagent-copy span { color: #7c828c; font: .68em ui-monospace, monospace; }
+    .variant-a .a-subagent-time { color: #6e747e; font: .65em ui-monospace, monospace; }
+
+    @keyframes breathe { 0%,100% { opacity:.55; transform:scale(.88) } 50% { opacity:1; transform:scale(1) } }
+    @keyframes arrive { from { opacity: 0; transform: translateY(-8px) scaleY(.97); filter: blur(5px); } to { opacity: 1; transform: none; filter: none; } }
+    .state-detailed .mark::after { animation: breathe 1.6s ease-in-out infinite; }
+    .state-focused .panel, .state-expanded .panel, .state-selected .panel, .state-subagents .panel, .state-scale .panel { animation: arrive 360ms cubic-bezier(.2,.8,.2,1) both; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+    @media (prefers-reduced-transparency: reduce) {
+      .review-rail, .host-window { backdrop-filter: none; }
+      .review-rail { background: #15171b; }
+    }
+    @media (prefers-contrast: more) {
+      :root { --muted: #c0c3ca; --quiet: #adb1ba; --line: rgba(255,255,255,.24); }
+      .shell { outline: 1px solid white; }
+    }
+    @media (max-width: 760px) {
+      .review-rail { right: 10px; left: 10px; overflow-x: auto; }
+      .review-rail button { flex: none; }
+      .variant-a .a-todos { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="desktop" aria-label="Host application context">
+    <section class="host-window" aria-hidden="true">
+      <aside class="host-sidebar"><i></i><i></i><i></i><i></i></aside>
+      <div class="host-content"><h1>Release workspace</h1><div class="host-code"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+    </section>
+  </main>
+
+  <nav class="review-rail" aria-label="Prototype state controls">
+    <button data-state="clean">1 Clean</button>
+    <button data-state="detailed">2 Detailed</button>
+    <button data-state="focused">3 Focused</button>
+    <button data-state="expanded">4 Expanded</button>
+    <button data-state="selected">5 Selected</button>
+    <button data-state="subagents">6 Subagent Runs</button>
+    <button data-state="scale">7 30 sessions</button>
+    <span class="rail-divider"></span>
+    <button class="utility" id="displayToggle" title="Toggle built-in or external display">Built-in</button>
+    <button class="utility" id="textToggle" title="Toggle standard or increased text">Text 100%</button>
+  </nav>
+
+  <div id="stage"></div>
+
+
+  <script>
+    // Approved Horizon visual reference; state remains shareable via ?state=.
+    const states = ['clean', 'detailed', 'focused', 'expanded', 'selected', 'subagents', 'scale'];
+    const samples = [
+      { status:'attention', project:'agent-island', title:'Confirm adapter boundary', prompt:'Review how unsupported actions return to the Host Context', activity:'Attention Request · response needed', product:'Claude Code', model:'Sonnet 4.5', host:'iTerm2', time:'now' },
+      { status:'active', project:'docs-studio', title:'Refine document export', prompt:'Make the PDF export preserve section anchors', activity:'Editing · ExportCoordinator.swift', product:'Codex CLI', model:'GPT-5.4', host:'Orca', time:'4m' },
+      { status:'active', project:'agent-island', title:'Map Cursor capabilities', prompt:'Verify the live extension endpoint and fallback', activity:'Searching · extension protocol', product:'Cursor', model:'Composer', host:'Cursor', time:'8m' },
+      { status:'done', project:'web-foundation', title:'Fix responsive navigation', prompt:'Remove the breakpoint layout jump', activity:'Completed · 7 files changed', product:'Claude Code', model:'Opus 4.5', host:'Warp', time:'12m' },
+      { status:'done', project:'agent-island', title:'Audit Host navigation', prompt:'Test exact targeting across two panes', activity:'Completed · checks passed', product:'Codex CLI', model:'GPT-5.4', host:'iTerm2', time:'18m' },
+      { status:'done', project:'design-kit', title:'Normalize semantic colors', prompt:'Bring warning contrast above AA', activity:'Completed', product:'Cursor', model:'Composer', host:'Cursor', time:'31m' },
+    ];
+    const parentSession = { status:'active', project:'agent-island', title:'Ship capability parity matrix', prompt:'Research and validate action routing across every first-class Agent Product', activity:'Coordinating · 3 of 5 tasks complete', product:'Claude Code', model:'Opus 4.5', host:'iTerm2', time:'14m' };
+    const subagentRuns = [
+      { status:'active', role:'Research', task:'Map Codex action routing', activity:'Reading app-server protocol', time:'6m' },
+      { status:'done', role:'Validation', task:'Verify Cursor fallback', activity:'12 scenarios passed', time:'9m' },
+      { status:'active', role:'Review', task:'Audit Claude hooks', activity:'Comparing capability evidence', time:'4m' },
+    ];
+    const todoTasks = [
+      { status:'done', title:'Inventory supported actions', state:'Done' },
+      { status:'done', title:'Verify Cursor fallback', state:'Done' },
+      { status:'done', title:'Confirm Host ownership keys', state:'Done' },
+      { status:'active', title:'Audit Claude hook routing', state:'In progress' },
+      { status:'pending', title:'Write parity acceptance cases', state:'Pending' },
+    ];
+
+    function params() { return new URLSearchParams(location.search); }
+    function config() {
+      const p = params();
+      return {
+        state: states.includes(p.get('state')) ? p.get('state') : 'clean',
+        display: p.get('display') === 'external' ? 'external' : 'built-in',
+        text: p.get('text') === 'large' ? 'large' : 'standard',
+      };
+    }
+    function update(next) {
+      const p = params();
+      Object.entries(next).forEach(([key,value]) => p.set(key,value));
+      history.replaceState(null, '', '?' + p.toString());
+      render();
+    }
+    function mark(status='active') { return `<span class="mark ${status}" aria-hidden="true"></span>`; }
+    function badges(s, short=false) {
+      const productClass = s.product === 'Claude Code' ? 'claude' : s.product === 'Cursor' ? 'cursor' : 'product';
+      return `<span class="badges"><span class="badge ${productClass}">${s.product}</span>${short ? '' : `<span class="badge">${s.model}</span><span class="badge">${s.host}</span>`}<span class="badge">${s.time}</span></span>`;
+    }
+    function expandedShell(content, footer='Collapse island') {
+      return `${collapsed()}<section class="panel"><header class="panel-header"><div class="usage" aria-label="Usage: five hour window 38 percent used, resets in two hours"><span>5h</span><b>38%</b><span>2h</span><span>·</span><span>7d</span><b>61%</b><span>3d</span></div><div class="utilities"><button class="icon-button" aria-label="Mute sounds">◒</button><button class="icon-button" aria-label="Open Settings">⚙</button></div></header><div class="panel-body">${content}</div><footer class="panel-footer"><button class="footer-button" data-footer>${footer}</button></footer></section>`;
+    }
+    function collapsed() {
+      const c = config();
+      const attention = ['focused','expanded','selected','scale'].includes(c.state);
+      const stateWord = c.state === 'subagents' ? '3 subagent runs' : attention ? '1 needs you' : 'Working';
+      return `<div class="collapsed" role="status" aria-label="${stateWord}; 12 Agent Sessions"><div class="leading">${mark(attention ? 'attention' : 'active')}<span class="state-word">${stateWord}</span></div><span aria-hidden="true"></span><div class="trailing"><span class="count">12</span><span class="count-label">sessions</span></div></div>`;
+    }
+    function aRow(s, index, selected=false, compact=false) {
+      const recap = selected ? `<div class="recap" tabindex="0"><p><b>You:</b> ${s.prompt}.</p><p>The capability boundary now reports exact navigation, application-only fallback, and unavailable routing as separate outcomes. Ambiguous Host Contexts remain unresolved instead of receiving a plausible target.</p><p class="status-text done">Done · ready to review</p></div>` : '';
+      return `<article class="a-row ${selected ? 'selected' : ''} ${compact ? 'compact' : ''}" aria-label="${s.project}, ${s.title}, ${s.status}"><div class="track">${mark(s.status)}</div><div class="row-copy"><div class="session-title">${s.project} <small>·</small> ${s.title}</div><div class="prompt"><b>You:</b> ${s.prompt}</div><div class="activity"><b>${s.activity.split(' · ')[0]}</b>${s.activity.includes(' · ') ? ' · ' + s.activity.split(' · ')[1] : ''}</div></div>${badges(s, compact)}${recap}</article>`;
+    }
+    function aSubagentGroup() {
+      const children = subagentRuns.map(run => `<div class="a-subagent" aria-label="Subagent Run, ${run.role}, ${run.task}, ${run.status}">${mark(run.status)}<div class="a-subagent-copy"><span>${run.role} · Subagent Run</span><b>${run.task}</b><span>${run.activity}</span></div><span class="a-subagent-time">${run.time}</span></div>`).join('');
+      const todos = todoTasks.map(task => `<div class="a-todo ${task.status}" aria-label="TODO task, ${task.title}, ${task.state}">${mark(task.status)}<b>${task.title}</b><span class="a-todo-state">${task.state}</span></div>`).join('');
+      return `${aRow(parentSession,0)}<section class="a-subagent-group" aria-label="TODO tasks and Subagent Runs"><div class="a-task-summary"><b>Task progress</b><span>3 of 5 complete · 3 Subagent Runs</span><div class="task-progress" aria-label="3 of 5 tasks complete"><span></span></div></div><div class="a-todos"><div class="a-todos-title">TODO tasks · 3 complete · 1 active · 1 pending</div>${todos}</div><div class="a-runs-title">Subagent Runs · 2 active · 1 complete</div>${children}</section>`;
+    }
+    function variantA(state) {
+      if (state === 'clean' || state === 'detailed') return collapsed();
+      let content = '';
+      if (state === 'focused') content = `<div class="focus-label">Focused reveal · attention outranks activity</div>${aRow(samples[0],0,true)}${aRow(samples[1],1,false,true)}`;
+      else if (state === 'subagents') content = `<div class="focus-label">Adapter-supplied task structure · parent ownership preserved</div>${aSubagentGroup()}${aRow(samples[2],1,false,true)}${aRow(samples[3],2,false,true)}`;
+      else content = samples.map((s,i) => aRow(s,i,state === 'selected' && i === 1, state === 'scale' && i > 2)).join('') + (state === 'scale' ? Array.from({length:24},(_,i)=>aRow({...samples[(i+2)%samples.length], title:`Archived task ${String(i+7).padStart(2,'0')}`, time:`${i+1}h`},i+6,false,true)).join('') : '');
+      return expandedShell(content, state === 'focused' ? 'Show all 12 Agent Sessions' : 'Collapse island');
+    }
+    function render() {
+      const c = config();
+      document.documentElement.style.setProperty('--text-scale', c.text === 'large' ? '1.18' : '1');
+      document.body.className = `state-${c.state}`;
+      const content = variantA(c.state);
+      document.querySelector('#stage').innerHTML = `<div class="island variant-a ${c.display === 'external' ? 'external' : ''}"><div class="shell">${content}</div></div>`;
+      document.querySelectorAll('[data-state]').forEach(button => button.setAttribute('aria-pressed', button.dataset.state === c.state));
+      document.querySelector('#displayToggle').textContent = c.display === 'external' ? 'External' : 'Built-in';
+      document.querySelector('#textToggle').textContent = c.text === 'large' ? 'Text 118%' : 'Text 100%';
+      document.querySelector('[data-footer]')?.addEventListener('click', () => update({state: c.state === 'focused' ? 'expanded' : 'clean'}));
+    }
+    document.querySelectorAll('[data-state]').forEach(button => button.addEventListener('click', () => update({state:button.dataset.state})));
+    document.querySelector('#displayToggle').addEventListener('click', () => update({display:config().display === 'external' ? 'built-in' : 'external'}));
+    document.querySelector('#textToggle').addEventListener('click', () => update({text:config().text === 'large' ? 'standard' : 'large'}));
+    window.addEventListener('keydown', event => {
+      const tag = event.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target.isContentEditable) return;
+      if (/^[1-7]$/.test(event.key)) update({state:states[Number(event.key)-1]});
+    });
+    window.addEventListener('popstate', render);
+    render();
+  </script>
+</body>
+</html>
+

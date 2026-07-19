@@ -1,0 +1,6 @@
+captured_at_utc=2026-07-18T19:21:02Z
+binary=/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/release/NativeIslandOverlay
+macos=27.0
+architecture=arm64
+script=test.sh
+command=swift test --package-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay

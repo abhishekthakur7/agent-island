@@ -1,0 +1,72 @@
+captured_at_utc=2026-07-18T19:21:53Z
+
+## Operating system
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A5378n
+Darwin MacBookPro.local 27.0.0 Darwin Kernel Version 27.0.0: Mon Jun 29 21:25:11 PDT 2026; root:xnu-13432.0.50.501.3~1/RELEASE_ARM64_T6030 arm64
+
+## Developer tools
+xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance
+swift-driver version: 1.168.4 Apple Swift version 6.4 (swiftlang-6.4.0.25.4 clang-2100.3.25.1)
+Target: arm64-apple-macosx27.0.0
+xcrun: error: unable to find utility "xctrace", not a developer tool or in PATH
+
+## Power and display state
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=36700259)	100%; charged; 0:00 remaining present: true
+Battery Power:
+ Sleep On Power Button 1
+ lowpowermode         0
+ standby              1
+ ttyskeepawake        1
+ hibernatemode        3
+ powernap             1
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         30
+ womp                 0
+ networkoversleep     0
+ sleep                1
+ lessbright           0
+ tcpkeepalive         1
+ disksleep            10
+AC Power:
+ Sleep On Power Button 1
+ lowpowermode         0
+ standby              1
+ ttyskeepawake        1
+ hibernatemode        3
+ powernap             1
+ hibernatefile        /var/vm/sleepimage
+ displaysleep         90
+ womp                 1
+ networkoversleep     0
+ sleep                0
+ tcpkeepalive         1
+ disksleep            10
+Graphics/Displays:
+
+    Apple M3 Pro:
+
+      Chipset Model: Apple M3 Pro
+      Type: GPU
+      Bus: Built-In
+      Total Number of Cores: 14
+      Vendor: Apple (0x106b)
+      Metal Support: Metal 4
+      Displays:
+        DELL U3223QE:
+          Resolution: 3840 x 2160 (2160p/4K UHD 1 - Ultra High Definition)
+          UI Looks like: 1920 x 1080 @ 60.00Hz
+          Main Display: Yes
+          Mirror: Off
+          Online: Yes
+          Rotation: Supported
+        Color LCD:
+          Display Type: Built-in Liquid Retina XDR Display
+          Resolution: 3024 x 1964 Retina
+          Mirror: Off
+          Online: Yes
+          Automatically Adjust Brightness: No
+          Connection Type: Internal
+

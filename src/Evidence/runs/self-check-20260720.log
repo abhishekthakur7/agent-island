@@ -1,0 +1,66 @@
+Building for debugging...
+[Pre-planning 1 / 239]
+[Planning deferred tasks]
+[1 / 19]
+[2 / 20] SessionDomain
+[10 / 28] SessionDomain
+[16 / 37] SessionDomain
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: SessionDomain: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[18 / 37] SessionStore
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: AdapterPort: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[38 / 52] SessionStore
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: PresentationPort: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: SessionStore: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[43 / 55] AdapterFixtureKit
+[57 / 67] PresentationRuntime
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: ApplicationRuntime: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: PresentationRuntime: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: AdapterFixtureKit: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[67 / 71] AgentIslandApp-product
+[73 / 77] AgentIslandApp-product
+/Users/abhishekthakur/Developer/agent-island/src/Sources/AgentIslandApp/main.swift:25:5: [1;33mwarning: [1;39mno 'async' operations occur within 'await' expression[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker\UnnecessaryEffectMarker]8;;\]
+[0;36m23 |[0;0m     exit(exitCode)
+[0;36m24 |[0;0m } else {
+[0;36m25 |[0;0m     await launchGUI()
+   [0;36m|[0;0m     `- [1;33mwarning: [1;39mno 'async' operations occur within 'await' expression[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker\UnnecessaryEffectMarker]8;;\]
+[0;36m26 |[0;0m }
+[0;36m27 |[0;0m 
+
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+/Users/abhishekthakur/Developer/agent-island/src/Sources/AgentIslandApp/main.swift:25:5: [1;33mwarning: [1;39mno 'async' operations occur within 'await' expression[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker\UnnecessaryEffectMarker]8;;\]
+[0;36m23 |[0;0m     exit(exitCode)
+[0;36m24 |[0;0m } else {
+[0;36m25 |[0;0m     await launchGUI()
+   [0;36m|[0;0m     `- [1;33mwarning: [1;39mno 'async' operations occur within 'await' expression[0;0m [#]8;;https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker\UnnecessaryEffectMarker]8;;\]
+[0;36m26 |[0;0m }
+[0;36m27 |[0;0m 
+
+[#UnnecessaryEffectMarker]: <https://docs.swift.org/compiler/documentation/diagnostics/unnecessary-effect-marker>
+[74 / 77] AgentIslandApp-product
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: AgentIslandApp-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/usr/lib' not found
+/Users/abhishekthakur/Developer/agent-island/src/Package.swift: AgentIslandApp-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[76 / 77] AgentIslandApp-product
+Build complete! (2.44 sec)
+[PASS] positiveObservation
+    - negotiate: compatible(snapshot: 0B549DD5-6100-46AA-8E20-2826D0770CD4)
+    - sessionDeclared: committed(ledgerRevision: 1)
+    - activity.started: committed(ledgerRevision: 2)
+    - activity.waiting: committed(ledgerRevision: 3)
+[PASS] duplicateStableDelivery
+    - firstDelivery: committed(ledgerRevision: 1)
+    - duplicateDelivery: duplicateIgnored(ledgerRevision: 1)
+[PASS] invalidOwnership
+    - deliverMissingOwnerIdentity: rejected(SessionDomain.EnvelopeValidationError.missingOrAmbiguousOwnerIdentity)
+[PASS] incompatibleContract
+    - negotiate.incompatibleMajor: incompatibleContractMajor
+    - deliverAfterIncompatibleNegotiation: rejected(SessionDomain.EnvelopeValidationError.unknownNegotiationSnapshot)
+[PASS] malformedShape
+    - deliverMalformedActivity: rejected(SessionDomain.EnvelopeValidationError.malformedShape)
+[PASS] oversizedPayload
+    - deliverOversizedPayload: rejected(SessionDomain.EnvelopeValidationError.payloadTooLarge)
+[PASS] transportLoss
+    - activity.started: committed(ledgerRevision: 1)
+    - observationBoundary.transportLost: committed(ledgerRevision: 2)
+[PASS] transportLoss.projectionInvariant execution=unresolved observation=unavailable
+[PASS] duplicateStableDelivery.singleCardInvariant sessions=1
+SELF-CHECK PASSED

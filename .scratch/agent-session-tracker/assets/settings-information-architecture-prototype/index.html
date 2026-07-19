@@ -1,0 +1,583 @@
+<!doctype html>
+<!-- PROTOTYPE ONLY. Three settings IA variants on this one route via ?variant=. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Island — Settings IA prototype</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { color-scheme: dark; --bg:#101113; --side:#17191d; --card:#202328; --card2:#272b31; --line:#363a41; --ink:#f4f4f1; --muted:#a6a9af; --dim:#737780; --blue:#7ab8ff; --green:#73d8a4; --amber:#f4b96b; --red:#ff7c83; --violet:#b9a4ff; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; }
+    *{box-sizing:border-box} body{margin:0; min-width:320px; background:radial-gradient(circle at 88% 4%,#273142 0,transparent 28%),#0e0f11;color:var(--ink); min-height:100vh} button,input,select{font:inherit} button{cursor:pointer} button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--blue);outline-offset:2px}.muted{color:var(--muted)}.dim{color:var(--dim)}.mono{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}.eyebrow{color:var(--blue);font:700 11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.1em;text-transform:uppercase}.pill,.tag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:11px;color:var(--muted)}.dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor}.healthy{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.unavailable{color:var(--violet)}.button{border:1px solid var(--line);background:#2b3037;color:var(--ink);border-radius:9px;padding:8px 11px;font-size:12px}.button.primary{background:#dcecff;color:#162232;border-color:#dcecff;font-weight:700}.button.danger{color:#ffc1c5;border-color:#75434a;background:#351d22}.button.ghost{background:transparent}.window{max-width:1240px;min-height:720px;margin:40px auto 115px;border:1px solid rgba(255,255,255,.16);border-radius:18px;overflow:hidden;background:rgba(18,20,24,.93);box-shadow:0 28px 100px #0008;backdrop-filter:blur(20px)}.titlebar{height:48px;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1px solid var(--line);background:#191b1f}.lights{display:flex;gap:7px}.lights i{width:11px;height:11px;border-radius:50%;background:#53565d}.titlebar b{font-size:13px;margin-left:5px}.window-main{display:grid;grid-template-columns:226px minmax(0,1fr);min-height:670px}.sidebar{padding:20px 12px;background:linear-gradient(180deg,#191b20,#14161a);border-right:1px solid var(--line)}.brand{display:flex;align-items:center;gap:9px;margin:0 9px 22px;font-weight:720}.brand-mark{width:23px;height:23px;border-radius:8px;background:conic-gradient(from 25deg,var(--blue),var(--violet),var(--green),var(--blue));box-shadow:inset 0 0 0 5px #16181d}.group{margin:18px 8px 6px;font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}.nav{width:100%;display:flex;align-items:center;gap:9px;border:0;border-radius:8px;background:transparent;color:var(--muted);padding:8px 9px;text-align:left;font-size:13px}.nav:hover,.nav.active{background:#30343a;color:white}.nav .nav-icon{width:17px;text-align:center;color:var(--blue)}.nav[data-page="maintenance"] .nav-icon{color:var(--red)}.content{padding:34px 38px 48px;overflow:auto}.content-head{display:flex;justify-content:space-between;gap:18px;align-items:start;margin-bottom:27px}.content h1{margin:3px 0 7px;font-size:28px;letter-spacing:-.035em}.content h2{font-size:15px;margin:0 0 12px}.content p{font-size:13px;line-height:1.45}.status-strip{display:flex;flex-wrap:wrap;gap:9px;padding:12px 14px;border:1px solid #5e4f32;background:#2b261c;border-radius:11px;margin-bottom:20px;font-size:12px}.grid{display:grid;gap:13px}.cols2{grid-template-columns:repeat(2,minmax(0,1fr))}.section{padding:16px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(145deg,var(--card),#1b1e22)}.section>header,.row{display:flex;align-items:center;justify-content:space-between;gap:13px}.section>header{margin-bottom:12px}.section>header h2{margin:0}.row{padding:11px 0;border-top:1px solid var(--line)}.row:first-of-type{border-top:0;padding-top:0}.row-copy{min-width:0}.row b{display:block;font-size:13px}.row small{display:block;margin-top:3px;font-size:11px;color:var(--muted);line-height:1.35}.toggle{width:38px;height:22px;flex:0 0 auto;border:0;border-radius:999px;background:#555a62;position:relative}.toggle::after{content:"";position:absolute;width:16px;height:16px;border-radius:50%;background:#eee;left:3px;top:3px;transition:.15s}.toggle.on{background:#4389d7}.toggle.on::after{left:19px}.select{max-width:160px;background:#2c3036;border:1px solid var(--line);border-radius:7px;padding:6px 8px;color:white;font-size:11px}.integrations{display:grid;gap:9px}.integration{border:1px solid var(--line);border-radius:10px;padding:13px;background:#1a1d21}.integration-top{display:flex;align-items:center;justify-content:space-between;gap:12px}.integration b{font-size:13px}.integration-meta{margin-top:6px;display:flex;flex-wrap:wrap;gap:6px}.health-detail{margin-top:10px;padding:10px;border-radius:8px;background:#15171a;color:var(--muted);font-size:11px;line-height:1.5}.health-detail strong{color:#f4f4f1}.preview{border:1px dashed #5b6572;border-radius:11px;padding:14px;background:linear-gradient(135deg,#17202c,#15171b);min-height:130px}.island-preview{height:38px;max-width:390px;margin:8px auto 15px;padding:0 14px;border-radius:0 0 18px 18px;background:#08090b;display:flex;align-items:center;justify-content:space-between;font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace}.session-preview{max-width:500px;margin:auto;border-radius:10px;padding:12px;background:#0b0c0e;border:1px solid #323740}.session-preview b{font-size:12px}.session-preview div{margin-top:5px;font-size:10px;color:var(--muted)}.meter{height:6px;width:130px;border-radius:6px;background:#42474e;overflow:hidden}.meter i{display:block;width:68%;height:100%;background:var(--blue)}.filter-preview{padding:11px;border-radius:8px;background:#151719;margin-top:10px}.filter-preview strong{color:var(--green)}.danger-zone{border-color:#78434a;background:linear-gradient(145deg,#2b1a1e,#211619)}.danger-zone .row{border-color:#513239}.split-actions{display:flex;gap:7px;flex-wrap:wrap}.notice{border-left:3px solid var(--amber);padding:8px 10px;background:#2b261d;color:#e6d2ab;border-radius:0 7px 7px 0;font-size:12px;line-height:1.4}.review{position:fixed;z-index:9;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:7px 9px;background:#edf0f4;color:#16181c;border:1px solid white;border-radius:14px;box-shadow:0 14px 38px #0008}.review button{border:0;background:#d5d9e0;border-radius:8px;width:29px;height:29px;font-size:17px}.review b{font-size:12px;min-width:132px;text-align:center}.review small{display:block;font-size:9px;text-align:center;color:#5c6066}.stepper{display:flex;gap:7px;margin:15px 0}.stepper i{height:4px;flex:1;border-radius:99px;background:#444951}.stepper i.done{background:var(--blue)}.onboard{padding:16px;border:1px solid #53637a;background:linear-gradient(130deg,#1b2635,#1a1c22);border-radius:12px;margin-bottom:18px}.onboard h2{font-size:17px;margin:4px 0}.onboard-art{height:90px;margin:12px 0;border-radius:9px;background:radial-gradient(ellipse at 50% 0,#7893b9,transparent 42%),linear-gradient(125deg,#223044,#101317);display:flex;align-items:center;justify-content:center}.onboard-island{width:240px;height:34px;border-radius:0 0 18px 18px;background:#060709;display:flex;align-items:center;justify-content:center;color:#b8d5ff;font:700 10px ui-monospace,monospace}.flight{padding:29px}.flight-head{display:flex;justify-content:space-between;gap:15px;align-items:center;margin-bottom:20px}.journey{display:grid;grid-template-columns:190px minmax(0,1fr);gap:18px}.journey-rail{border-right:1px solid var(--line);padding-right:18px}.journey-step{position:relative;padding:0 0 22px 28px;color:var(--muted);font-size:12px}.journey-step::before{content:"";position:absolute;left:0;top:2px;width:12px;height:12px;border-radius:50%;border:2px solid #575d66;background:#17191e}.journey-step::after{content:"";position:absolute;left:6px;top:17px;width:2px;height:20px;background:#434852}.journey-step.active,.journey-step.done{color:white;font-weight:650}.journey-step.done::before{background:var(--green);border-color:var(--green)}.journey-step.active::before{border-color:var(--blue);box-shadow:0 0 0 4px #3976aa44}.journey-body{min-width:0}.goal-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 15px}.goal{border:1px solid var(--line);border-radius:999px;padding:7px 10px;color:var(--muted);background:#1d2025;font-size:11px}.goal.active{border-color:#7ab8ff;color:#dcecff;background:#20334a}.hero-health{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin-bottom:13px}.health-orb{padding:17px;border:1px solid var(--line);border-radius:12px;background:#1c2025}.health-orb h2{margin:5px 0}.score{font-size:34px;color:var(--green);font-weight:760;letter-spacing:-.06em}.task-list{padding:12px;border:1px solid var(--line);border-radius:12px;background:#17191d}.task{display:flex;gap:9px;border-top:1px solid var(--line);padding:9px 0;font-size:12px}.task:first-child{border-top:0;padding-top:0}.check{width:16px;height:16px;border:1px solid #5a6068;border-radius:5px;flex:none;text-align:center;font-size:11px}.task.done .check{background:var(--green);color:#14251d;border-color:var(--green)}.task.done{color:var(--muted)}.workbench{padding:24px}.bench-head{display:flex;justify-content:space-between;gap:12px;align-items:center}.lanes{display:grid;grid-template-columns:1.1fr 1.2fr .9fr;gap:13px;margin-top:18px}.lane{border:1px solid var(--line);border-radius:13px;overflow:hidden;background:#1a1d21}.lane-head{padding:13px 14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}.lane-head h2{margin:0;font-size:13px}.lane-body{padding:12px;display:grid;gap:10px}.ticket{border:1px solid var(--line);border-radius:9px;padding:11px;background:#22262c}.ticket h3{font-size:12px;margin:0 0 5px}.ticket p{font-size:11px;margin:0;color:var(--muted)}.ticket .actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.ticket .button{font-size:10px;padding:6px 7px}.maintenance-card{border-color:#704249;background:#291a1e}.compact-diagnostic{font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c5cad2;background:#121417;border-radius:7px;padding:9px;white-space:pre-wrap}.toast{position:fixed;z-index:11;right:20px;top:20px;max-width:320px;padding:11px 13px;border-radius:10px;background:#dff8ea;color:#183524;font-size:12px;font-weight:650;box-shadow:0 12px 35px #0007;opacity:0;transform:translateY(-8px);pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:none}.mobile-note{display:none}@media(max-width:780px){.window{margin:0 0 100px;border-radius:0;min-height:100vh}.window-main{grid-template-columns:1fr}.sidebar{border-right:0;border-bottom:1px solid var(--line);padding:10px;display:flex;gap:4px;overflow:auto}.brand,.group{display:none}.nav{width:auto;white-space:nowrap;padding:7px}.content{padding:24px 18px}.cols2,.hero-health,.lanes{grid-template-columns:1fr}.journey{grid-template-columns:1fr}.journey-rail{border-right:0;border-bottom:1px solid var(--line);display:flex;overflow:auto;padding:0}.journey-step{min-width:120px;padding:0 10px 14px 24px}.journey-step::after{display:none}.flight,.workbench{padding:20px}.mobile-note{display:block}.review{bottom:10px}.titlebar{display:none}}
+  </style>
+  <style id="apple-design-redesign">
+    /* Apple-design review pass: quiet materials, familiar macOS hierarchy,
+       instant feedback, spatially consistent transitions, and accessible fallbacks. */
+    :root {
+      color-scheme: dark;
+      --bg: #080b10;
+      --side: rgba(18, 22, 30, .72);
+      --card: rgba(255, 255, 255, .055);
+      --card2: rgba(255, 255, 255, .085);
+      --line: rgba(255, 255, 255, .105);
+      --line-strong: rgba(255, 255, 255, .17);
+      --ink: rgba(255, 255, 255, .94);
+      --muted: rgba(235, 240, 249, .60);
+      --dim: rgba(230, 236, 246, .39);
+      --blue: #0a84ff;
+      --blue-soft: rgba(10, 132, 255, .16);
+      --green: #32d27a;
+      --amber: #ffb340;
+      --red: #ff5f57;
+      --violet: #bf8cff;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+      font-optical-sizing: auto;
+    }
+
+    * { -webkit-tap-highlight-color: transparent; }
+
+    html { background: #07090d; }
+
+    body {
+      position: relative;
+      isolation: isolate;
+      overflow-x: hidden;
+      background:
+        radial-gradient(65rem 42rem at 7% -5%, rgba(47, 112, 196, .32), transparent 60%),
+        radial-gradient(48rem 38rem at 100% 8%, rgba(102, 65, 164, .25), transparent 62%),
+        linear-gradient(145deg, #080b11 0%, #0c121b 52%, #090b10 100%);
+      color: var(--ink);
+      letter-spacing: 0;
+    }
+
+    body::before,
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: -1;
+      width: 22rem;
+      height: 22rem;
+      border-radius: 50%;
+      filter: blur(90px);
+      opacity: .22;
+      pointer-events: none;
+    }
+
+    body::before { left: -8rem; bottom: -9rem; background: #186bc8; }
+    body::after { right: -7rem; top: 24%; background: #8152c7; }
+
+    button,
+    input,
+    select { font: inherit; }
+
+    button,
+    .nav,
+    .goal,
+    .toggle {
+      touch-action: manipulation;
+      transition:
+        transform 120ms cubic-bezier(.2, .8, .2, 1),
+        background-color 180ms cubic-bezier(.2, .8, .2, 1),
+        border-color 180ms cubic-bezier(.2, .8, .2, 1),
+        color 180ms cubic-bezier(.2, .8, .2, 1),
+        box-shadow 180ms cubic-bezier(.2, .8, .2, 1),
+        opacity 180ms ease-out;
+    }
+
+    button:active,
+    .nav:active,
+    .goal:active { transform: scale(.975); }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    .nav:focus-visible {
+      outline: 3px solid rgba(10, 132, 255, .72);
+      outline-offset: 2px;
+    }
+
+    .window {
+      max-width: 1220px;
+      min-height: 742px;
+      margin: 34px auto 124px;
+      border: 1px solid rgba(255, 255, 255, .18);
+      border-radius: 21px;
+      overflow: hidden;
+      background: rgba(17, 21, 28, .72);
+      box-shadow:
+        0 44px 110px rgba(0, 0, 0, .58),
+        0 9px 30px rgba(0, 0, 0, .34),
+        inset 0 1px rgba(255, 255, 255, .08);
+      backdrop-filter: blur(42px) saturate(155%);
+      -webkit-backdrop-filter: blur(42px) saturate(155%);
+      animation: materialize 360ms cubic-bezier(.2, .85, .25, 1) both;
+    }
+
+    @keyframes materialize {
+      from { opacity: 0; transform: translateY(7px) scale(.994); filter: blur(5px); }
+      to { opacity: 1; transform: none; filter: none; }
+    }
+
+    .titlebar {
+      position: relative;
+      height: 52px;
+      padding: 0 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, .075);
+      background: rgba(13, 16, 22, .52);
+      backdrop-filter: blur(26px) saturate(150%);
+      -webkit-backdrop-filter: blur(26px) saturate(150%);
+    }
+
+    .titlebar b {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      max-width: 60%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin: 0;
+      color: rgba(255, 255, 255, .76);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .005em;
+    }
+
+    .lights { gap: 8px; }
+    .lights i { width: 12px; height: 12px; box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .25); }
+    .lights i:nth-child(1) { background: #ff5f57; }
+    .lights i:nth-child(2) { background: #febc2e; }
+    .lights i:nth-child(3) { background: #28c840; }
+
+    .window-main { grid-template-columns: 238px minmax(0, 1fr); min-height: 690px; }
+
+    .sidebar {
+      padding: 22px 12px 28px;
+      background: rgba(21, 25, 33, .62);
+      border-right: 1px solid rgba(255, 255, 255, .08);
+      backdrop-filter: blur(30px) saturate(135%);
+      -webkit-backdrop-filter: blur(30px) saturate(135%);
+    }
+
+    .brand {
+      margin: 0 10px 24px;
+      gap: 11px;
+      color: rgba(255, 255, 255, .9);
+      font-size: 14px;
+      font-weight: 650;
+      letter-spacing: -.012em;
+    }
+
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+      background:
+        radial-gradient(circle at 34% 29%, rgba(255, 255, 255, .85) 0 4%, transparent 5%),
+        conic-gradient(from 215deg, #087df2, #78c7ff, #7468e7, #087df2);
+      box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, .24),
+        inset 0 0 0 7px rgba(10, 15, 23, .67),
+        0 5px 14px rgba(0, 84, 204, .28);
+    }
+
+    .group {
+      margin: 20px 10px 7px;
+      color: var(--dim);
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: .055em;
+      text-transform: uppercase;
+    }
+
+    .nav {
+      min-height: 34px;
+      gap: 10px;
+      margin: 1px 0;
+      padding: 7px 10px;
+      border-radius: 8px;
+      color: rgba(239, 243, 250, .66);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .nav:hover { background: rgba(255, 255, 255, .055); color: rgba(255, 255, 255, .92); }
+    .nav.active {
+      color: white;
+      background: linear-gradient(180deg, rgba(10, 132, 255, .94), rgba(4, 104, 220, .94));
+      box-shadow: inset 0 1px rgba(255, 255, 255, .19), 0 3px 10px rgba(0, 91, 205, .18);
+    }
+
+    .nav .nav-icon { width: 18px; color: rgba(134, 196, 255, .95); font-size: 13px; }
+    .nav.active .nav-icon { color: white; }
+    .nav[data-page="maintenance"] .nav-icon { color: #ff7670; }
+    .nav[data-page="maintenance"].active .nav-icon { color: white; }
+
+    .content {
+      padding: 36px 40px 52px;
+      background: rgba(6, 9, 14, .22);
+      scrollbar-color: rgba(255, 255, 255, .2) transparent;
+    }
+
+    .content-head { margin-bottom: 26px; align-items: flex-start; }
+    .content h1,
+    .flight h1,
+    .workbench h1 {
+      margin: 3px 0 7px !important;
+      color: rgba(255, 255, 255, .96);
+      font-size: clamp(25px, 2.3vw, 30px) !important;
+      font-weight: 700;
+      line-height: 1.08;
+      letter-spacing: -.032em;
+    }
+
+    .content h2,
+    .flight h2,
+    .workbench h2 { font-size: 14px; font-weight: 650; letter-spacing: -.014em; }
+    .content p,
+    .flight p,
+    .workbench p { line-height: 1.48; }
+
+    .eyebrow {
+      color: #70b7ff;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 680;
+      letter-spacing: .075em;
+      text-transform: uppercase;
+    }
+
+    .pill,
+    .tag {
+      min-height: 24px;
+      padding: 4px 9px;
+      border: 1px solid rgba(255, 255, 255, .11);
+      background: rgba(255, 255, 255, .045);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 540;
+      box-shadow: inset 0 1px rgba(255, 255, 255, .035);
+    }
+
+    .pill.healthy { color: #78e3a5; background: rgba(48, 209, 88, .08); border-color: rgba(48, 209, 88, .19); }
+    .pill.warn { color: #ffc66f; background: rgba(255, 179, 64, .08); border-color: rgba(255, 179, 64, .19); }
+    .pill.bad { color: #ff8b85; background: rgba(255, 95, 87, .08); border-color: rgba(255, 95, 87, .19); }
+    .pill.unavailable { color: #d1b1ff; background: rgba(191, 140, 255, .08); border-color: rgba(191, 140, 255, .19); }
+
+    .dot { width: 6px; height: 6px; box-shadow: 0 0 9px currentColor; }
+
+    .button {
+      min-height: 30px;
+      padding: 6px 11px;
+      border: 1px solid rgba(255, 255, 255, .11);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .085);
+      color: rgba(255, 255, 255, .91);
+      font-size: 11px;
+      font-weight: 560;
+      box-shadow: inset 0 1px rgba(255, 255, 255, .055), 0 1px 2px rgba(0, 0, 0, .18);
+    }
+
+    .button:hover { background: rgba(255, 255, 255, .13); border-color: rgba(255, 255, 255, .17); }
+    .button.primary {
+      border-color: rgba(37, 145, 255, .85);
+      background: linear-gradient(180deg, #2997ff, #0879e9);
+      color: white;
+      font-weight: 650;
+      box-shadow: inset 0 1px rgba(255, 255, 255, .24), 0 4px 13px rgba(0, 111, 235, .22);
+    }
+    .button.primary:hover { background: linear-gradient(180deg, #3ca1ff, #1684ee); }
+    .button.danger {
+      border-color: rgba(255, 95, 87, .3);
+      background: rgba(255, 95, 87, .115);
+      color: #ff8d87;
+    }
+    .button.danger:hover { background: rgba(255, 95, 87, .17); }
+
+    .grid { gap: 14px; }
+
+    .section {
+      padding: 0 16px;
+      border: 1px solid rgba(255, 255, 255, .095);
+      border-radius: 13px;
+      background: rgba(255, 255, 255, .048);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .035), 0 8px 24px rgba(0, 0, 0, .06);
+    }
+
+    .section > header {
+      min-height: 48px;
+      margin: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, .075);
+    }
+
+    .section > header h2 { margin: 0; }
+    .section > p.muted { margin: 14px 0; }
+
+    .row {
+      min-height: 54px;
+      padding: 10px 0;
+      border-top: 1px solid rgba(255, 255, 255, .07);
+    }
+
+    .row:first-of-type { padding-top: 10px; }
+    .row b { color: rgba(255, 255, 255, .9); font-size: 12px; font-weight: 590; }
+    .row small { margin-top: 3px; color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+
+    .toggle {
+      width: 38px;
+      height: 22px;
+      border: 0;
+      background: rgba(255, 255, 255, .2);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .13);
+    }
+    .toggle::after {
+      width: 18px;
+      height: 18px;
+      left: 2px;
+      top: 2px;
+      background: white;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, .4);
+      transition: left 220ms cubic-bezier(.22, .86, .28, 1), transform 120ms ease-out;
+    }
+    .toggle:active::after { transform: scale(.9); }
+    .toggle.on { background: #30d158; }
+    .toggle.on::after { left: 18px; }
+
+    .select,
+    input {
+      min-height: 29px;
+      border: 1px solid rgba(255, 255, 255, .13) !important;
+      border-radius: 7px !important;
+      background: rgba(255, 255, 255, .075) !important;
+      color: rgba(255, 255, 255, .9) !important;
+      box-shadow: inset 0 1px rgba(255, 255, 255, .035);
+    }
+
+    .integration {
+      border-color: rgba(255, 255, 255, .09);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, .035);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .025);
+    }
+
+    .health-detail,
+    .filter-preview,
+    .compact-diagnostic {
+      background: rgba(3, 6, 10, .33);
+      border: 1px solid rgba(255, 255, 255, .055);
+    }
+
+    .preview {
+      border: 1px solid rgba(112, 183, 255, .19);
+      background:
+        radial-gradient(22rem 10rem at 50% 0%, rgba(46, 118, 199, .25), transparent 72%),
+        rgba(4, 7, 12, .35);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .035);
+    }
+
+    .island-preview { box-shadow: 0 12px 28px rgba(0, 0, 0, .45); }
+    .session-preview { background: rgba(12, 15, 21, .78); border-color: rgba(255, 255, 255, .12); }
+    .meter { background: rgba(255, 255, 255, .13); }
+    .meter i { border-radius: inherit; background: linear-gradient(90deg, #0a84ff, #63b3ff); }
+
+    .status-strip,
+    .notice {
+      border: 1px solid rgba(255, 179, 64, .2);
+      background: rgba(255, 179, 64, .095);
+      color: rgba(255, 222, 172, .9);
+      border-radius: 11px;
+    }
+    .notice { border-left: 3px solid var(--amber); }
+
+    .onboard {
+      border-color: rgba(68, 151, 255, .21);
+      border-radius: 14px;
+      background:
+        radial-gradient(24rem 13rem at 54% -30%, rgba(80, 154, 243, .28), transparent 72%),
+        rgba(255, 255, 255, .045);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .05);
+    }
+    .onboard-art { background: radial-gradient(ellipse at 50% -20%, rgba(103, 178, 255, .47), transparent 58%), rgba(3, 6, 11, .48); }
+
+    .flight,
+    .workbench {
+      padding: 30px 32px 42px;
+      background: rgba(5, 8, 13, .15);
+    }
+
+    .flight-head,
+    .bench-head { margin-bottom: 22px; }
+
+    .journey { grid-template-columns: 196px minmax(0, 1fr); gap: 24px; }
+    .journey-rail { border-right-color: rgba(255, 255, 255, .08); }
+    .journey-step { color: var(--muted); font-size: 12px; }
+    .journey-step::before { border-color: rgba(255, 255, 255, .2); background: rgba(255, 255, 255, .045); }
+    .journey-step::after { background: rgba(255, 255, 255, .1); }
+    .journey-step.active::before { border-color: #0a84ff; background: rgba(10, 132, 255, .18); box-shadow: 0 0 0 4px rgba(10, 132, 255, .13); }
+    .journey-step.done::before { border-color: #30d158; background: #30d158; }
+
+    .goal {
+      min-height: 30px;
+      border-color: rgba(255, 255, 255, .1);
+      background: rgba(255, 255, 255, .05);
+      color: var(--muted);
+      font-weight: 540;
+    }
+    .goal:hover { background: rgba(255, 255, 255, .09); }
+    .goal.active { border-color: rgba(10, 132, 255, .38); background: rgba(10, 132, 255, .17); color: #a9d6ff; }
+
+    .health-orb,
+    .task-list {
+      border-color: rgba(255, 255, 255, .095);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .045);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .035);
+    }
+    .score { color: #52dd8e; font-size: 38px; font-weight: 720; letter-spacing: -.05em; }
+    .task { border-top-color: rgba(255, 255, 255, .07); }
+    .check { border-color: rgba(255, 255, 255, .24); }
+    .task.done .check { background: #30d158; border-color: #30d158; }
+
+    .lanes { gap: 14px; margin-top: 20px; }
+    .lane {
+      border-color: rgba(255, 255, 255, .09);
+      border-radius: 15px;
+      background: rgba(255, 255, 255, .035);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .035), 0 13px 30px rgba(0, 0, 0, .08);
+    }
+    .lane-head { min-height: 50px; padding: 12px 14px; border-bottom-color: rgba(255, 255, 255, .07); background: rgba(255, 255, 255, .018); }
+    .lane-head h2 { font-size: 12px; font-weight: 650; }
+    .lane-body { gap: 9px; padding: 10px; }
+
+    .ticket {
+      border-color: rgba(255, 255, 255, .085);
+      border-radius: 11px;
+      padding: 12px;
+      background: rgba(255, 255, 255, .05);
+      box-shadow: inset 0 1px rgba(255, 255, 255, .026);
+    }
+    .ticket h3 { color: rgba(255, 255, 255, .91); font-size: 12px; font-weight: 620; letter-spacing: -.008em; }
+    .ticket p { color: var(--muted); line-height: 1.43; }
+    .ticket:hover { border-color: rgba(255, 255, 255, .13); background: rgba(255, 255, 255, .064); }
+    .maintenance-card,
+    .danger-zone { border-color: rgba(255, 95, 87, .25); background: rgba(255, 95, 87, .075); }
+
+    .review {
+      bottom: 18px;
+      gap: 10px;
+      padding: 7px 8px;
+      border: 1px solid rgba(255, 255, 255, .23);
+      border-radius: 16px;
+      background: rgba(26, 30, 38, .76);
+      color: rgba(255, 255, 255, .92);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, .46), inset 0 1px rgba(255, 255, 255, .1);
+      backdrop-filter: blur(24px) saturate(160%);
+      -webkit-backdrop-filter: blur(24px) saturate(160%);
+    }
+    .review button {
+      width: 32px;
+      height: 32px;
+      border: 0;
+      border-radius: 9px;
+      background: rgba(255, 255, 255, .1);
+      color: white;
+    }
+    .review button:hover { background: rgba(255, 255, 255, .17); }
+    .review b { min-width: 150px; color: white; font-size: 11px; font-weight: 620; }
+    .review small { margin-top: 1px; color: rgba(255, 255, 255, .44); }
+
+    .toast {
+      top: 20px;
+      right: 20px;
+      padding: 11px 14px;
+      border: 1px solid rgba(255, 255, 255, .2);
+      border-radius: 11px;
+      background: rgba(37, 43, 53, .82);
+      color: rgba(255, 255, 255, .92);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, .42), inset 0 1px rgba(255, 255, 255, .08);
+      backdrop-filter: blur(24px) saturate(145%);
+      -webkit-backdrop-filter: blur(24px) saturate(145%);
+      transform: translateY(-7px) scale(.985);
+      transition: opacity 200ms ease-out, transform 300ms cubic-bezier(.2, .85, .25, 1);
+    }
+    .toast.show { opacity: 1; transform: none; }
+
+    @media (max-width: 980px) {
+      .window { margin-inline: 18px; }
+      .lanes { grid-template-columns: 1fr 1fr; }
+      .lane:last-child { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 780px) {
+      body { background: #0b0e13; }
+      .window { margin: 0 0 96px; border-radius: 0; border-inline: 0; min-height: 100vh; }
+      .window-main { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid rgba(255, 255, 255, .08); padding: 10px; }
+      .nav { min-height: 36px; }
+      .content { padding: 25px 18px 44px; }
+      .content-head, .flight-head, .bench-head { align-items: flex-start; }
+      .cols2, .hero-health, .lanes { grid-template-columns: 1fr; }
+      .lane:last-child { grid-column: auto; }
+      .journey { grid-template-columns: 1fr; }
+      .flight, .workbench { padding: 22px 16px 38px; }
+      .review { bottom: 10px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+      button, .nav, .goal, .toggle, .toast { transition: opacity 160ms ease-out, color 160ms ease-out, background-color 160ms ease-out !important; transform: none !important; }
+      .window { animation-name: apple-crossfade; }
+      @keyframes apple-crossfade { from { opacity: 0; } to { opacity: 1; } }
+    }
+
+    @media (prefers-reduced-transparency: reduce) {
+      body { background: #0c0f15; }
+      .window, .titlebar, .sidebar, .review, .toast { background: #171b23; backdrop-filter: none; -webkit-backdrop-filter: none; }
+      .section, .lane, .ticket, .integration { background: #20252e; }
+    }
+
+    @media (prefers-contrast: more) {
+      :root { --muted: rgba(255, 255, 255, .78); --line: rgba(255, 255, 255, .31); }
+      .window, .section, .lane, .ticket, .integration, .button, .select, input { border-color: rgba(255, 255, 255, .36) !important; }
+      .nav.active { outline: 1px solid white; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div><div class="toast" id="toast" role="status"></div>
+  <script>
+    const variants=[['atlas','Approved — Atlas settings window']];
+    const state={page:'general',onboard:0,filter:'memory',display:'Built-in display',usage:'Claude Code',enabled:{claude:true,codex:true,cursor:true},sound:true};
+    const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    const status=(kind,text)=>`<span class="pill ${kind}"><i class="dot"></i>${text}</span>`;
+    const toggle=(key,on)=>`<button class="toggle ${on?'on':''}" aria-pressed="${on}" data-toggle="${key}" title="Prototype-only toggle"></button>`;
+    const integrations=()=>`<div class="integrations">
+      ${integration('Claude Code','healthy','Healthy','Hook observation · delivery verified 2m ago',true,'All selected capabilities available.')}
+      ${integration('Codex CLI','warn','Degraded','Enabled · app-server control disconnected',true,'Observation remains available. Live responses are unavailable; Jump Back is the safe fallback.')}
+      ${integration('Cursor','unavailable','Setup required','Detected · Cursor Hook needs review',false,'No configuration has been written. Review the user-level setup plan before enabling.')}
+    </div>`;
+    function integration(name,kind,label,meta,on,detail){return `<article class="integration"><div class="integration-top"><div><b>${name}</b><div class="integration-meta">${status(kind,label)}<span class="tag">${meta}</span></div></div>${toggle('int-'+name,on)}</div><details class="health-detail"><summary><strong>Evidence & recovery</strong> — inspectable, not a success claim</summary><div style="margin-top:7px">${detail} Last probe: 10:42. Configuration ownership, permissions, transport, delivery, and action readiness stay independently visible.</div></details></article>`}
+    const nav=active=>`<aside class="sidebar"><div class="brand"><i class="brand-mark"></i>Agent Island</div><div class="group">Preferences</div>${[['general','◉','General'],['integrations','⌁','Integrations'],['notifications','◌','Notifications'],['display','▣','Display'],['sound','♪','Sound'],['usage','◫','Usage']].map(x=>`<button class="nav ${active===x[0]?'active':''}" data-page="${x[0]}"><span class="nav-icon">${x[1]}</span>${x[2]}</button>`).join('')}<div class="group">Advanced</div>${[['shortcuts','⌘','Shortcuts'],['labs','✦','Labs'],['diagnostics','◈','Diagnostics'],['maintenance','!','Maintenance']].map(x=>`<button class="nav ${active===x[0]?'active':''}" data-page="${x[0]}"><span class="nav-icon">${x[1]}</span>${x[2]}</button>`).join('')}</aside>`;
+    function page(){const p=state.page;let body='';if(p==='general')body=general();if(p==='integrations')body=integrationsPage();if(p==='notifications')body=notifications();if(p==='display')body=display();if(p==='sound')body=sound();if(p==='usage')body=usage();if(p==='shortcuts')body=shortcuts();if(p==='labs')body=labs();if(p==='diagnostics')body=diagnostics();if(p==='maintenance')body=maintenance();return `<main class="content"><div class="content-head"><div><div class="eyebrow">Settings prototype · ${p}</div><h1>${p[0].toUpperCase()+p.slice(1)}</h1><span class="muted">Illustrative state only — controls never touch products, files, or permissions.</span></div>${p==='integrations'?status('warn','1 needs review'):''}</div>${body}</main>`}
+    function general(){return `<section class="onboard"><div class="eyebrow">First run, in context</div><h2>${['See concurrent work as one calm surface','Know when work completes without checking every terminal','Jump Back only when targeting is evidence-backed','Choose what to enable after a read-only check'][state.onboard]}</h2><div class="onboard-art"><div class="onboard-island">${['3 active · 1 attention','Review complete · 2 recaps','Exact pane available · 1 fallback','3 products detected · nothing enabled yet'][state.onboard]}</div></div><div class="stepper">${[0,1,2,3].map(n=>`<i class="${n<=state.onboard?'done':''}"></i>`).join('')}</div><div class="split-actions"><button class="button ghost" data-onboard="-1">Back</button><button class="button primary" data-onboard="1">${state.onboard===3?'Open integrations':'Next'}</button><button class="button ghost" data-page="integrations">Skip to setup</button></div></section><div class="grid cols2"><section class="section"><header><h2>Overlay behavior</h2></header><div class="row"><div class="row-copy"><b>Launch at login</b><small>Start the local companion after sign-in.</small></div>${toggle('login',true)}</div><div class="row"><div class="row-copy"><b>Expand on hover</b><small>Only the visible island bounds respond.</small></div>${toggle('hover',true)}</div><div class="row"><div class="row-copy"><b>Smart foreground suppression</b><small>Keep an exact foreground session inline.</small></div>${toggle('foreground',true)}</div><div class="row"><div class="row-copy"><b>Hide in full screen</b><small>Withdraw without moving to another display.</small></div>${toggle('fullscreen',false)}</div></section><section class="section"><header><h2>Reveal policy</h2></header><div class="row"><div class="row-copy"><b>Completion</b><small>Show a short recap unless you interact.</small></div><select class="select"><option>3 seconds</option></select></div><div class="row"><div class="row-copy"><b>Attention</b><small>Never auto-dismiss an open request.</small></div>${status('warn','Always present')}</div><div class="notice">Setup failures that affect current work also appear as a dismissible, content-free island notice.</div></section></div>`}
+    function integrationsPage(){return `<div class="status-strip"><span class="warn"><i class="dot"></i>Degraded means partial capability loss, even when observation works.</span><button class="button ghost" data-toast="Discovery is read-only in this prototype.">Refresh evidence</button></div>${integrations()}<section class="section" style="margin-top:13px"><header><h2>Health language</h2><span class="tag">Intent ≠ health</span></header><div class="integration-meta">${status('dim','Disabled')} ${status('warn','Setup required')} ${status('healthy','Healthy')} ${status('warn','Degraded')} ${status('unavailable','Unavailable')} ${status('bad','Incompatible')}</div><p class="muted">The compact label is a summary. Each state expands to current evidence, affected capability, observation time, and a non-destructive next action.</p></section><section class="section" style="margin-top:13px"><header><h2>Advanced setup</h2><button class="button" data-toast="A real flow would show a fresh, lossless plan before any write.">Review setup plan…</button></header><p class="muted">User-level configuration is the default. Alternate executable paths, custom locations, and repository scope require an explicit choice and stay separate from enabled intent.</p></section>`}
+    function notifications(){return `<div class="grid cols2"><section class="section"><header><h2>What gets your attention</h2></header>${[['Attention requests','Always queued','warn'],['Completion','Focused recap when eligible','healthy'],['Errors & context limits','Background alert when permitted','bad'],['Session starts','Visual reveal only','healthy']].map(r=>`<div class="row"><div class="row-copy"><b>${r[0]}</b><small>${r[1]}</small></div>${status(r[2],r[0]==='Attention requests'?'Required':'Enabled')}</div>`).join('')}</section><section class="section"><header><h2>Filters & quiet scenes</h2></header><div class="row"><div class="row-copy"><b>Focus, lock, and screen sharing</b><small>Suppress automatic reveal, sound, and banners. Never replay a backlog.</small></div>${status('healthy','Quiet')}</div><label class="row"><div class="row-copy"><b>Filter pattern</b><small>Preview is local and read-only.</small></div><input id="filter" value="${esc(state.filter)}" style="width:110px;background:#17191d;border:1px solid var(--line);border-radius:6px;padding:6px;color:white"></label><div class="filter-preview">Live preview: <strong id="filter-count">${state.filter==='memory'?2:1} sessions</strong> would be suppressed. No alert, sound, or state change is generated.</div><button class="button" data-toast="Filter preview refreshed; no session was changed.">Preview matches</button></section></div>`}
+    function display(){return `<div class="grid cols2"><section class="section"><header><h2>Selected display</h2>${status('healthy','Available')}</header><div class="row"><div class="row-copy"><b>Island location</b><small>The Settings window is not display-owned.</small></div><select class="select" data-display><option ${state.display==='Built-in display'?'selected':''}>Built-in display</option><option ${state.display==='Studio Display'?'selected':''}>Studio Display</option></select></div><div class="row"><div class="row-copy"><b>Collapsed layout</b><small>Clean keeps context minimal; Detailed adds activity.</small></div><select class="select"><option>Detailed</option><option>Clean</option></select></div><div class="row"><div class="row-copy"><b>Show project, Worktree & model</b><small>Optional detail compacts before ownership is clipped.</small></div>${toggle('metadata',true)}</div></section><section class="section"><header><h2>Live layout preview</h2><span class="tag">${state.display}</span></header><div class="preview"><div class="island-preview"><span class="healthy">◆ Working · refactor auth</span><span>4 sessions</span></div><div class="session-preview"><b>api-gateway · Add credential rotation</b><div>Codex CLI · Warp · gpt-5.6 · working on adapter contract</div></div></div><div class="row"><div class="row-copy"><b>Maximum panel height</b><small>Completion recap scrolls independently.</small></div><span class="tag">620 px</span></div></section></div>`}
+    function sound(){return `<div class="grid cols2"><section class="section"><header><h2>Sound effects</h2>${toggle('sound',state.sound)}</header><div class="row"><div class="row-copy"><b>Volume</b><small>Local preview uses this level and creates no alert.</small></div><div class="meter"><i></i></div></div><div class="row"><div class="row-copy"><b>Quiet hours</b><small>22:30–07:30; sounds only.</small></div>${toggle('quiet',true)}</div><div class="row"><div class="row-copy"><b>Probe traffic</b><small>Never make health-check work audible.</small></div>${toggle('probe',false)}</div></section><section class="section"><header><h2>Event sounds</h2><button class="button" data-toast="Preview played locally in the conceptual prototype.">▶ Preview completion</button></header>${['Attention','Completion','Error','Idle reminder'].map((x,i)=>`<div class="row"><div class="row-copy"><b>${x}</b><small>${i===0?'Persistent request':i===1?'Soft arrival':'Distinct warning'}</small></div><select class="select"><option>${i===2?'Harbor alarm':'Tide bell'}</option><option>Off</option></select></div>`).join('')}</section></div>`}
+    function usage(){return `<div class="grid cols2"><section class="section"><header><h2>Usage header</h2>${toggle('usage',true)}</header><div class="row"><div class="row-copy"><b>Provider</b><small>Display-only capability; never estimated.</small></div><select class="select" data-usage><option>Claude Code</option><option>Follow selected session</option><option>Unavailable example</option></select></div><div class="row"><div class="row-copy"><b>Display</b><small>Use used or remaining when source supplies it.</small></div><select class="select"><option>Remaining</option><option>Used</option></select></div></section><section class="section"><header><h2>Header preview</h2>${status('healthy','Source-proven')}</header><div class="preview"><div class="island-preview"><span>${state.usage==='Unavailable example'?'Usage unavailable':'Claude · 68% remaining'}</span><span>${state.usage==='Unavailable example'?'—':'resets in 2h 18m'}</span></div><p class="muted">Unavailable stays absent or explicitly stale; it does not block monitoring, filters, or Jump Back.</p></div><div class="row"><div class="row-copy"><b>Claude Status Line bridge</b><small>Reversible Integration Installation; preserves existing visible output.</small></div><button class="button" data-toast="A real setup would require a reviewable plan.">Review bridge…</button></div></section></div>`}
+    function shortcuts(){return `<section class="section"><header><h2>Keyboard and global shortcuts</h2>${toggle('shortcuts',true)}</header><p class="muted">Bindings use physical keys plus modifiers, reject conflicts before saving, and never consume IME composition.</p>${[['Open / toggle Island','⌥ Space'],['Next Agent Session','⌥ →'],['Previous Agent Session','⌥ ←'],['Collapse panel','Esc']].map(x=>`<div class="row"><div class="row-copy"><b>${x[0]}</b><small>${x[0]==='Collapse panel'?'Always safe while the panel is engaged.':'Visible hints appear with the configured modifier.'}</small></div><button class="button" data-toast="Binding capture is illustrative only.">${x[1]}</button></div>`).join('')}</section>`}
+    function labs(){return `<section class="section"><header><h2>Labs</h2><span class="tag">Explicit opt-in</span></header><div class="notice">Labs contains only reversible, local presentation experiments. It does not enable unsupported Agent Products, remote access, analytics, or arbitrary third-party adapter code.</div><div class="row"><div class="row-copy"><b>Early layout density</b><small>Test a compact Horizon row treatment.</small></div>${toggle('labs-density',false)}</div><div class="row"><div class="row-copy"><b>Native approval preference hint</b><small>Explain available Product routes without changing a Product setting.</small></div>${toggle('labs-hint',true)}</div></section>`}
+    function diagnostics(){return `<div class="grid cols2"><section class="section"><header><h2>Integration diagnostics</h2><button class="button primary" data-toast="Prototype-only redacted Diagnostic Bundle prepared.">Prepare bundle…</button></header><p class="muted">A real Diagnostic Bundle is person-initiated and creates redacted Markdown plus JSON. It excludes Interaction Content, credentials, commands, titles, paths, and raw external IDs.</p><div class="compact-diagnostic">adapter: codex-cli\nsummary: degraded\nreason: control_transport_disconnected\nobserved_at: 10:42\naffected_capability: typed_response\nfallback: jump_back</div></section><section class="section"><header><h2>Explain a state</h2></header>${[['Accepted','Source and ownership validated','healthy'],['Filtered','Directory rule matched','warn'],['Deduplicated','Same source revision','healthy'],['Downgraded','No live action lease','warn'],['Broken','Transport unavailable','bad']].map(x=>`<div class="row"><div class="row-copy"><b>${x[0]}</b><small>${x[1]}</small></div>${status(x[2],x[0])}</div>`).join('')}</section></div>`}
+    function maintenance(){return `<div class="status-strip"><span class="bad"><i class="dot"></i>Consequential actions are separate from everyday preferences and require fresh review.</span></div><section class="section danger-zone"><header><h2>Maintenance & cleanup</h2><span class="tag">No prototype action mutates anything</span></header>${[['Reset preferences','Return local presentation preferences to defaults.','Review reset…'],['Remove setup','Remove only manifest-proven integration entries and owned artifacts.','Plan removal…'],['Delete local data','Choose history, diagnostics, or preferences separately after setup removal.','Choose data…'],['Complete cleanup','Checklist with residual reporting; never claims ambiguous external material was removed.','Review cleanup…']].map(x=>`<div class="row"><div class="row-copy"><b>${x[0]}</b><small>${x[1]}</small></div><button class="button danger" data-toast="${x[0]} is intentionally non-operative in this prototype.">${x[2]}</button></div>`).join('')}</section>`}
+    function atlas(){return `<section class="window"><div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><b>Agent Island Settings</b></div><div class="window-main">${nav(state.page)}${page()}</div></section>`}
+    function flight(){return `<section class="window"><div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><b>Agent Island · setup and care</b></div><div class="flight"><div class="flight-head"><div><div class="eyebrow">Variant B · progressive setup</div><h1 style="margin:4px 0;font-size:27px">A calm route to a healthy companion</h1></div><button class="button" data-toast="Settings remains reachable at every step.">Open all settings</button></div><div class="journey"><aside class="journey-rail"><div class="journey-step done">Welcome & privacy</div><div class="journey-step done">Choose integrations</div><div class="journey-step active">Confirm delivery health</div><div class="journey-step">Tune interruptions</div><div class="journey-step">Maintain & recover</div></aside><main class="journey-body"><div class="goal-tabs"><button class="goal active">Get started</button><button class="goal">Stay quiet</button><button class="goal">Make it mine</button><button class="goal">Fix something</button></div><div class="hero-health"><section class="health-orb"><div class="eyebrow">Current checkpoint</div><h2>Your integrations are mostly ready</h2><div class="score">2 / 3</div><p class="muted">Enabled intent and current delivery are presented separately. Codex is enabled but degraded; Cursor is merely detected.</p><button class="button primary" data-toast="A real next step would reveal a non-destructive recovery plan.">Review Codex recovery</button></section><section class="task-list"><h2>Next, only what matters</h2><div class="task done"><i class="check">✓</i>Explain local-only data and permissions</div><div class="task done"><i class="check">✓</i>Confirm Claude Code delivery</div><div class="task"><i class="check"></i>Reconnect Codex app-server control</div><div class="task"><i class="check"></i>Choose whether to enable Cursor</div></section></div><section class="section"><header><h2>Choose the next outcome</h2></header><div class="grid cols2"><article class="ticket"><h3>Stay informed, not interrupted</h3><p>Notifications, sound, quiet scenes, and filter previews live together because they answer one question: “when should Agent Island interrupt?”</p><button class="button" data-toast="Would open notification preferences.">Tune alerts</button></article><article class="ticket"><h3>Make the Island fit this display</h3><p>Display detail, selected display, and a live geometry preview are grouped around the visible companion.</p><button class="button" data-toast="Would open display preferences.">Preview Island</button></article></div></section><section class="section" style="margin-top:13px"><header><h2>Care center</h2></header><p class="muted">Diagnostics, export, reset, setup removal, and complete cleanup remain deliberately outside the daily journey. They are visible when needed but never disguised as a casual toggle.</p><button class="button danger" data-toast="Would open the separate maintenance lane.">Open maintenance lane</button></section></main></div></div></section>`}
+    function workbench(){return `<section class="window"><div class="titlebar"><span class="lights"><i></i><i></i><i></i></span><b>Agent Island · operations workbench</b></div><div class="workbench"><div class="bench-head"><div><div class="eyebrow">Variant C · information-dense operations</div><h1 style="margin:4px 0;font-size:27px">Observe, configure, recover</h1></div><div>${status('warn','1 recovery needed')} ${status('healthy','2 healthy')}</div></div><div class="lanes"><section class="lane"><header class="lane-head"><h2>Today’s companion</h2><span class="tag">Personal</span></header><div class="lane-body"><article class="ticket"><h3>Onboarding checkpoint</h3><p>3 of 4 promises explored. The person can return without restarting setup.</p><div class="actions"><button class="button primary" data-onboard="1">Continue education</button><button class="button" data-toast="Onboarding is contextual, never a generic permission dump.">Preview step</button></div></article><article class="ticket"><h3>Interruption policy</h3><p>Attention: queue · Completion: recap · Quiet scenes: enabled.</p><div class="actions"><button class="button" data-toast="Would open live filter preview.">Filter preview · 2</button><button class="button" data-toast="Would open sound settings.">Sound on</button></div></article><article class="ticket"><h3>Island presentation</h3><p>Built-in display · Detailed · Normal text</p><div class="actions"><button class="button" data-toast="Would open the live display preview.">Inspect preview</button></div></article></div></section><section class="lane"><header class="lane-head"><h2>Integration truth</h2><button class="button" data-toast="Read-only discovery refreshed.">Refresh</button></header><div class="lane-body">${integration('Claude Code','healthy','Healthy','Hook · verified delivery',true,'All selected capabilities are available.')}${integration('Codex CLI','warn','Degraded','Observation works · responses unavailable',true,'Recovery is separate from intent.')}<article class="ticket"><h3>Cursor · detected, not enabled</h3><p>Setup required. A detected Product never receives configuration or a health claim automatically.</p><div class="actions"><button class="button primary" data-toast="Would show the exact setup plan.">Review plan</button><button class="button" data-toast="Capability differences would be explained here.">See capabilities</button></div></article></div></section><section class="lane"><header class="lane-head"><h2>Evidence & care</h2><span class="tag">Redacted</span></header><div class="lane-body"><article class="ticket"><h3>Diagnostics</h3><p>Explain accepted, filtered, duplicate, downgraded, and broken states without content.</p><div class="actions"><button class="button" data-toast="Diagnostic Bundle is a preview-only action here.">Prepare bundle</button></div></article><article class="ticket"><h3>Usage</h3><p>Claude · 68% remaining · reset in 2h. Display-only source capability.</p><div class="actions"><button class="button" data-toast="Usage selector would open.">Change source</button></div></article><article class="ticket maintenance-card"><h3>Consequential maintenance</h3><p>Reset, owned-setup removal, local-data deletion, and complete cleanup each have an independent plan and confirmation.</p><div class="actions"><button class="button danger" data-toast="Maintenance is intentionally inert in the prototype.">Open cleanup checklist</button></div></article></div></section></div></div></section>`}
+    function render(){document.getElementById('app').innerHTML=atlas();bind()}
+    function review(current){let n=variants.findIndex(x=>x[0]===current);return `<nav class="review" aria-label="Prototype variant switcher"><button data-variant="${variants[(n+2)%3][0]}" title="Previous variant">←</button><div><b>${variants[n][1]}</b><small>review switcher · URL-stable</small></div><button data-variant="${variants[(n+1)%3][0]}" title="Next variant">→</button></nav>`}
+    function bind(){document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{state.page=b.dataset.page;render()});document.querySelectorAll('[data-variant]').forEach(b=>b.onclick=()=>{let u=new URL(location);u.searchParams.set('variant',b.dataset.variant);history.replaceState({},'',u);render()});document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>{b.classList.toggle('on');b.setAttribute('aria-pressed',b.classList.contains('on'));if(b.dataset.toggle==='sound')state.sound=b.classList.contains('on')});document.querySelectorAll('[data-onboard]').forEach(b=>b.onclick=()=>{state.onboard=Math.max(0,Math.min(3,state.onboard+Number(b.dataset.onboard)));if(state.onboard===3&&b.textContent.includes('Next'))state.page='integrations';render()});document.querySelectorAll('[data-toast]').forEach(b=>b.onclick=()=>toast(b.dataset.toast));let f=document.querySelector('#filter');if(f)f.oninput=e=>{state.filter=e.target.value;document.querySelector('#filter-count').textContent=(state.filter.toLowerCase().includes('memory')?2:1)+' sessions'};let d=document.querySelector('[data-display]');if(d)d.onchange=e=>{state.display=e.target.value;render()};let u=document.querySelector('[data-usage]');if(u)u.onchange=e=>{state.usage=e.target.value;render()}}
+    function toast(msg){let t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>t.classList.remove('show'),2600)}
+    render();
+  </script>
+</body>
+</html>

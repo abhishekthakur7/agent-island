@@ -1,0 +1,203 @@
+import SessionDomain
+import AdapterPort
+
+public struct FixtureTraceStep: Sendable, CustomStringConvertible {
+    public let label: String
+    public let outcome: String
+    public var description: String { "\(label): \(outcome)" }
+
+    public init(label: String, outcome: String) {
+        self.label = label
+        self.outcome = outcome
+    }
+}
+
+public struct FixtureScenarioResult: Sendable {
+    public let name: String
+    public let steps: [FixtureTraceStep]
+    public let succeeded: Bool
+}
+
+/// The required-evidence scenarios from the AB-118 ticket: one positive
+/// fixture trace, plus a negative capture for duplicate delivery, invalid
+/// ownership, incompatible contract, malformed shape, oversized payload, and
+/// transport loss. Every scenario runs through `AdapterIntakePort` only.
+public enum FixtureScenarios {
+    public static func positiveObservation(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "positiveObservation",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+        steps.append(FixtureTraceStep(label: "negotiate", outcome: "compatible(snapshot: \(snapshot.id.rawValue))"))
+
+        let nativeSessionID = "sess_positive_demo"
+        var ok = true
+
+        let declared = await fixture.deliverSessionDeclared(
+            snapshot: snapshot,
+            nativeSessionID: nativeSessionID,
+            displayTitle: "Refactor billing service"
+        )
+        steps.append(FixtureTraceStep(label: "sessionDeclared", outcome: "\(declared)"))
+        if case .committed = declared {} else { ok = false }
+
+        let started = await fixture.deliverActivity(snapshot: snapshot, nativeSessionID: nativeSessionID, kind: .started)
+        steps.append(FixtureTraceStep(label: "activity.started", outcome: "\(started)"))
+        if case .committed = started {} else { ok = false }
+
+        let waiting = await fixture.deliverActivity(snapshot: snapshot, nativeSessionID: nativeSessionID, kind: .waiting)
+        steps.append(FixtureTraceStep(label: "activity.waiting", outcome: "\(waiting)"))
+        if case .committed = waiting {} else { ok = false }
+
+        return FixtureScenarioResult(name: "positiveObservation", steps: steps, succeeded: ok)
+    }
+
+    public static func duplicateStableDelivery(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "duplicateStableDelivery",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+
+        let nativeSessionID = "sess_duplicate_demo"
+        let stableID = "evt_duplicate_001"
+
+        let first = await fixture.deliverSessionDeclared(snapshot: snapshot, nativeSessionID: nativeSessionID, stableEventID: stableID)
+        steps.append(FixtureTraceStep(label: "firstDelivery", outcome: "\(first)"))
+
+        let second = await fixture.deliverSessionDeclared(snapshot: snapshot, nativeSessionID: nativeSessionID, stableEventID: stableID)
+        steps.append(FixtureTraceStep(label: "duplicateDelivery", outcome: "\(second)"))
+
+        var succeeded = false
+        if case .committed = first, case .duplicateIgnored = second {
+            succeeded = true
+        }
+        return FixtureScenarioResult(name: "duplicateStableDelivery", steps: steps, succeeded: succeeded)
+    }
+
+    public static func invalidOwnership(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "invalidOwnership",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+
+        let outcome = await fixture.deliverMissingOwnerIdentity(snapshot: snapshot)
+        steps.append(FixtureTraceStep(label: "deliverMissingOwnerIdentity", outcome: "\(outcome)"))
+
+        var succeeded = false
+        if case .rejected(.missingOrAmbiguousOwnerIdentity) = outcome {
+            succeeded = true
+        }
+        return FixtureScenarioResult(name: "invalidOwnership", steps: steps, succeeded: succeeded)
+    }
+
+    public static func incompatibleContract(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+        var ok = false
+
+        let negotiation = await fixture.negotiateIncompatible()
+        if case .incompatible(let reason) = negotiation {
+            steps.append(FixtureTraceStep(label: "negotiate.incompatibleMajor", outcome: "\(reason)"))
+            ok = true
+        } else {
+            steps.append(FixtureTraceStep(label: "negotiate.incompatibleMajor", outcome: "unexpectedly compatible"))
+        }
+
+        let bogus = await fixture.deliverWithArbitrarySnapshotID(
+            NegotiationSnapshotID("unregistered-snapshot"),
+            nativeSessionID: "sess_incompatible_demo"
+        )
+        steps.append(FixtureTraceStep(label: "deliverAfterIncompatibleNegotiation", outcome: "\(bogus)"))
+        if case .rejected(.unknownNegotiationSnapshot) = bogus {} else { ok = false }
+
+        return FixtureScenarioResult(name: "incompatibleContract", steps: steps, succeeded: ok)
+    }
+
+    public static func malformedShape(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "malformedShape",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+
+        let outcome = await fixture.deliverMalformedActivity(snapshot: snapshot, nativeSessionID: "sess_malformed_demo")
+        steps.append(FixtureTraceStep(label: "deliverMalformedActivity", outcome: "\(outcome)"))
+
+        var succeeded = false
+        if case .rejected(.malformedShape) = outcome {
+            succeeded = true
+        }
+        return FixtureScenarioResult(name: "malformedShape", steps: steps, succeeded: succeeded)
+    }
+
+    public static func oversizedPayload(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "oversizedPayload",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+
+        let outcome = await fixture.deliverOversizedPayload(snapshot: snapshot, nativeSessionID: "sess_oversized_demo")
+        steps.append(FixtureTraceStep(label: "deliverOversizedPayload", outcome: "\(outcome)"))
+
+        var succeeded = false
+        if case .rejected(.payloadTooLarge) = outcome {
+            succeeded = true
+        }
+        return FixtureScenarioResult(name: "oversizedPayload", steps: steps, succeeded: succeeded)
+    }
+
+    public static func transportLoss(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        var steps: [FixtureTraceStep] = []
+
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "transportLoss",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+
+        let nativeSessionID = "sess_transport_loss_demo"
+        var ok = true
+
+        let started = await fixture.deliverActivity(snapshot: snapshot, nativeSessionID: nativeSessionID, kind: .started)
+        steps.append(FixtureTraceStep(label: "activity.started", outcome: "\(started)"))
+        if case .committed = started {} else { ok = false }
+
+        let boundary = await fixture.reportTransportLost(snapshot: snapshot, nativeSessionID: nativeSessionID)
+        steps.append(FixtureTraceStep(label: "observationBoundary.transportLost", outcome: "\(boundary)"))
+        if case .committed = boundary {} else { ok = false }
+
+        return FixtureScenarioResult(name: "transportLoss", steps: steps, succeeded: ok)
+    }
+}

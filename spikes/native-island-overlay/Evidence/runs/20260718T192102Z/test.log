@@ -1,0 +1,49 @@
+Building for debugging...
+[Constructing description]
+[Planning deferred tasks]
+[3 / 26] NativeIslandOverlay
+[13 / 142]
+[17 / 142]
+[21 / 142]
+[25 / 142]
+[27 / 142]
+[28 / 142]
+[32 / 142]
+[33 / 142]
+[36 / 142]
+[37 / 142]
+[39 / 142]
+[45 / 142]
+[47 / 142]
+[48 / 142]
+[50 / 142]
+[51 / 142]
+[61 / 142]
+[63 / 142]
+[64 / 142]
+[67 / 142]
+[69 / 142]
+[70 / 142]
+[77 / 142]
+[78 / 142]
+[79 / 142]
+[84 / 142]
+[85 / 142]
+[86 / 142]
+[88 / 142]
+[90 / 142]
+[91 / 142]
+[100 / 142]
+[101 / 142]
+[105 / 142]
+[110 / 142]
+[111 / 142]
+[112 / 142]
+[119 / 142] NativeIslandOverlay
+[122 / 137] NativeIslandOverlay
+/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/Package.swift: NativeIslandOverlay: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+error: /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/Tests/NativeIslandOverlayTests/FixtureContractTests.swift:1:8 unable to resolve module dependency: 'XCTest'
+error: SwiftDriver NativeIslandOverlayTests normal arm64 com.apple.xcode.tools.swift.compiler failed with a nonzero exit code. Command line:     cd /Users/abhishekthakur/Developer/agent-island/spikes
+    builtin-SwiftDriver -- /Library/Developer/CommandLineTools/usr/bin/swiftc -parse-as-library -module-name NativeIslandOverlayTests -Onone @/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/Objects-normal/arm64/NativeIslandOverlayTests.SwiftFileList -DSWIFT_PACKAGE -DDEBUG -DXcode -plugin-path /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing -enable-experimental-feature DebugDescriptionMacro -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX27.0.sdk -target arm64-apple-macos14.0 -g -module-cache-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/ModuleCache.noindex -Xfrontend -serialize-debugging-options -enable-testing -index-store-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out -Xcc -D_LIBCPP_HARDENING_MODE\=_LIBCPP_HARDENING_MODE_DEBUG -swift-version 6 -I /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Products/Debug -Isystem /Library/Developer/CommandLineTools/Developer/usr/lib -F /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Products/Debug/PackageFrameworks -F /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Products/Debug -F /Library/Developer/CommandLineTools/Library/Developer/Frameworks -F /Library/Developer/CommandLineTools/Developer/Library/Frameworks -c -j11 -enable-batch-mode -incremental -Xcc -ivfsstatcache -Xcc /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/SDKStatCaches.noindex/macosx27.0-26A5378i-1aa54e4a50e311dbd51de5aafe7eca3dffd68ff603bdaacc80b00cb8898de72d.sdkstatcache -output-file-map /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/Objects-normal/arm64/NativeIslandOverlayTests-OutputFileMap.json -save-temps -color-diagnostics -explicit-module-build -module-cache-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/SwiftExplicitPrecompiledModules -clang-scanner-module-cache-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/ModuleCache.noindex -sdk-module-cache-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/SDKExplicitPrecompiledModules -emit-dependencies -emit-module -emit-module-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/Objects-normal/arm64/NativeIslandOverlayTests.swiftmodule -serialize-diagnostics -dependency-scan-serialize-diagnostics-path /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/Objects-normal/arm64/NativeIslandOverlayTests-dependency-scan.dia -validate-clang-modules-once -clang-build-session-file /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/ModuleCache.noindex/Session.modulevalidation -Xcc -fmodules-prune-interval\=86400 -Xcc -fmodules-prune-after\=345600 -package-name native_island_overlay -emit-const-values -const-gather-protocols-list /Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/Objects-normal/arm64/NativeIslandOverlayTests_const_extract_protocols.json -Xcc -I/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Products/Debug/include -Xcc -I/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/DerivedSources-normal/arm64 -Xcc -I/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/DerivedSources/arm64 -Xcc -I/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/.build/out/Intermediates.noindex/NativeIslandOverlay.build/Debug/NativeIslandOverlayTests-p.build/DerivedSources -Xcc -DSWIFT_PACKAGE -Xcc -DDEBUG\=1 -working-directory /Users/abhishekthakur/Developer/agent-island/spikes -experimental-emit-module-separately -disable-cmo
+error: Build failed
+error: fatalError

@@ -1,0 +1,47 @@
+Building for production...
+[Planning deferred tasks]
+[2 / 8]
+[4 / 10] NativeIslandOverlay-product
+[14 / 120]
+[18 / 120]
+[26 / 120]
+[28 / 120]
+[29 / 120]
+[35 / 120]
+[37 / 120]
+[40 / 120]
+[46 / 120]
+[50 / 120]
+[51 / 120]
+[52 / 120]
+[62 / 120]
+[64 / 120]
+[65 / 120]
+[69 / 120]
+[70 / 120]
+[71 / 120]
+[77 / 120]
+[78 / 120]
+[79 / 120]
+[84 / 120]
+[85 / 120]
+[86 / 120]
+[88 / 120]
+[89 / 120]
+[90 / 120]
+[91 / 120]
+[100 / 120]
+[101 / 120]
+[105 / 120]
+[108 / 120]
+[110 / 120]
+[111 / 120]
+[112 / 120]
+[114 / 120] NativeIslandOverlay
+[116 / 119] NativeIslandOverlay
+/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/Package.swift: NativeIslandOverlay: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/Package.swift: NativeIslandOverlay-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/usr/lib' not found
+/Users/abhishekthakur/Developer/agent-island/spikes/native-island-overlay/Package.swift: NativeIslandOverlay-product: ld: warning: search path '/Library/Developer/CommandLineTools/Developer/Library/Frameworks' not found
+[120 / 121] NativeIslandOverlay-product
+[121 / 121] NativeIslandOverlay-product
+Build complete! (53.61 sec)

@@ -1,0 +1,14 @@
+captured_at_utc=2026-07-18T19:21:53Z
+
+## CPU and memory
+Apple M3 Pro
+Mac15,6
+19327352832
+11
+11
+11
+1
+
+## Storage capacity (no volume UUIDs)
+Filesystem        Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s1s1   460Gi    12Gi    52Gi    19%    480k  549M    0%   /
