@@ -46,7 +46,9 @@ private func launchGUI() async {
     let delegate = AppDelegate(presentation: presentation, fixtureController: fixtureController)
     let app = NSApplication.shared
     app.delegate = delegate
-    app.setActivationPolicy(.regular)
+    // Ambient Island presentation is an accessory surface. Settings explicitly
+    // activates only when the person opens it from the system menu.
+    app.setActivationPolicy(.accessory)
     app.run()
 }
 

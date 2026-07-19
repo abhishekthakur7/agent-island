@@ -2,7 +2,7 @@
 
 The first production vertical slices for Linear tickets
 [AB-118](https://linear.app/abhithakur/issue/AB-118) through
-[AB-121](https://linear.app/abhithakur/issue/AB-121): a local macOS
+[AB-122](https://linear.app/abhithakur/issue/AB-122): a local macOS
 application accepts source-proven Agent Session observations from a
 controllable first-party Adapter fixture, commits immutable Normalized Event
 Facts, derives revisioned lifecycle projections, and renders the original
@@ -73,11 +73,13 @@ full-Xcode machine with `swift test`.
 swift run AgentIslandApp
 ```
 
-Opens a two-pane `NSWindow` (AppKit) hosting SwiftUI content: Agent Sessions
-on the left, Adapter fixture controls and a scenario log on the right. Every
+Starts the selected-display, non-activating Island Overlay and an Agent Island
+status-menu item. Open **Settings…** from that menu for the independently
+activating conventional window: it contains the display/presentation controls,
+Agent Sessions, Adapter fixture controls, and scenario log. Every fixture
 button submits through `AdapterIntakePort` — the same typed boundary a real
-Claude Code/Codex/Cursor Adapter would use — so triggering a scenario from
-the UI is real evidence, not a UI-only simulation.
+Claude Code/Codex/Cursor Adapter would use — so triggering a scenario from the
+UI is real evidence, not a UI-only simulation.
 
 ## Self-check (headless evidence capture)
 
@@ -97,12 +99,9 @@ harness cannot substitute for.
 
 ## What this slice deliberately does not do
 
-- **No Product action dispatch.** Horizon selection is local presentation
-  state only; it cannot acknowledge, complete, or otherwise mutate a Product
-  conversation.
-- **No non-activating Island Overlay panel.** This slice hosts SwiftUI
-  content in a standard `NSWindow`. The `NSPanel`-based non-activating
-  Overlay is AB-122, reusing the already-accepted AB-116 spike.
+- **No Product action dispatch.** The Island Overlay only hosts Horizon;
+  its controls cannot acknowledge, complete, navigate to, or otherwise mutate
+  an Agent Product conversation.
 - **No Product-supplied result/recap content yet.** The current Adapter
   contract admits operational metadata only. Horizon reserves an honest empty
   completion-recap state rather than inventing a result; later capability

@@ -90,5 +90,9 @@ let package = Package(
             name: "PresentationRuntimeTests",
             dependencies: ["SessionDomain", "PresentationPort", "PresentationRuntime"]
         ),
+        .testTarget(
+            name: "AgentIslandAppTests",
+            dependencies: ["AgentIslandApp"]
+        ),
     ]
 )
