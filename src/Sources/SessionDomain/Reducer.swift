@@ -70,4 +70,25 @@ public enum SessionReducer {
             ledgerRevision: ledgerRevision
         )
     }
+
+    /// Applied once, in memory only, to a projection freshly rebuilt from
+    /// durable facts at process start (AB-119 AC3). A restart cannot know
+    /// whether previously "live" execution is still true, so any non-terminal
+    /// session is presented as unresolved/degraded until a fresh fact commits
+    /// in this process — never by mutating the immutable fact ledger, and
+    /// never by fabricating a terminal outcome. An already-`.unavailable`
+    /// observation is preserved rather than weakened to `.degraded`.
+    public static func applyRestartBoundary(_ projection: SessionProjection) -> SessionProjection {
+        guard !projection.execution.isTerminal else { return projection }
+        let observation: ObservationState = projection.observation == .unavailable ? .unavailable : .degraded
+        return SessionProjection(
+            identity: projection.identity,
+            execution: .unresolved,
+            observation: observation,
+            displayTitle: projection.displayTitle,
+            hostLabel: projection.hostLabel,
+            sourceLastUpdated: projection.sourceLastUpdated,
+            ledgerRevision: projection.ledgerRevision
+        )
+    }
 }

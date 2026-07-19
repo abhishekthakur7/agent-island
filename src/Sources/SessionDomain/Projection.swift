@@ -28,7 +28,7 @@ public enum ObservationState: String, Sendable, Codable, Equatable {
 /// The derived, replaceable current view of one Agent Session. Distinct from
 /// `AgentSessionIdentity`, which never changes once established: everything
 /// else here is sourced evidence that can be revised or go unresolved.
-public struct SessionProjection: Sendable, Equatable {
+public struct SessionProjection: Sendable, Equatable, Codable {
     public let identity: AgentSessionIdentity
     public let execution: ExecutionState
     public let observation: ObservationState

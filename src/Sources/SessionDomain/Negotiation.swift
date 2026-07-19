@@ -112,6 +112,10 @@ public struct NegotiationSnapshot: Hashable, Sendable, Codable {
 public enum NegotiationOutcome: Sendable {
     case compatible(NegotiationSnapshot)
     case incompatible(reason: EnvelopeValidationError)
+    /// The negotiation was contract-compatible, but its durable write to the
+    /// protected store failed (AB-119). It never becomes usable in memory
+    /// without that durable write succeeding first.
+    case storageUnavailable(StorageFailureReason)
 }
 
 /// Pure negotiation decision. An unsupported contract major makes the

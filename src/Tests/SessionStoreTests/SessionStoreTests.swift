@@ -2,6 +2,7 @@ import XCTest
 import Foundation
 @testable import SessionDomain
 @testable import SessionStore
+@testable import ProtectedStore
 
 final class SessionStoreTests: XCTestCase {
     private let fixedDate = Date(timeIntervalSince1970: 1_752_000_000)
@@ -130,5 +131,129 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(diagnostics.count, 1)
         XCTAssertEqual(diagnostics[0].kind, .envelopeRejected)
         XCTAssertEqual(diagnostics[0].reason, .missingOrAmbiguousOwnerIdentity)
+    }
+
+    // MARK: - AB-119 protected-store-backed restart behavior
+    //
+    // NOTE: this sandbox has no XCTest runner (see src/README.md); these
+    // compile against the real SQLCipher target but must run under full
+    // Xcode/CI, same documented constraint as the AB-117 spike.
+
+    private func makeProtectedStore(root: URL, name: String = "store") -> ProtectedStore {
+        ProtectedStore(configuration: ProtectedStoreConfiguration(
+            databaseURL: root.appendingPathComponent("\(name).sqlite"),
+            keychainAccount: "ab119-sessionstore-\(UUID().uuidString)"
+        ))
+    }
+
+    func testDurableCommitReproducesSameIdentityAfterCleanRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab119-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let configuration = ProtectedStoreConfiguration(databaseURL: root.appendingPathComponent("store.sqlite"), keychainAccount: "ab119-restart-\(UUID().uuidString)")
+        let snap = snapshot()
+
+        let first = try SessionStore(protectedStore: ProtectedStore(configuration: configuration))
+        await first.registerNegotiation(snap)
+        let outcome = await first.intake(envelope(snapshot: snap, activityKind: .started, family: .sessionActivity), receiptTime: fixedDate)
+        guard case .committed = outcome else { return XCTFail("expected commit, got \(outcome)") }
+
+        let second = try SessionStore(protectedStore: ProtectedStore(configuration: configuration))
+        var revision: ProjectionRevision?
+        for await value in await second.presentationStream() {
+            revision = value
+            break
+        }
+
+        let identity = AgentSessionIdentity(productNamespace: ProductNamespace("claude-code"), nativeSessionID: NativeSessionID("sess_1"))
+        let card = revision?.sessions[identity]
+        XCTAssertNotNil(card, "the same native identity must reappear after a clean restart, not a replacement built from display metadata")
+        XCTAssertEqual(card?.identity, identity)
+    }
+
+    func testNonTerminalSessionIsDegradedAfterRestartUntilFreshFactArrives() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab119-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let configuration = ProtectedStoreConfiguration(databaseURL: root.appendingPathComponent("store.sqlite"), keychainAccount: "ab119-degrade-\(UUID().uuidString)")
+        let snap = snapshot()
+        let identity = AgentSessionIdentity(productNamespace: ProductNamespace("claude-code"), nativeSessionID: NativeSessionID("sess_1"))
+
+        let first = try SessionStore(protectedStore: ProtectedStore(configuration: configuration))
+        await first.registerNegotiation(snap)
+        _ = await first.intake(envelope(snapshot: snap, activityKind: .started, family: .sessionActivity), receiptTime: fixedDate)
+        _ = await first.intake(envelope(snapshot: snap, eventID: "evt_working", activityKind: .working, family: .sessionActivity), receiptTime: fixedDate)
+
+        // Restart: no lease, callback token, or Host locator can have
+        // survived, so the previously "working" session must present as
+        // unresolved/degraded, never silently as still working.
+        let second = try SessionStore(protectedStore: ProtectedStore(configuration: configuration))
+        var revision: ProjectionRevision?
+        for await value in await second.presentationStream() {
+            revision = value
+            break
+        }
+        XCTAssertEqual(revision?.sessions[identity]?.execution, .unresolved)
+        XCTAssertEqual(revision?.sessions[identity]?.observation, .degraded)
+
+        // A fresh, documented source observation resolves it again — the
+        // degraded placeholder never overrides new canonical evidence.
+        await second.registerNegotiation(snap)
+        _ = await second.intake(envelope(snapshot: snap, eventID: "evt_completed", activityKind: .completed, family: .sessionActivity), receiptTime: fixedDate)
+        var resolved: ProjectionRevision?
+        for await value in await second.presentationStream() {
+            resolved = value
+            break
+        }
+        XCTAssertEqual(resolved?.sessions[identity]?.execution, .terminalCompleted)
+    }
+
+    func testTerminalSessionIsNotDegradedAfterRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab119-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let configuration = ProtectedStoreConfiguration(databaseURL: root.appendingPathComponent("store.sqlite"), keychainAccount: "ab119-terminal-\(UUID().uuidString)")
+        let snap = snapshot()
+        let identity = AgentSessionIdentity(productNamespace: ProductNamespace("claude-code"), nativeSessionID: NativeSessionID("sess_1"))
+
+        let first = try SessionStore(protectedStore: ProtectedStore(configuration: configuration))
+        await first.registerNegotiation(snap)
+        _ = await first.intake(envelope(snapshot: snap, activityKind: .started, family: .sessionActivity), receiptTime: fixedDate)
+        _ = await first.intake(envelope(snapshot: snap, eventID: "evt_completed", activityKind: .completed, family: .sessionActivity), receiptTime: fixedDate)
+
+        let second = try SessionStore(protectedStore: ProtectedStore(configuration: configuration))
+        var revision: ProjectionRevision?
+        for await value in await second.presentationStream() {
+            revision = value
+            break
+        }
+        XCTAssertEqual(revision?.sessions[identity]?.execution, .terminalCompleted, "a terminal outcome must never be manufactured or degraded by a restart")
+    }
+
+    func testStorageFailureReturnsStorageUnavailableWithoutMutatingLedger() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab119-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let protectedStore = makeProtectedStore(root: root)
+        let store = try SessionStore(protectedStore: protectedStore)
+        let snap = snapshot()
+        await store.registerNegotiation(snap)
+
+        protectedStore.deleteKeychainKeyForTestOnly()
+
+        let outcome = await store.intake(envelope(snapshot: snap), receiptTime: fixedDate)
+        XCTAssertEqual(outcome, .storageUnavailable(.keychainKeyMissing))
+
+        var revision: ProjectionRevision?
+        for await value in await store.presentationStream() {
+            revision = value
+            break
+        }
+        XCTAssertEqual(revision?.ledgerRevision, 0, "a failed durable write must leave the in-memory ledger exactly as it was")
+        XCTAssertEqual(revision?.sessions.count, 0)
     }
 }

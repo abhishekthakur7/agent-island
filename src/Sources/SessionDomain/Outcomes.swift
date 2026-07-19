@@ -21,8 +21,25 @@ public struct ObservationBoundaryReport: Sendable {
     }
 }
 
+/// Redacted storage-fault reason for the protected canonical store (AB-119).
+/// No path, key, SQL, or payload ever attaches to a case here — only a
+/// stable, presentable reason a person can act on.
+public enum StorageFailureReason: String, Sendable, Equatable, Codable {
+    case keychainKeyMissing
+    case integrityCheckFailed
+    case interruptedWrite
+    case unsupportedSchema
+    case migrationFailed
+    case unavailable
+}
+
 public enum IntakeOutcome: Sendable, Equatable {
     case committed(ledgerRevision: Int64)
     case duplicateIgnored(ledgerRevision: Int64)
     case rejected(EnvelopeValidationError)
+    /// The envelope validated, but the protected store fail-closed before the
+    /// fact could be durably committed. No ghost card is created: an
+    /// in-memory-only projection never advances without a matching durable
+    /// write (AB-119 AC1).
+    case storageUnavailable(StorageFailureReason)
 }

@@ -31,8 +31,9 @@ public actor ApplicationRuntime: AdapterIntakePort, PresentationPort {
             id: NegotiationSnapshotID(idGenerator()),
             negotiatedAt: clock()
         )
-        if case .compatible(let snapshot) = outcome {
-            await store.registerNegotiation(snapshot)
+        guard case .compatible(let snapshot) = outcome else { return outcome }
+        if let failure = await store.registerNegotiation(snapshot) {
+            return .storageUnavailable(failure)
         }
         return outcome
     }

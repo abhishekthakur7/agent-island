@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "AdapterPort", targets: ["AdapterPort"]),
         .library(name: "PresentationPort", targets: ["PresentationPort"]),
         .library(name: "SessionStore", targets: ["SessionStore"]),
+        .library(name: "ProtectedStore", targets: ["ProtectedStore"]),
         .library(name: "ApplicationRuntime", targets: ["ApplicationRuntime"]),
         .library(name: "AdapterFixtureKit", targets: ["AdapterFixtureKit"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
@@ -29,7 +30,20 @@ let package = Package(
 
         // Single-writer canonical fact ledger and deterministic projection
         // cache. Depends only on the domain; no port or UI may reach it.
-        .target(name: "SessionStore", dependencies: ["SessionDomain"]),
+        .target(name: "SessionStore", dependencies: ["SessionDomain", "ProtectedStore"]),
+
+        // Deliberately supplied by Homebrew/pkg-config rather than silently
+        // falling back to Apple's unencrypted libsqlite3 (AB-119/ADR 0008).
+        .systemLibrary(
+            name: "SQLCipher",
+            pkgConfig: "sqlcipher",
+            providers: [.brew(["sqlcipher"])]
+        ),
+
+        // The encrypted, per-installation-Keychain-keyed canonical store.
+        // Only `SessionStore` may hold a `ProtectedStore` handle; it is the
+        // single writer per ADR 0008/0001.
+        .target(name: "ProtectedStore", dependencies: ["SessionDomain", "SQLCipher"]),
 
         // Intake orchestration: implements AdapterPort inbound and
         // PresentationPort outbound, the only component allowed to hold the
@@ -61,11 +75,13 @@ let package = Package(
                 "ApplicationRuntime",
                 "AdapterFixtureKit",
                 "PresentationRuntime",
+                "ProtectedStore",
             ]
         ),
 
         .testTarget(name: "SessionDomainTests", dependencies: ["SessionDomain"]),
-        .testTarget(name: "SessionStoreTests", dependencies: ["SessionDomain", "SessionStore"]),
+        .testTarget(name: "SessionStoreTests", dependencies: ["SessionDomain", "SessionStore", "ProtectedStore"]),
+        .testTarget(name: "ProtectedStoreTests", dependencies: ["SessionDomain", "ProtectedStore"]),
         .testTarget(
             name: "ApplicationRuntimeTests",
             dependencies: ["SessionDomain", "AdapterPort", "PresentationPort", "SessionStore", "ApplicationRuntime", "AdapterFixtureKit"]

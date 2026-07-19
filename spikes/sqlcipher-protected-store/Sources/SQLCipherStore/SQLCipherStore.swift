@@ -317,8 +317,10 @@ private final class CipherDatabase {
         return records
     }
 
+    // `cipher_integrity_check` returns one row *per problem found* — zero
+    // rows means no problems, not a single "ok" row like `integrity_check`.
     func verify(expectedSchema: Int?) throws {
-        guard let cipherResult = try scalarText("PRAGMA cipher_integrity_check;"), cipherResult.lowercased() == "ok",
+        guard try scalarText("PRAGMA cipher_integrity_check;") == nil,
               let integrity = try scalarText("PRAGMA integrity_check;"), integrity.lowercased() == "ok" else {
             throw ProtectedStoreFailure.integrityCheckFailed
         }
