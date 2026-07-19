@@ -98,8 +98,12 @@ private struct AgentSessionCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(card.execution.rawValue)
+                Text(card.visibleLifecycle.rawValue)
                     .font(.caption.bold())
+                if card.attention != .none {
+                    Text(card.attention.rawValue)
+                        .font(.caption)
+                }
                 Text(card.observation.rawValue)
                     .font(.caption)
                     .foregroundStyle(.secondary)

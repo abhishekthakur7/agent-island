@@ -10,6 +10,8 @@ public struct AgentSessionCardSnapshot: Identifiable, Sendable, Equatable {
     public let nativeSessionID: String
     public let execution: ExecutionState
     public let observation: ObservationState
+    public let attention: AttentionState
+    public let visibleLifecycle: VisibleLifecycleState
     public let displayTitle: String?
     public let hostLabel: String?
     public let ledgerRevision: Int64
@@ -20,6 +22,8 @@ public struct AgentSessionCardSnapshot: Identifiable, Sendable, Equatable {
         self.nativeSessionID = projection.identity.nativeSessionID.rawValue
         self.execution = projection.execution
         self.observation = projection.observation
+        self.attention = projection.attention
+        self.visibleLifecycle = projection.visibleLifecycle
         self.displayTitle = projection.displayTitle
         self.hostLabel = projection.hostLabel
         self.ledgerRevision = projection.ledgerRevision

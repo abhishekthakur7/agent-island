@@ -27,6 +27,11 @@ public enum EventFamily: String, Sendable, Codable {
     case observationBoundary
     case sessionDeclared
     case sessionActivity
+    case turnDeclared
+    case turnLineage
+    case subagentRunDeclared
+    case attentionRequest
+    case reconciliation
 }
 
 public enum SessionActivityKind: String, Sendable, Codable {
@@ -41,6 +46,59 @@ public enum SessionActivityKind: String, Sendable, Codable {
 public enum ObservationBoundaryReason: String, Sendable, Codable {
     case transportLost
     case integrationStopped
+}
+
+/// Product ordering evidence. Receipt ordinal is deliberately not represented
+/// here: it is an audit coordinate and cannot create lifecycle truth.
+public struct SourceCursor: Hashable, Sendable, Codable {
+    public let scope: String
+    public let value: Int64
+
+    public init(scope: String, value: Int64) {
+        self.scope = scope
+        self.value = value
+    }
+}
+
+public enum TurnLineageKind: String, Sendable, Codable {
+    case current
+    case historical
+    case ambiguous
+}
+
+public enum AttentionRequestKind: String, Sendable, Codable {
+    case opened
+    case resolved
+}
+
+/// A documented reconciliation has authority only within this explicit
+/// scope. Omission from a non-exhaustive list is not Product lifecycle truth.
+public enum ReconciliationScope: String, Sendable, Codable {
+    case authoritativeExhaustive
+    case nonExhaustive
+    case continuityUnavailable
+}
+
+/// Native ownership identifiers supplied by the Agent Product. They are
+/// optional because a session-level fact need not name a Turn or child, but
+/// none may be invented from presentation data.
+public struct LifecycleOwnership: Hashable, Sendable, Codable {
+    public let nativeTurnID: String?
+    public let replacedNativeTurnID: String?
+    public let nativeSubagentRunID: String?
+    public let nativeAttentionRequestID: String?
+
+    public init(
+        nativeTurnID: String? = nil,
+        replacedNativeTurnID: String? = nil,
+        nativeSubagentRunID: String? = nil,
+        nativeAttentionRequestID: String? = nil
+    ) {
+        self.nativeTurnID = nativeTurnID
+        self.replacedNativeTurnID = replacedNativeTurnID
+        self.nativeSubagentRunID = nativeSubagentRunID
+        self.nativeAttentionRequestID = nativeAttentionRequestID
+    }
 }
 
 /// The untrusted envelope an Adapter (or fixture) submits through the typed
@@ -63,6 +121,11 @@ public struct RawEventEnvelope: Sendable {
     public let occurrenceTime: Date?
     public let displayTitle: String?
     public let hostLabel: String?
+    public let sourceCursor: SourceCursor?
+    public let ownership: LifecycleOwnership?
+    public let turnLineage: TurnLineageKind?
+    public let attentionKind: AttentionRequestKind?
+    public let reconciliationScope: ReconciliationScope?
 
     public init(
         negotiationSnapshotID: NegotiationSnapshotID,
@@ -79,7 +142,12 @@ public struct RawEventEnvelope: Sendable {
         payloadByteSize: Int,
         occurrenceTime: Date? = nil,
         displayTitle: String? = nil,
-        hostLabel: String? = nil
+        hostLabel: String? = nil,
+        sourceCursor: SourceCursor? = nil,
+        ownership: LifecycleOwnership? = nil,
+        turnLineage: TurnLineageKind? = nil,
+        attentionKind: AttentionRequestKind? = nil,
+        reconciliationScope: ReconciliationScope? = nil
     ) {
         self.negotiationSnapshotID = negotiationSnapshotID
         self.integrationInstanceID = integrationInstanceID
@@ -96,6 +164,11 @@ public struct RawEventEnvelope: Sendable {
         self.occurrenceTime = occurrenceTime
         self.displayTitle = displayTitle
         self.hostLabel = hostLabel
+        self.sourceCursor = sourceCursor
+        self.ownership = ownership
+        self.turnLineage = turnLineage
+        self.attentionKind = attentionKind
+        self.reconciliationScope = reconciliationScope
     }
 }
 
@@ -117,6 +190,11 @@ public struct NormalizedEventFact: Hashable, Sendable, Codable {
     public let receiptTime: Date
     public let displayTitle: String?
     public let hostLabel: String?
+    public let sourceCursor: SourceCursor?
+    public let ownership: LifecycleOwnership?
+    public let turnLineage: TurnLineageKind?
+    public let attentionKind: AttentionRequestKind?
+    public let reconciliationScope: ReconciliationScope?
 
     public init(
         receiptOrdinal: Int64,
@@ -132,7 +210,12 @@ public struct NormalizedEventFact: Hashable, Sendable, Codable {
         occurrenceTime: Date?,
         receiptTime: Date,
         displayTitle: String?,
-        hostLabel: String?
+        hostLabel: String?,
+        sourceCursor: SourceCursor? = nil,
+        ownership: LifecycleOwnership? = nil,
+        turnLineage: TurnLineageKind? = nil,
+        attentionKind: AttentionRequestKind? = nil,
+        reconciliationScope: ReconciliationScope? = nil
     ) {
         self.receiptOrdinal = receiptOrdinal
         self.identity = identity
@@ -148,6 +231,11 @@ public struct NormalizedEventFact: Hashable, Sendable, Codable {
         self.receiptTime = receiptTime
         self.displayTitle = displayTitle
         self.hostLabel = hostLabel
+        self.sourceCursor = sourceCursor
+        self.ownership = ownership
+        self.turnLineage = turnLineage
+        self.attentionKind = attentionKind
+        self.reconciliationScope = reconciliationScope
     }
 
     public func withReceiptOrdinal(_ ordinal: Int64) -> NormalizedEventFact {
@@ -165,7 +253,12 @@ public struct NormalizedEventFact: Hashable, Sendable, Codable {
             occurrenceTime: occurrenceTime,
             receiptTime: receiptTime,
             displayTitle: displayTitle,
-            hostLabel: hostLabel
+            hostLabel: hostLabel,
+            sourceCursor: sourceCursor,
+            ownership: ownership,
+            turnLineage: turnLineage,
+            attentionKind: attentionKind,
+            reconciliationScope: reconciliationScope
         )
     }
 

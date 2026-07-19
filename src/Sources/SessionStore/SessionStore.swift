@@ -14,7 +14,7 @@ import ProtectedStore
 public actor SessionStore {
     private var negotiations: [NegotiationSnapshotID: NegotiationSnapshot] = [:]
     private var facts: [NormalizedEventFact] = []
-    private var seenKeys: Set<NormalizedEventFact.DeduplicationKey> = []
+    private var seenFactsByKey: [NormalizedEventFact.DeduplicationKey: NormalizedEventFact] = [:]
     private var nextOrdinal: Int64 = 1
     private var currentRevision: Int64 = 0
     private var projections: [AgentSessionIdentity: SessionProjection] = [:]
@@ -44,7 +44,9 @@ public actor SessionStore {
         }
 
         facts = loaded.facts.sorted { $0.receiptOrdinal < $1.receiptOrdinal }
-        seenKeys = Set(facts.map(\.deduplicationKey))
+        for fact in facts where seenFactsByKey[fact.deduplicationKey] == nil {
+            seenFactsByKey[fact.deduplicationKey] = fact
+        }
         nextOrdinal = (facts.map(\.receiptOrdinal).max() ?? 0) + 1
         currentRevision = facts.map(\.receiptOrdinal).max() ?? 0
 
@@ -98,9 +100,19 @@ public actor SessionStore {
 
         case .accepted(let candidate):
             let key = candidate.deduplicationKey
-            if seenKeys.contains(key) {
-                record(.init(kind: .duplicateDeliverySuppressed, reason: nil, ledgerRevision: currentRevision, at: receiptTime))
-                return .duplicateIgnored(ledgerRevision: currentRevision)
+            if let existing = seenFactsByKey[key] {
+                // A stable Product source-event ID is idempotent. A weak key
+                // may suppress only a documented replay of the same claim;
+                // a collision is retained so the reducer can present the
+                // resulting ambiguity instead of silently merging work.
+                if case .stable = candidate.eventIdentity {
+                    record(.init(kind: .duplicateDeliverySuppressed, reason: nil, ledgerRevision: currentRevision, at: receiptTime))
+                    return .duplicateIgnored(ledgerRevision: currentRevision)
+                }
+                if sameWeakClaim(existing, candidate) {
+                    record(.init(kind: .duplicateDeliverySuppressed, reason: nil, ledgerRevision: currentRevision, at: receiptTime))
+                    return .duplicateIgnored(ledgerRevision: currentRevision)
+                }
             }
 
             let ordinal = nextOrdinal
@@ -120,7 +132,7 @@ public actor SessionStore {
 
             nextOrdinal += 1
             facts.append(fact)
-            seenKeys.insert(key)
+            if seenFactsByKey[key] == nil { seenFactsByKey[key] = fact }
             currentRevision = ordinal
             projections[fact.identity] = projection
 
@@ -155,5 +167,9 @@ public actor SessionStore {
 
     private func record(_ entry: DiagnosticRecord) {
         diagnostics.append(entry)
+    }
+
+    private func sameWeakClaim(_ lhs: NormalizedEventFact, _ rhs: NormalizedEventFact) -> Bool {
+        lhs.identity == rhs.identity && lhs.family == rhs.family && lhs.activityKind == rhs.activityKind && lhs.boundaryReason == rhs.boundaryReason && lhs.sourceCursor == rhs.sourceCursor && lhs.ownership == rhs.ownership && lhs.turnLineage == rhs.turnLineage && lhs.attentionKind == rhs.attentionKind && lhs.reconciliationScope == rhs.reconciliationScope
     }
 }

@@ -78,6 +78,33 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(received?.sessions.count, 1)
     }
 
+    func testWeakKeyCollisionIsRetainedAndMakesProjectionUnresolved() async {
+        let store = SessionStore()
+        let snap = snapshot()
+        await store.registerNegotiation(snap)
+
+        let first = RawEventEnvelope(
+            negotiationSnapshotID: snap.id, integrationInstanceID: snap.integrationInstanceID, contractVersion: snap.contractVersion,
+            productNamespace: "claude-code", nativeSessionID: "sess_1", eventIdentity: .weak("replayed-observation"),
+            family: .sessionActivity, sourceVariant: "fixture.activity", activityKind: .working,
+            classification: .operationalMetadata, payloadByteSize: 64
+        )
+        let collision = RawEventEnvelope(
+            negotiationSnapshotID: snap.id, integrationInstanceID: snap.integrationInstanceID, contractVersion: snap.contractVersion,
+            productNamespace: "claude-code", nativeSessionID: "sess_1", eventIdentity: .weak("replayed-observation"),
+            family: .sessionActivity, sourceVariant: "fixture.activity", activityKind: .completed,
+            classification: .operationalMetadata, payloadByteSize: 64
+        )
+        let firstOutcome = await store.intake(first, receiptTime: fixedDate)
+        let collisionOutcome = await store.intake(collision, receiptTime: fixedDate)
+        XCTAssertEqual(firstOutcome, .committed(ledgerRevision: 1))
+        XCTAssertEqual(collisionOutcome, .committed(ledgerRevision: 2))
+
+        var received: ProjectionRevision?
+        for await value in await store.presentationStream() { received = value; break }
+        XCTAssertEqual(received?.sessions.values.first?.execution, .unresolved)
+    }
+
     func testRejectedEnvelopeProducesNoCardAndNoRevisionBump() async {
         let store = SessionStore()
         let snap = snapshot()

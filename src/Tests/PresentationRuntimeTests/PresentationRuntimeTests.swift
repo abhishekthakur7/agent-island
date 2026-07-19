@@ -44,6 +44,7 @@ final class PresentationRuntimeTests: XCTestCase {
         XCTAssertEqual(card?.nativeSessionID, "sess_1")
         XCTAssertNil(card?.displayTitle, "unavailable sourced metadata must be omitted, never invented")
         XCTAssertNil(card?.hostLabel)
+        XCTAssertEqual(card?.visibleLifecycle, .working)
     }
 
     func testCardSurfacesSourcedFieldsWhenPresent() async {
@@ -64,6 +65,20 @@ final class PresentationRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.cards.first?.displayTitle, "Refactor billing service")
         XCTAssertEqual(runtime.cards.first?.hostLabel, "iTerm2")
         XCTAssertEqual(runtime.cards.first?.execution, .waiting)
+    }
+
+    func testCardExposesNonColorAttentionLifecycleLabel() async {
+        let projection = SessionProjection(
+            identity: identity, execution: .waiting, observation: .fresh,
+            displayTitle: nil, hostLabel: nil, sourceLastUpdated: nil, ledgerRevision: 1,
+            attention: .pending
+        )
+        let runtime = PresentationRuntime(port: FakePresentationPort(revisions: [
+            ProjectionRevision(ledgerRevision: 1, sessions: [identity: projection]),
+        ]))
+        await waitUntil { runtime.cards.count == 1 }
+        XCTAssertEqual(runtime.cards.first?.visibleLifecycle, .needsAttention)
+        XCTAssertEqual(runtime.cards.first?.attention, .pending)
     }
 
     func testLedgerRevisionTracksLatestPublishedRevision() async {

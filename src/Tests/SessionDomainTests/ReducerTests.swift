@@ -16,6 +16,11 @@ final class ReducerTests: XCTestCase {
         family: EventFamily,
         activityKind: SessionActivityKind? = nil,
         boundaryReason: ObservationBoundaryReason? = nil,
+        sourceCursor: SourceCursor? = nil,
+        ownership: LifecycleOwnership? = nil,
+        turnLineage: TurnLineageKind? = nil,
+        attentionKind: AttentionRequestKind? = nil,
+        reconciliationScope: ReconciliationScope? = nil,
         eventID: String
     ) -> NormalizedEventFact {
         NormalizedEventFact(
@@ -32,7 +37,12 @@ final class ReducerTests: XCTestCase {
             occurrenceTime: nil,
             receiptTime: fixedDate,
             displayTitle: nil,
-            hostLabel: nil
+            hostLabel: nil,
+            sourceCursor: sourceCursor,
+            ownership: ownership,
+            turnLineage: turnLineage,
+            attentionKind: attentionKind,
+            reconciliationScope: reconciliationScope
         )
     }
 
@@ -109,5 +119,79 @@ final class ReducerTests: XCTestCase {
 
         XCTAssertEqual(projection.execution, .unresolved)
         XCTAssertEqual(projection.identity, identity)
+    }
+
+    func testReplayAndRebuildProduceIdenticalRevisionedProjection() {
+        let history = [
+            fact(ordinal: 1, family: .sessionActivity, activityKind: .started, sourceCursor: .init(scope: "session", value: 1), eventID: "e1"),
+            fact(ordinal: 2, family: .sessionActivity, activityKind: .waiting, sourceCursor: .init(scope: "session", value: 2), eventID: "e2"),
+        ]
+        XCTAssertEqual(SessionReducer.reduce(history: history, ledgerRevision: 2), SessionReducer.reduce(history: history, ledgerRevision: 2))
+    }
+
+    func testCursorGapOrResetMakesLifecycleUnresolvedInsteadOfGuessingOrder() {
+        let gap = [
+            fact(ordinal: 1, family: .sessionActivity, activityKind: .started, sourceCursor: .init(scope: "session", value: 1), eventID: "e1"),
+            fact(ordinal: 2, family: .sessionActivity, activityKind: .completed, sourceCursor: .init(scope: "session", value: 3), eventID: "e3"),
+        ]
+        let reset = [
+            fact(ordinal: 1, family: .sessionActivity, activityKind: .started, sourceCursor: .init(scope: "session", value: 4), eventID: "e4"),
+            fact(ordinal: 2, family: .sessionActivity, activityKind: .completed, sourceCursor: .init(scope: "session", value: 1), eventID: "e1"),
+        ]
+        XCTAssertEqual(SessionReducer.reduce(history: gap, ledgerRevision: 2).execution, .unresolved)
+        XCTAssertEqual(SessionReducer.reduce(history: gap, ledgerRevision: 2).observation, .gap)
+        XCTAssertEqual(SessionReducer.reduce(history: reset, ledgerRevision: 2).execution, .unresolved)
+    }
+
+    func testConflictingComparableTerminalFactsAreUnresolvedEvenAtEqualTimes() {
+        let history = [
+            fact(ordinal: 1, family: .sessionActivity, activityKind: .started, sourceCursor: .init(scope: "session", value: 1), eventID: "e1"),
+            fact(ordinal: 2, family: .sessionActivity, activityKind: .completed, sourceCursor: .init(scope: "session", value: 2), eventID: "e2"),
+            fact(ordinal: 3, family: .sessionActivity, activityKind: .failed, sourceCursor: .init(scope: "session", value: 3), eventID: "e3"),
+        ]
+        XCTAssertEqual(SessionReducer.reduce(history: history, ledgerRevision: 3).execution, .unresolved)
+    }
+
+    func testRewindPreservesHistoricalTurnAndLateHistoricalActivityCannotOverwriteCurrentTurn() {
+        let first = LifecycleOwnership(nativeTurnID: "turn-1")
+        let second = LifecycleOwnership(nativeTurnID: "turn-2", replacedNativeTurnID: "turn-1")
+        let history = [
+            fact(ordinal: 1, family: .turnDeclared, sourceCursor: .init(scope: "session", value: 1), ownership: first, eventID: "t1"),
+            fact(ordinal: 2, family: .sessionActivity, activityKind: .started, sourceCursor: .init(scope: "session", value: 2), ownership: first, eventID: "a1"),
+            fact(ordinal: 3, family: .turnLineage, sourceCursor: .init(scope: "session", value: 3), ownership: first, turnLineage: .historical, eventID: "h1"),
+            fact(ordinal: 4, family: .turnLineage, sourceCursor: .init(scope: "session", value: 4), ownership: second, turnLineage: .current, eventID: "c2"),
+            fact(ordinal: 5, family: .sessionActivity, activityKind: .working, sourceCursor: .init(scope: "session", value: 5), ownership: second, eventID: "a2"),
+            fact(ordinal: 6, family: .sessionActivity, activityKind: .completed, sourceCursor: .init(scope: "session", value: 6), ownership: first, eventID: "late"),
+        ]
+        let projection = SessionReducer.reduce(history: history, ledgerRevision: 6)
+        XCTAssertEqual(projection.execution, .working)
+        XCTAssertEqual(projection.turns.first { $0.nativeTurnID == "turn-1" }?.lineage, .historical)
+        XCTAssertEqual(projection.turns.first { $0.nativeTurnID == "turn-2" }?.lineage, .current)
+    }
+
+    func testActiveChildOrPendingAttentionPreventsConfidentParentTerminalPresentation() {
+        let child = LifecycleOwnership(nativeSubagentRunID: "child-1")
+        let attention = LifecycleOwnership(nativeAttentionRequestID: "attention-1")
+        let history = [
+            fact(ordinal: 1, family: .sessionActivity, activityKind: .started, sourceCursor: .init(scope: "session", value: 1), eventID: "s"),
+            fact(ordinal: 2, family: .subagentRunDeclared, sourceCursor: .init(scope: "session", value: 2), ownership: child, eventID: "c"),
+            fact(ordinal: 3, family: .sessionActivity, activityKind: .working, sourceCursor: .init(scope: "session", value: 3), ownership: child, eventID: "cw"),
+            fact(ordinal: 4, family: .attentionRequest, sourceCursor: .init(scope: "session", value: 4), ownership: attention, attentionKind: .opened, eventID: "attention"),
+            fact(ordinal: 5, family: .sessionActivity, activityKind: .completed, sourceCursor: .init(scope: "session", value: 5), eventID: "done"),
+        ]
+        let projection = SessionReducer.reduce(history: history, ledgerRevision: 5)
+        XCTAssertEqual(projection.execution, .unresolved)
+        XCTAssertEqual(projection.attention, .pending)
+        XCTAssertEqual(projection.visibleLifecycle, .needsAttention)
+    }
+
+    func testNonExhaustiveReconciliationNeverInfersCompletion() {
+        let history = [
+            fact(ordinal: 1, family: .sessionActivity, activityKind: .working, sourceCursor: .init(scope: "session", value: 1), eventID: "work"),
+            fact(ordinal: 2, family: .reconciliation, sourceCursor: .init(scope: "session", value: 2), reconciliationScope: .nonExhaustive, eventID: "list"),
+        ]
+        let projection = SessionReducer.reduce(history: history, ledgerRevision: 2)
+        XCTAssertEqual(projection.execution, .unresolved)
+        XCTAssertEqual(projection.observation, .gap)
     }
 }

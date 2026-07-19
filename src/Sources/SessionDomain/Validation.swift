@@ -72,6 +72,16 @@ public enum SessionDomainValidator {
             guard envelope.activityKind != nil else { return .rejected(.malformedShape) }
         case .observationBoundary:
             guard envelope.boundaryReason != nil else { return .rejected(.malformedShape) }
+        case .turnDeclared:
+            guard envelope.ownership?.nativeTurnID != nil else { return .rejected(.malformedShape) }
+        case .subagentRunDeclared:
+            guard envelope.ownership?.nativeSubagentRunID != nil else { return .rejected(.malformedShape) }
+        case .turnLineage:
+            guard envelope.ownership?.nativeTurnID != nil, envelope.turnLineage != nil else { return .rejected(.malformedShape) }
+        case .attentionRequest:
+            guard envelope.ownership?.nativeAttentionRequestID != nil, envelope.attentionKind != nil else { return .rejected(.malformedShape) }
+        case .reconciliation:
+            guard envelope.reconciliationScope != nil else { return .rejected(.malformedShape) }
         }
 
         let identity = AgentSessionIdentity(
@@ -92,7 +102,12 @@ public enum SessionDomainValidator {
             occurrenceTime: envelope.occurrenceTime,
             receiptTime: receiptTime,
             displayTitle: envelope.displayTitle,
-            hostLabel: envelope.hostLabel
+            hostLabel: envelope.hostLabel,
+            sourceCursor: envelope.sourceCursor,
+            ownership: envelope.ownership,
+            turnLineage: envelope.turnLineage,
+            attentionKind: envelope.attentionKind,
+            reconciliationScope: envelope.reconciliationScope
         )
         return .accepted(fact)
     }
