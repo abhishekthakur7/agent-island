@@ -30,6 +30,21 @@ public final class PresentationRuntime: ObservableObject {
         ledgerRevision = revision.ledgerRevision
         cards = revision.sessions.values
             .map(AgentSessionCardSnapshot.init(projection:))
-            .sorted { $0.nativeSessionID < $1.nativeSessionID }
+            .sorted { lhs, rhs in
+                // Horizon is a chronological flow. Source time is only used
+                // when supplied by the Agent Product; stable identity makes
+                // unsupplied/equal times deterministic without inventing an
+                // order from receipt delivery.
+                switch (lhs.sourceLastUpdated, rhs.sourceLastUpdated) {
+                case let (left?, right?) where left != right:
+                    return left > right
+                case (.some, .none):
+                    return true
+                case (.none, .some):
+                    return false
+                default:
+                    return lhs.id < rhs.id
+                }
+            }
     }
 }

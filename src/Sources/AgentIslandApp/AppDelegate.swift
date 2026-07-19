@@ -9,6 +9,7 @@ import PresentationRuntime
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let presentation: PresentationRuntime
     private let fixtureController: FixtureController
+    private let horizon = HorizonController()
     private var window: NSWindow?
 
     init(presentation: PresentationRuntime, fixtureController: FixtureController) {
@@ -17,11 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let contentView = ContentView(presentation: presentation, fixtureController: fixtureController)
+        let contentView = ContentView(presentation: presentation, fixtureController: fixtureController, horizon: horizon)
         let hostingView = NSHostingView(rootView: contentView)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

@@ -1,3 +1,4 @@
+import Foundation
 import SessionDomain
 import AdapterPort
 
@@ -199,5 +200,68 @@ public enum FixtureScenarios {
         if case .committed = boundary {} else { ok = false }
 
         return FixtureScenarioResult(name: "transportLoss", steps: steps, succeeded: ok)
+    }
+
+    /// A source-proven 30-session working set for Horizon's density and
+    /// hierarchy states. It deliberately supplies only title/Host and native
+    /// child identity: unavailable project, model, prompt, task, and recap
+    /// fields must remain absent in presentation.
+    public static func horizonWorkingSet(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(
+                name: "horizonWorkingSet",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")],
+                succeeded: false
+            )
+        }
+
+        var succeeded = true
+        for index in 0..<30 {
+            let sessionID = String(format: "sess_horizon_%02d", index)
+            let declared = await fixture.deliverSessionDeclared(
+                snapshot: snapshot,
+                nativeSessionID: sessionID,
+                displayTitle: "Horizon fixture session \(index + 1)",
+                hostLabel: index.isMultiple(of: 2) ? "iTerm2" : nil
+            )
+            let started = await fixture.deliverActivity(snapshot: snapshot, nativeSessionID: sessionID, kind: .started)
+            if case .committed = declared {} else { succeeded = false }
+            if case .committed = started {} else { succeeded = false }
+        }
+
+        let attention = await fixture.deliverAttentionRequest(
+            snapshot: snapshot,
+            nativeSessionID: "sess_horizon_00",
+            nativeAttentionRequestID: "attention_horizon_00",
+            kind: .opened
+        )
+        let completed = await fixture.deliverActivity(snapshot: snapshot, nativeSessionID: "sess_horizon_01", kind: .completed)
+        let child = await fixture.deliverSubagentRunDeclared(
+            snapshot: snapshot,
+            nativeSessionID: "sess_horizon_02",
+            nativeTurnID: "turn_horizon_02",
+            nativeSubagentRunID: "subagent_horizon_02"
+        )
+        let childWorking = await fixture.deliverSubagentActivity(
+            snapshot: snapshot,
+            nativeSessionID: "sess_horizon_02",
+            nativeSubagentRunID: "subagent_horizon_02",
+            kind: .working
+        )
+        for outcome in [attention, completed, child, childWorking] {
+            if case .committed = outcome {} else { succeeded = false }
+        }
+
+        return FixtureScenarioResult(
+            name: "horizonWorkingSet",
+            steps: [
+                FixtureTraceStep(label: "workingSet", outcome: "30 source-proven Agent Sessions"),
+                FixtureTraceStep(label: "attention", outcome: "one pending Attention Request"),
+                FixtureTraceStep(label: "completion", outcome: "one completed Agent Session"),
+                FixtureTraceStep(label: "subagentRun", outcome: "one source-proven child without task detail"),
+            ],
+            succeeded: succeeded
+        )
     }
 }

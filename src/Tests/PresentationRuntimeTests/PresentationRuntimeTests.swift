@@ -44,6 +44,9 @@ final class PresentationRuntimeTests: XCTestCase {
         XCTAssertEqual(card?.nativeSessionID, "sess_1")
         XCTAssertNil(card?.displayTitle, "unavailable sourced metadata must be omitted, never invented")
         XCTAssertNil(card?.hostLabel)
+        XCTAssertNil(card?.sourceLastUpdated)
+        XCTAssertTrue(card?.turns.isEmpty ?? false)
+        XCTAssertTrue(card?.subagentRuns.isEmpty ?? false)
         XCTAssertEqual(card?.visibleLifecycle, .working)
     }
 
@@ -65,6 +68,52 @@ final class PresentationRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.cards.first?.displayTitle, "Refactor billing service")
         XCTAssertEqual(runtime.cards.first?.hostLabel, "iTerm2")
         XCTAssertEqual(runtime.cards.first?.execution, .waiting)
+    }
+
+    func testCardsUseSourceChronologyWithoutInventingTimes() async {
+        let earlierIdentity = AgentSessionIdentity(
+            productNamespace: ProductNamespace("claude-code"), nativeSessionID: NativeSessionID("sess_earlier")
+        )
+        let laterIdentity = AgentSessionIdentity(
+            productNamespace: ProductNamespace("claude-code"), nativeSessionID: NativeSessionID("sess_later")
+        )
+        let earlier = SessionProjection(
+            identity: earlierIdentity, execution: .working, observation: .fresh,
+            displayTitle: nil, hostLabel: nil,
+            sourceLastUpdated: Date(timeIntervalSince1970: 10), ledgerRevision: 1
+        )
+        let later = SessionProjection(
+            identity: laterIdentity, execution: .working, observation: .fresh,
+            displayTitle: nil, hostLabel: nil,
+            sourceLastUpdated: Date(timeIntervalSince1970: 20), ledgerRevision: 1
+        )
+        let runtime = PresentationRuntime(port: FakePresentationPort(revisions: [
+            ProjectionRevision(ledgerRevision: 1, sessions: [earlierIdentity: earlier, laterIdentity: later]),
+        ]))
+
+        await waitUntil { runtime.cards.count == 2 }
+        XCTAssertEqual(runtime.cards.map(\.nativeSessionID), ["sess_later", "sess_earlier"])
+    }
+
+    func testMissingSourceTimeRemainsUnavailableWhenOnlyReceiptTimeExists() {
+        let fact = NormalizedEventFact(
+            receiptOrdinal: 1,
+            identity: identity,
+            integrationInstanceID: IntegrationInstanceID("fixture.instance"),
+            negotiationSnapshotID: NegotiationSnapshotID("snapshot"),
+            eventIdentity: .stable("event"),
+            family: .sessionActivity,
+            sourceVariant: "fixture.started",
+            activityKind: .started,
+            boundaryReason: nil,
+            classification: .operationalMetadata,
+            occurrenceTime: nil,
+            receiptTime: Date(timeIntervalSince1970: 20),
+            displayTitle: nil,
+            hostLabel: nil
+        )
+
+        XCTAssertNil(SessionReducer.reduce(history: [fact], ledgerRevision: 1).sourceLastUpdated)
     }
 
     func testCardExposesNonColorAttentionLifecycleLabel() async {

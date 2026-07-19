@@ -95,6 +95,80 @@ public actor AdapterFixture {
         return await port.deliver(envelope)
     }
 
+    /// Horizon evidence only: the same typed fixture boundary can supply a
+    /// source-proven Attention Request without giving presentation code any
+    /// ability to create one.
+    public func deliverAttentionRequest(
+        snapshot: NegotiationSnapshot,
+        nativeSessionID: String,
+        nativeAttentionRequestID: String,
+        kind: AttentionRequestKind
+    ) async -> IntakeOutcome {
+        let envelope = RawEventEnvelope(
+            negotiationSnapshotID: snapshot.id,
+            integrationInstanceID: integrationInstanceID,
+            contractVersion: snapshot.contractVersion,
+            productNamespace: productNamespace.rawValue,
+            nativeSessionID: nativeSessionID,
+            eventIdentity: .stable(nextEventID("attention-\(kind.rawValue)")),
+            family: .attentionRequest,
+            sourceVariant: "claudeCode.attention.\(kind.rawValue)",
+            classification: .operationalMetadata,
+            payloadByteSize: 96,
+            ownership: LifecycleOwnership(nativeAttentionRequestID: nativeAttentionRequestID),
+            attentionKind: kind
+        )
+        return await port.deliver(envelope)
+    }
+
+    /// Child execution is always delivered with its Product-native child and
+    /// owner Turn identifiers. The fixture supplies no task/progress text, so
+    /// Horizon can prove it omits unsourced child detail.
+    public func deliverSubagentRunDeclared(
+        snapshot: NegotiationSnapshot,
+        nativeSessionID: String,
+        nativeTurnID: String,
+        nativeSubagentRunID: String
+    ) async -> IntakeOutcome {
+        let envelope = RawEventEnvelope(
+            negotiationSnapshotID: snapshot.id,
+            integrationInstanceID: integrationInstanceID,
+            contractVersion: snapshot.contractVersion,
+            productNamespace: productNamespace.rawValue,
+            nativeSessionID: nativeSessionID,
+            eventIdentity: .stable(nextEventID("subagent-declared")),
+            family: .subagentRunDeclared,
+            sourceVariant: "claudeCode.subagentRunDeclared",
+            classification: .operationalMetadata,
+            payloadByteSize: 96,
+            ownership: LifecycleOwnership(nativeTurnID: nativeTurnID, nativeSubagentRunID: nativeSubagentRunID)
+        )
+        return await port.deliver(envelope)
+    }
+
+    public func deliverSubagentActivity(
+        snapshot: NegotiationSnapshot,
+        nativeSessionID: String,
+        nativeSubagentRunID: String,
+        kind: SessionActivityKind
+    ) async -> IntakeOutcome {
+        let envelope = RawEventEnvelope(
+            negotiationSnapshotID: snapshot.id,
+            integrationInstanceID: integrationInstanceID,
+            contractVersion: snapshot.contractVersion,
+            productNamespace: productNamespace.rawValue,
+            nativeSessionID: nativeSessionID,
+            eventIdentity: .stable(nextEventID("subagent-activity-\(kind.rawValue)")),
+            family: .sessionActivity,
+            sourceVariant: "claudeCode.subagent.\(kind.rawValue)",
+            activityKind: kind,
+            classification: .operationalMetadata,
+            payloadByteSize: 96,
+            ownership: LifecycleOwnership(nativeSubagentRunID: nativeSubagentRunID)
+        )
+        return await port.deliver(envelope)
+    }
+
     public func deliverMissingOwnerIdentity(snapshot: NegotiationSnapshot) async -> IntakeOutcome {
         let envelope = RawEventEnvelope(
             negotiationSnapshotID: snapshot.id,

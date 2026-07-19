@@ -27,7 +27,12 @@ public enum SessionReducer {
         for fact in ordered {
             if let title = fact.displayTitle { displayTitle = title }
             if let host = fact.hostLabel { hostLabel = host }
-            lastUpdated = fact.occurrenceTime ?? fact.receiptTime
+            // Horizon may describe this field as source chronology. A local
+            // receipt timestamp is audit evidence, not a Product-supplied
+            // activity time, so it must never become a sourced UI timestamp.
+            if let occurrenceTime = fact.occurrenceTime {
+                lastUpdated = occurrenceTime
+            }
 
             switch fact.family {
             case .sessionDeclared:

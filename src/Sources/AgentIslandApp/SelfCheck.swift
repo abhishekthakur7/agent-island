@@ -11,7 +11,8 @@ import AdapterFixtureKit
 /// Command Line Tools install has no XCTest/full-Xcode runner — see
 /// src/README.md) and asserts the two invariants a scenario-level outcome
 /// alone can't prove: transport loss never reaches a terminal projection,
-/// and a duplicate stable delivery never produces a second card.
+/// a duplicate stable delivery never produces a second card, and Horizon's
+/// 30-session fixture retains its attention, completion, and child evidence.
 enum SelfCheck {
     static func run() async -> Int32 {
         var allPassed = true
@@ -32,6 +33,7 @@ enum SelfCheck {
             FixtureScenarios.incompatibleContract,
             FixtureScenarios.malformedShape,
             FixtureScenarios.oversizedPayload,
+            FixtureScenarios.horizonWorkingSet,
         ]
 
         for scenario in scenarios {
@@ -60,6 +62,24 @@ enum SelfCheck {
                 print("[FAIL] transportLoss.projectionInvariant no projection observed")
                 allPassed = false
             }
+        }
+
+        do {
+            let store = SessionStore()
+            let runtime = ApplicationRuntime(store: store)
+            _ = await FixtureScenarios.horizonWorkingSet(port: runtime)
+            var observed: ProjectionRevision?
+            for await revision in runtime.presentationStream() {
+                observed = revision
+                break
+            }
+            let sessions: [SessionProjection] = observed.map { Array($0.sessions.values) } ?? []
+            let attention = sessions.filter { $0.attention == .pending }.count
+            let completion = sessions.filter { $0.execution == .terminalCompleted }.count
+            let children = sessions.reduce(0) { $0 + $1.subagentRuns.count }
+            let passed = sessions.count == 30 && attention == 1 && completion == 1 && children == 1
+            print("[\(passed ? "PASS" : "FAIL")] horizonWorkingSet.projectionInvariant sessions=\(sessions.count) attention=\(attention) completed=\(completion) children=\(children)")
+            if !passed { allPassed = false }
         }
 
         do {

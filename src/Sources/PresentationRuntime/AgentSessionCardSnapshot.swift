@@ -1,3 +1,4 @@
+import Foundation
 import SessionDomain
 
 /// The only shape SwiftUI/AppKit code ever sees. Identity
@@ -12,8 +13,12 @@ public struct AgentSessionCardSnapshot: Identifiable, Sendable, Equatable {
     public let observation: ObservationState
     public let attention: AttentionState
     public let visibleLifecycle: VisibleLifecycleState
+    public let lineage: LineageState
     public let displayTitle: String?
     public let hostLabel: String?
+    public let sourceLastUpdated: Date?
+    public let turns: [TurnProjection]
+    public let subagentRuns: [SubagentRunProjection]
     public let ledgerRevision: Int64
 
     public init(projection: SessionProjection) {
@@ -24,8 +29,12 @@ public struct AgentSessionCardSnapshot: Identifiable, Sendable, Equatable {
         self.observation = projection.observation
         self.attention = projection.attention
         self.visibleLifecycle = projection.visibleLifecycle
+        self.lineage = projection.lineage
         self.displayTitle = projection.displayTitle
         self.hostLabel = projection.hostLabel
+        self.sourceLastUpdated = projection.sourceLastUpdated
+        self.turns = projection.turns
+        self.subagentRuns = projection.subagentRuns
         self.ledgerRevision = projection.ledgerRevision
     }
 }

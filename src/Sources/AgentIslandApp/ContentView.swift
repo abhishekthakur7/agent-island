@@ -7,35 +7,19 @@ import PresentationRuntime
 struct ContentView: View {
     @ObservedObject var presentation: PresentationRuntime
     @ObservedObject var fixtureController: FixtureController
+    @ObservedObject var horizon: HorizonController
 
     var body: some View {
         HSplitView {
             sessionsColumn
             fixtureColumn
         }
-        .frame(minWidth: 760, minHeight: 440)
+        .frame(minWidth: 1_180, minHeight: 700)
     }
 
     private var sessionsColumn: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Agent Sessions").font(.headline)
-
-            if presentation.cards.isEmpty {
-                Text("No Agent Session observed yet.")
-                    .foregroundStyle(.secondary)
-            } else {
-                List(presentation.cards) { card in
-                    AgentSessionCardView(card: card)
-                }
-                .listStyle(.inset)
-            }
-
-            Text("Ledger revision: \(presentation.ledgerRevision)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding()
-        .frame(minWidth: 340)
+        HorizonMonitorView(cards: presentation.cards, ledgerRevision: presentation.ledgerRevision, controller: horizon)
+            .frame(minWidth: 760)
     }
 
     private var fixtureColumn: some View {
@@ -53,6 +37,7 @@ struct ContentView: View {
                 fixtureButton("Malformed shape", scenario: FixtureScenarios.malformedShape)
                 fixtureButton("Oversized payload", scenario: FixtureScenarios.oversizedPayload)
                 fixtureButton("Transport loss", scenario: FixtureScenarios.transportLoss)
+                fixtureButton("Horizon 30-session working set", scenario: FixtureScenarios.horizonWorkingSet)
             }
             .disabled(fixtureController.isRunning)
 
@@ -77,43 +62,6 @@ struct ContentView: View {
         Button(title) {
             fixtureController.run(scenario)
         }
-    }
-}
-
-private struct AgentSessionCardView: View {
-    let card: AgentSessionCardSnapshot
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(card.displayTitle ?? card.nativeSessionID)
-                .font(.body.weight(.medium))
-
-            HStack(spacing: 8) {
-                Text(card.productNamespace)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let hostLabel = card.hostLabel {
-                    Text(hostLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(card.visibleLifecycle.rawValue)
-                    .font(.caption.bold())
-                if card.attention != .none {
-                    Text(card.attention.rawValue)
-                        .font(.caption)
-                }
-                Text(card.observation.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Text(card.nativeSessionID)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.vertical, 4)
     }
 }
 

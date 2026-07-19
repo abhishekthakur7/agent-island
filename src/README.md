@@ -1,11 +1,12 @@
 # Agent Island — production source
 
-The first production vertical slice for Linear ticket
-[AB-118](https://linear.app/abhithakur/issue/AB-118): a local macOS
-application accepts one validated, source-proven Agent Session observation
-from a controllable first-party Adapter fixture, commits it as an immutable
-Normalized Event Fact, derives a revisioned read model, and renders its
-Product-native identity and sourced status in a native application surface.
+The first production vertical slices for Linear tickets
+[AB-118](https://linear.app/abhithakur/issue/AB-118) through
+[AB-121](https://linear.app/abhithakur/issue/AB-121): a local macOS
+application accepts source-proven Agent Session observations from a
+controllable first-party Adapter fixture, commits immutable Normalized Event
+Facts, derives revisioned lifecycle projections, and renders the original
+Horizon monitoring experience in a native application surface.
 
 This slice is deliberately **observation-only**: no live Product control,
 configuration ownership, host navigation, cloud connectivity, action routing,
@@ -96,15 +97,16 @@ harness cannot substitute for.
 
 ## What this slice deliberately does not do
 
-- **No persistence.** `SessionStore` holds the fact ledger and projection
-  cache in memory only. Ledger durability across restart, the encrypted
-  SQLCipher/Keychain-backed store, and fail-closed reopen are AB-119.
+- **No Product action dispatch.** Horizon selection is local presentation
+  state only; it cannot acknowledge, complete, or otherwise mutate a Product
+  conversation.
 - **No non-activating Island Overlay panel.** This slice hosts SwiftUI
   content in a standard `NSWindow`. The `NSPanel`-based non-activating
   Overlay is AB-122, reusing the already-accepted AB-116 spike.
-- **No Turn/Subagent Run/Attention Request modeling, rewind, compaction, or
-  reconciliation.** Those are the conservative-lifecycle (AB-120) and
-  attention-workflow (AB-126) tickets.
+- **No Product-supplied result/recap content yet.** The current Adapter
+  contract admits operational metadata only. Horizon reserves an honest empty
+  completion-recap state rather than inventing a result; later capability
+  work can supply bounded Interaction Content.
 - **No real Adapter.** `AdapterFixtureKit` is a controllable first-party
   fixture that builds envelopes the way a real Claude Code Adapter would and
   submits them through the production intake boundary. The first real
