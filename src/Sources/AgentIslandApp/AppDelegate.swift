@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import PresentationRuntime
 
@@ -9,19 +10,38 @@ import PresentationRuntime
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let presentation: PresentationRuntime
     private let fixtureController: FixtureController
+    private let atlasSettings: AtlasSettingsModel
+    private lazy var settingsCoordinator = AtlasSettingsWindowCoordinator { [unowned self] in
+        AnyView(AgentIslandSettingsView(
+            model: self.atlasSettings,
+            liveDisplayControls: AnyView(AtlasOverlayDisplayControls(overlay: self.overlay))
+        ))
+    }
     private let horizon = HorizonController()
     private lazy var overlay = IslandOverlayController(presentation: presentation)
-    private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem?
+    private var settingsCancellable: AnyCancellable?
 
     init(presentation: PresentationRuntime, fixtureController: FixtureController) {
         self.presentation = presentation
         self.fixtureController = fixtureController
+        let atlasSettings = AtlasSettingsModel()
+        self.atlasSettings = atlasSettings
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // AppKit may ask to restore windows before did-finish-launching.
+        // Register the coordinator before that restoration phase begins.
+        _ = settingsCoordinator
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenu()
         overlay.showSettings = { [weak self] in self?.showSettings(nil) }
+        applyAtlasPresentationPreferences(atlasSettings.general)
+        settingsCancellable = atlasSettings.$general.sink { [weak self] general in
+            self?.applyAtlasPresentationPreferences(general)
+        }
         overlay.start()
     }
 
@@ -38,22 +58,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The user explicitly requested the normal window; this intentionally
     /// activates Agent Island, unlike all ambient overlay paths.
     @objc private func showSettings(_ sender: Any?) {
-        if settingsWindow == nil {
-            let root = AgentIslandSettingsView(overlay: overlay, presentation: presentation, fixtureController: fixtureController, horizon: horizon)
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 840),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Agent Island Settings"
-            window.contentView = NSHostingView(rootView: root)
-            window.isReleasedWhenClosed = false
-            settingsWindow = window
-        }
-        settingsWindow?.center()
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        settingsCoordinator.showSettings()
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
+
+    private func applyAtlasPresentationPreferences(_ general: AtlasGeneralPreferences) {
+        overlay.hideInFullscreen = general.hideInFullScreen
+        overlay.hoverExpansionEnabled = general.expandOnHover
+        overlay.reconcilePresentation()
     }
 
     @objc private func toggleOverlay(_ sender: Any?) { overlay.toggleOverlay() }
@@ -84,5 +97,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "Agent Island")
         statusItem.menu = appMenu
         self.statusItem = statusItem
+    }
+}
+
+/// Explicit live assignment controls are kept separate from the read-only
+/// Display preview. This small AppKit-side bridge preserves the existing
+/// selected-display behavior without giving preview views an Overlay handle.
+private struct AtlasOverlayDisplayControls: View {
+    @ObservedObject var overlay: IslandOverlayController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Live Overlay assignment").font(.headline)
+            Picker("Selected display", selection: Binding(
+                get: { overlay.selectedDisplayID },
+                set: { overlay.selectDisplay(id: $0) }
+            )) {
+                ForEach(overlay.displays) { display in
+                    Text(display.name).tag(Optional(display.id))
+                }
+            }
+            Text(overlay.displayStatus)
+                .font(.caption)
+                .foregroundStyle(overlay.selectedScreen == nil ? .orange : .secondary)
+        }
+        .accessibilityIdentifier("atlas.display.liveAssignment")
     }
 }

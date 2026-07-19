@@ -1,0 +1,400 @@
+import SwiftUI
+
+struct AtlasSettingsDetail: View {
+    @ObservedObject var model: AtlasSettingsModel
+    let destination: AtlasSettingsDestination
+    let liveDisplayControls: AnyView
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            switch destination {
+            case .general: AtlasGeneralSection(model: model)
+            case .integrations: AtlasIntegrationsSection(model: model)
+            case .notifications: AtlasNotificationsSection(preview: model.preview, send: model.sendPreview)
+            case .display: AtlasDisplaySection(preview: model.preview, send: model.sendPreview, liveDisplayControls: liveDisplayControls)
+            case .sound: AtlasPlaceholderSection(title: "Sound", icon: "speaker.wave.2", message: "Sound policy stays local. Event routing and audible previews arrive in the Notification Policy slice.")
+            case .usage: AtlasPlaceholderSection(title: "Usage", icon: "chart.bar", message: "Usage Snapshots are display-only source evidence. Agent Island never estimates unavailable usage.")
+            case .shortcuts: AtlasPlaceholderSection(title: "Shortcuts", icon: "command", message: "Global and focused shortcuts will expose collisions and can be disabled without changing Agent Product state.")
+            case .labs: AtlasPlaceholderSection(title: "Labs", icon: "flask", message: "Experimental capabilities remain opt-in and clearly separate from stable settings.")
+            case .diagnostics: AtlasDiagnosticsSection(integrations: model.integrations)
+            case .maintenance: AtlasMaintenanceSection()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(destination.title).font(.largeTitle.bold())
+            Text(destination.subtitle).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AtlasGeneralSection: View {
+    @ObservedObject var model: AtlasSettingsModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            AtlasOnboardingCard(model: model)
+            AtlasCard(title: "Launch and presentation") {
+                Picker("Launch behavior", selection: generalBinding(\.launchBehavior)) {
+                    Text("Open manually").tag(AtlasLaunchBehavior.manual)
+                    Text("Launch at login").tag(AtlasLaunchBehavior.atLogin)
+                }
+                .accessibilityIdentifier("atlas.general.launchBehavior")
+                AtlasToggle("Expand on hover", detail: "Only visible Island bounds respond.", value: generalBinding(\.expandOnHover), id: "hoverExpansion")
+                AtlasToggle("Collapse on pointer exit", detail: "Interaction and keyboard engagement still keep the Island open.", value: generalBinding(\.collapseOnPointerExit), id: "pointerExitCollapse")
+                AtlasToggle("Suppress for exact foreground Host", detail: "Only a currently revalidated exact Host Context qualifies.", value: generalBinding(\.suppressWhenExactHostForeground), id: "exactHostSuppression")
+                AtlasToggle("Hide in full screen", detail: "Withdraw without moving to another display.", value: generalBinding(\.hideInFullScreen), id: "hideFullScreen")
+                AtlasToggle("Hide with no active Agent Session", detail: "Settings and retained local evidence remain available.", value: generalBinding(\.hideWhenNoActiveSession), id: "hideNoActiveSession")
+            }
+            AtlasCard(title: "Reveal and click behavior") {
+                AtlasToggle("Reveal on completion", detail: "A short local presentation; open Attention Requests never expire.", value: generalBinding(\.revealOnCompletion), id: "revealCompletion")
+                AtlasToggle("Reveal on attention", detail: "Presentation only; it does not answer or approve anything.", value: generalBinding(\.revealOnAttention), id: "revealAttention")
+                Picker("Click behavior", selection: generalBinding(\.clickBehavior)) {
+                    Text("Inspect or expand").tag(AtlasClickBehavior.inspectExpand)
+                    Text("Jump Back when evidence-backed").tag(AtlasClickBehavior.jumpBack)
+                }
+                .accessibilityIdentifier("atlas.general.clickBehavior")
+                Text("Jump Back always revalidates the live Host Context and reports the achieved fallback. This setting performs no navigation.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func generalBinding<Value>(_ keyPath: WritableKeyPath<AtlasGeneralPreferences, Value>) -> Binding<Value> {
+        Binding(
+            get: { model.general[keyPath: keyPath] },
+            set: { value in model.updateGeneral { $0[keyPath: keyPath] = value } }
+        )
+    }
+}
+
+private struct AtlasOnboardingCard: View {
+    @ObservedObject var model: AtlasSettingsModel
+
+    var body: some View {
+        if model.onboarding.lifecycle != .completed {
+            AtlasCard(title: onboardingTitle) {
+                if model.onboarding.lifecycle == .notStarted {
+                    Text("Monitor concurrent Agent Sessions locally, learn honest Host fallback, and choose what to enable at your pace.")
+                        .foregroundStyle(.secondary)
+                    Button("Get started") { model.startOnboarding() }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("atlas.onboarding.start")
+                } else if model.onboarding.lifecycle == .deferred {
+                    Text("Your completed education is saved. Resume at the first unfinished concept.")
+                        .foregroundStyle(.secondary)
+                    Button("Resume onboarding") { model.resumeOnboarding() }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("atlas.onboarding.resume")
+                } else {
+                    ProgressView(value: onboardingProgress)
+                        .accessibilityLabel("Onboarding progress")
+                    Text(model.onboarding.step.title).font(.title3.bold())
+                    Text(model.onboarding.step.explanation).foregroundStyle(.secondary)
+                    ViewThatFits(in: .horizontal) {
+                        HStack { onboardingButtons }
+                        VStack(alignment: .leading) { onboardingButtons }
+                    }
+                }
+            }
+            .accessibilityIdentifier("atlas.onboarding.card")
+        }
+    }
+
+    private var onboardingTitle: String {
+        switch model.onboarding.lifecycle {
+        case .notStarted: "Welcome to Agent Island"
+        case .active: "Getting started"
+        case .deferred: "Onboarding paused"
+        case .completed: "Onboarding complete"
+        }
+    }
+
+    private var onboardingProgress: Double {
+        Double(model.onboarding.step.rawValue + 1) / Double(AtlasOnboardingStep.allCases.count)
+    }
+
+    @ViewBuilder private var onboardingButtons: some View {
+        Button("Back") { model.backOnboarding() }
+            .disabled(model.onboarding.step == .first)
+            .accessibilityIdentifier("atlas.onboarding.back")
+        Button(model.onboarding.step == .last ? "Finish" : "Next") { model.nextOnboarding() }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("atlas.onboarding.next")
+        Button("Skip for now") { model.skipOnboarding() }
+            .accessibilityIdentifier("atlas.onboarding.skip")
+    }
+}
+
+private struct AtlasIntegrationsSection: View {
+    @ObservedObject var model: AtlasSettingsModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Enabled intent and observed health are independent. Discovery never enables or configures an Integration Installation.")
+                .foregroundStyle(.secondary)
+            ForEach(model.integrations, id: \.kind) { integration in
+                AtlasCard(title: integration.kind.title) {
+                    Toggle("Enabled intent", isOn: Binding(
+                        get: { integration.enabledIntent },
+                        set: { model.setIntegrationIntent(integration.kind, enabled: $0) }
+                    ))
+                    .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue).intent")
+                    LabeledContent("Intent and readiness", value: integration.summary.title)
+                    LabeledContent("Observed health", value: integration.health.title)
+                    LabeledContent("Evidence freshness", value: integration.freshness.title)
+                    LabeledContent("Evidence time", value: integration.evidence?.observedAt?.formatted(date: .abbreviated, time: .shortened) ?? "No evidence")
+                    LabeledContent("Affected capability", value: integration.affectedCapability?.title ?? "None reported")
+                    LabeledContent("Safe next step", value: integration.safeNextStep.title)
+                    Text("Changing enabled intent does not write Agent Product configuration. Setup and repair require a later reviewable plan.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue)")
+            }
+        }
+    }
+}
+
+private struct AtlasNotificationsSection: View {
+    let preview: AtlasPreviewState
+    let send: (AtlasPreviewAction) -> Void
+
+    var body: some View {
+        AtlasCard(title: "Read-only filter preview") {
+            Text("These controls update only the local preview. They cannot emit an alert or sound.")
+                .foregroundStyle(.secondary)
+            Toggle("Completion", isOn: Binding(
+                get: { preview.includesCompletion },
+                set: { _ in send(.toggleCompletionFilter) }
+            ))
+                .accessibilityIdentifier("atlas.notifications.preview.completionFilter")
+            Toggle("Attention", isOn: Binding(
+                get: { preview.includesAttention },
+                set: { _ in send(.toggleAttentionFilter) }
+            ))
+                .accessibilityIdentifier("atlas.notifications.preview.attentionFilter")
+            ViewThatFits(in: .horizontal) {
+                HStack { notificationButtons }
+                VStack(alignment: .leading) { notificationButtons }
+            }
+            AtlasPreviewSurface(preview: preview)
+        }
+    }
+
+    @ViewBuilder private var notificationButtons: some View {
+        Button("Preview completion") { send(.revealCompletion) }
+        Button("Preview attention") { send(.revealAttention) }
+        Button("Clear preview") { send(.hide) }
+    }
+}
+
+private struct AtlasDisplaySection: View {
+    let preview: AtlasPreviewState
+    let send: (AtlasPreviewAction) -> Void
+    let liveDisplayControls: AnyView
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            AtlasCard(title: "Display assignment") {
+                liveDisplayControls
+            }
+            AtlasCard(title: "Read-only Island preview") {
+                Text("The preview does not move, recreate, or resize the live Island Overlay.")
+                    .foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack { displayPreviewButtons }
+                    VStack(alignment: .leading) { displayPreviewButtons }
+                }
+                .accessibilityIdentifier("atlas.display.preview.controls")
+                AtlasPreviewSurface(preview: preview)
+            }
+        }
+    }
+
+    @ViewBuilder private var displayPreviewButtons: some View {
+        Button("Pointer enters") { send(.hoverEntered) }
+        Button("Pointer exits") { send(.hoverExited) }
+        Button("Reset") { send(.reset) }
+    }
+}
+
+private struct AtlasPreviewSurface: View {
+    let preview: AtlasPreviewState
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        HStack {
+            Image(systemName: preview.isVisible ? "sparkles" : "circle.hexagongrid")
+            Text(preview.isExpanded ? "Expanded local preview" : "Compact local preview")
+            Spacer()
+            Text(preview.isVisible ? "Visible" : "Idle").foregroundStyle(.secondary)
+        }
+        .padding()
+        .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("atlas.preview.surface")
+    }
+}
+
+private struct AtlasDiagnosticsSection: View {
+    let integrations: [AtlasIntegrationState]
+
+    var body: some View {
+        AtlasCard(title: "Redacted local evidence") {
+            Text("Renderable diagnostics contain only allowlisted categories. Interaction Content, credentials, paths, raw identifiers, and commands cannot enter this view model.")
+                .foregroundStyle(.secondary)
+            ForEach(integrations, id: \.kind) { integration in
+                let record = AtlasDiagnosticsSanitizer.render(integration: integration)
+                LabeledContent(integration.kind.title, value: "\(record.outcome.title) · \(record.reason.title)")
+            }
+            Button("Prepare Diagnostic Bundle…") {}
+                .disabled(true)
+                .help("Diagnostic Bundle export arrives in a later slice")
+        }
+        .accessibilityIdentifier("atlas.diagnostics.redacted")
+    }
+}
+
+private struct AtlasMaintenanceSection: View {
+    var body: some View {
+        AtlasCard(title: "Consequential maintenance") {
+            Text("Every category requires a separately scoped plan, preview, and confirmation. This shell performs none of them.")
+                .foregroundStyle(.secondary)
+            AtlasInertAction(title: "Reset preferences", detail: "Return local presentation preferences to defaults.")
+            AtlasInertAction(title: "Remove setup", detail: "Remove only manifest-proven configuration entries and owned artifacts.")
+            AtlasInertAction(title: "Delete local data", detail: "Choose protected local categories separately.")
+            AtlasInertAction(title: "Complete cleanup", detail: "Review a residual-aware cleanup checklist.")
+        }
+        .accessibilityIdentifier("atlas.maintenance.categories")
+    }
+}
+
+private struct AtlasInertAction: View {
+    let title: String
+    let detail: String
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text(title).fontWeight(.semibold)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+            Button("Review…") {}.disabled(true).accessibilityHint("Planned action; unavailable in this version")
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AtlasPlaceholderSection: View {
+    let title: String
+    let icon: String
+    let message: String
+    var body: some View {
+        AtlasCard(title: title) {
+            Label(message, systemImage: icon).foregroundStyle(.secondary)
+            Text("This destination is reserved now so its capability, privacy, and failure semantics remain distinct.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AtlasToggle: View {
+    let title: String
+    let detail: String
+    @Binding var value: Bool
+    let id: String
+
+    init(_ title: String, detail: String, value: Binding<Bool>, id: String) {
+        self.title = title; self.detail = detail; _value = value; self.id = id
+    }
+
+    var body: some View {
+        Toggle(isOn: $value) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityIdentifier("atlas.general.\(id)")
+    }
+}
+
+private struct AtlasCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    init(title: String, @ViewBuilder content: () -> Content) { self.title = title; self.content = content() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.title2.bold())
+            content
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.thinMaterial), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(contrast == .increased ? Color.primary : Color.secondary.opacity(0.2)))
+    }
+}
+
+private extension AtlasSettingsDestination {
+    var subtitle: String {
+        switch self {
+        case .general: "Local launch, presentation, reveal, and click semantics."
+        case .integrations: "Intent, evidence, capability impact, and honest next steps."
+        case .notifications: "Interruption policy and local filter previews."
+        case .display: "Selected-display behavior and a local Island preview."
+        case .sound: "Local audible presentation policy."
+        case .usage: "Display-only source-supplied Usage Snapshots."
+        case .shortcuts: "Keyboard engagement without bypassing capability checks."
+        case .labs: "Explicitly experimental local capabilities."
+        case .diagnostics: "Redacted evidence that explains behavior without Interaction Content."
+        case .maintenance: "Separated, scoped, consequential categories."
+        }
+    }
+}
+
+private extension AtlasOnboardingStep {
+    var explanation: String {
+        switch self {
+        case .aggregation: "Agent Island brings concurrent Agent Sessions into one calm, local-first surface."
+        case .completionAwareness: "Completion and Attention Requests can surface without repeatedly checking every Host."
+        case .hostFallback: "Jump Back targets only live, evidence-backed Host Contexts and degrades honestly."
+        case .setupAndDisplay: "Detection is read-only and setup remains reviewable. Choose where the Island belongs; display loss withdraws it instead of silently moving."
+        }
+    }
+}
+
+private extension AtlasIntegrationSummary {
+    var title: String { rawValue.splitBeforeUppercase.capitalized }
+}
+private extension AtlasIntegrationSafeNextStep {
+    var title: String { rawValue.splitBeforeUppercase.capitalized }
+}
+private extension AtlasIntegrationCapability {
+    var title: String { rawValue.capitalized }
+}
+private extension AtlasIntegrationHealth {
+    var title: String { rawValue.splitBeforeUppercase.capitalized }
+}
+private extension AtlasEvidenceFreshness {
+    var title: String { rawValue.capitalized }
+}
+private extension AtlasDiagnosticOutcome {
+    var title: String { rawValue.capitalized }
+}
+private extension AtlasDiagnosticReason {
+    var title: String { rawValue.splitBeforeUppercase.capitalized }
+}
+private extension String {
+    var splitBeforeUppercase: String {
+        reduce(into: "") { result, character in
+            if character.isUppercase { result.append(" ") }
+            result.append(character)
+        }
+    }
+}
