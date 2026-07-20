@@ -21,6 +21,7 @@ let package = Package(
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
         .executable(name: "CursorHookHelper", targets: ["CursorHookHelper"]),
+        .executable(name: "AB138SelfCheck", targets: ["AB138SelfCheck"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -106,6 +107,7 @@ let package = Package(
         .executableTarget(name: "CodexHookHelper", dependencies: ["CodexCLIAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
 
         .executableTarget(name: "CursorHookHelper", dependencies: ["CursorHooksAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
+        .executableTarget(name: "AB138SelfCheck", dependencies: ["CursorHooksAdapter", "ClaudeCodeAdapter", "ApplicationRuntime", "SessionStore", "SessionDomain"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
@@ -152,7 +154,7 @@ let package = Package(
         ),
         .testTarget(name: "CodexCLIAdapterTests", dependencies: ["CodexCLIAdapter", "SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
         .testTarget(name: "CodexAppServerAdapterTests", dependencies: ["CodexAppServerAdapter", "SessionDomain", "AdapterPort", "SessionStore"]),
-        .testTarget(name: "CursorHooksAdapterTests", dependencies: ["CursorHooksAdapter", "SessionDomain", "AdapterPort"]),
+        .testTarget(name: "CursorHooksAdapterTests", dependencies: ["CursorHooksAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime", "ClaudeCodeAdapter"]),
         .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
     ]
 )

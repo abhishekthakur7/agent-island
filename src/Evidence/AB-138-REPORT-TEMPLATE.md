@@ -12,7 +12,8 @@ This adapter installs only marked v1 command entries for documented Agent
 hooks: `sessionStart`, `sessionEnd`, tool/activity hooks, `subagentStart`,
 `subagentStop`, shell/MCP/read/edit/prompt hooks, `preCompact`, `stop`,
 `afterAgentResponse`, and `afterAgentThought`. It omits `failClosed`, so
-Cursor's documented fail-open default applies. No prompt hook is installed.
+Cursor's documented fail-open default applies. `beforeSubmitPrompt` is a
+command hook; no prompt-type hook and no hook response is installed.
 
 ## Boundaries and known limitations
 
@@ -20,8 +21,9 @@ Cursor's documented fail-open default applies. No prompt hook is installed.
   received `generation_id` is the only Turn identity. Similar presentation
   metadata never identifies either. Identity remains protected locally.
 - Cursor documents no stable event ID or source sequence. Duplicate handling
-  is therefore owner-scoped weak evidence: collisions, gaps, and ordering are
-  Degraded/Unavailable and receipt order is not Product order.
+  is therefore owner-scoped weak fact evidence; collisions are retained by
+  the canonical reducer and transport loss invalidates continuity. Receipt
+  order is not Product order.
 - `subagentStart` becomes nested only with its documented `subagent_id` and
   matching `parent_conversation_id`. Documented `subagentStop` lacks those
   identifiers, so it is unresolved and closes nothing.
@@ -43,8 +45,9 @@ Cursor's documented fail-open default applies. No prompt hook is installed.
 Installation is explicit and selected-scope only. Read-only discovery and a
 fresh plan precede apply; apply rechecks fingerprint/version/policy/symlink
 state, records an Ownership Manifest of exact entries, and rereads on verify.
-The lossless JSON/JSONC editor preserves unrelated ordering, comments,
-whitespace/newlines, bytes, and permissions. Marker collisions, malformed or
+The lossless JSON editor preserves unrelated ordering, whitespace/newlines,
+bytes, and permissions. (Cursor's documented path is `hooks.json`, not an
+arbitrary `hooks.jsonc` path.) Marker collisions, malformed or
 unsupported inputs, policy blocks, symlinks, external entries, and drift do
 not mutate. Disable/remove touch only manifest-proven entries; repair makes a
 new plan.
@@ -52,4 +55,7 @@ new plan.
 Fixtures cover two same-looking conversations, multiple generations,
 lifecycle/activity/compaction/session end, source-proven child start, plus
 failure/timeout/version/malformed/oversize/duplicate-gap/orphan/ambiguous-stop
-and JSONC installation preservation negatives.
+and installation preservation negatives. The deterministic AB-138 verifier
+executes a faithful lifecycle replay through `ApplicationRuntime` and
+`SessionStore`, checks canonical child ownership and redaction sentinels, and
+also exercises the authenticated receiver's unresolved child-stop behavior.
