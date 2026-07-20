@@ -278,17 +278,28 @@ public struct NormalizedEventFact: Hashable, Sendable, Codable {
     }
 
     /// Priority-ordered fact identity used for idempotent commit: a stable
-    /// source-event ID is scoped by Product namespace; a weak key is scoped
-    /// by integration instance because it carries no Product-wide guarantee.
+    /// source-event ID is scoped by the exact Product/session/child/request
+    /// owner tuple; a weak key is scoped by integration instance because it
+    /// carries no Product-wide guarantee.
     public enum DeduplicationKey: Hashable, Sendable {
-        case stable(productNamespace: ProductNamespace, sourceEventID: String)
+        /// A Product-native event ID is only stable within the exact owner
+        /// tuple. Claude (and other Products) may legally reuse an event ID
+        /// in another native session or child/request context.
+        case stable(productNamespace: ProductNamespace, nativeSessionID: String, sourceEventID: String, nativeTurnID: String?, nativeSubagentRunID: String?, nativeAttentionRequestID: String?)
         case weak(integrationInstanceID: IntegrationInstanceID, key: String)
     }
 
     public var deduplicationKey: DeduplicationKey {
         switch eventIdentity {
         case .stable(let value):
-            return .stable(productNamespace: identity.productNamespace, sourceEventID: value)
+            return .stable(
+                productNamespace: identity.productNamespace,
+                nativeSessionID: identity.nativeSessionID.rawValue,
+                sourceEventID: value,
+                nativeTurnID: ownership?.nativeTurnID,
+                nativeSubagentRunID: ownership?.nativeSubagentRunID,
+                nativeAttentionRequestID: ownership?.nativeAttentionRequestID
+            )
         case .weak(let value):
             return .weak(integrationInstanceID: integrationInstanceID, key: value)
         }

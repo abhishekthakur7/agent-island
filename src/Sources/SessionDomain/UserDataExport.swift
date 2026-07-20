@@ -270,8 +270,16 @@ public enum UserDataExportWriter {
     }
 
     private static func selectionDigest(_ selection: UserDataExportSelection, records: [VerifiedUserDataRecord]) -> String {
-        let encoder = JSONEncoder()
-        let selectionBytes = (try? encoder.encode(selection)) ?? Data()
+        // A confirmation is compared with a freshly rebuilt preview. Encoding
+        // a Set through a generic encoder makes that digest depend on process
+        // hash iteration order, so construct its small, order-defined input
+        // explicitly instead.
+        let date: (Date?) -> String = { value in
+            value.map { String(format: "%.6f", $0.timeIntervalSince1970) } ?? "-"
+        }
+        let sessions = selection.sessions.map { "\($0.productNamespace.rawValue):\($0.nativeSessionID.rawValue)" }.joined(separator: "|")
+        let classes = selection.dataClasses.map(\.rawValue).sorted().joined(separator: "|")
+        let selectionBytes = Data("\(selection.schema)\u{001F}\(selection.format.rawValue)\u{001F}\(selection.includeInteractionContent)\u{001F}\(date(selection.dateScope.from))\u{001F}\(date(selection.dateScope.through))\u{001F}\(sessions)\u{001F}\(classes)".utf8)
         let recordIDs = records.map { "\($0.identity.productNamespace.rawValue):\($0.identity.nativeSessionID.rawValue):\($0.facts.count)" }.joined(separator: "|")
         return ExactEntryDigest.value(selectionBytes + Data(recordIDs.utf8))
     }

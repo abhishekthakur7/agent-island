@@ -78,6 +78,20 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(received?.sessions.count, 1)
     }
 
+    func testStableEventIDIsScopedByNativeSessionOwner() async {
+        let store = SessionStore()
+        let snap = snapshot()
+        await store.registerNegotiation(snap)
+
+        let first = await store.intake(envelope(snapshot: snap, nativeSessionID: "sess_a", eventID: "reused"), receiptTime: fixedDate)
+        let second = await store.intake(envelope(snapshot: snap, nativeSessionID: "sess_b", eventID: "reused"), receiptTime: fixedDate)
+        let redelivery = await store.intake(envelope(snapshot: snap, nativeSessionID: "sess_a", eventID: "reused"), receiptTime: fixedDate)
+
+        XCTAssertEqual(first, .committed(ledgerRevision: 1))
+        XCTAssertEqual(second, .committed(ledgerRevision: 2))
+        XCTAssertEqual(redelivery, .duplicateIgnored(ledgerRevision: 2))
+    }
+
     func testWeakKeyCollisionIsRetainedAndMakesProjectionUnresolved() async {
         let store = SessionStore()
         let snap = snapshot()

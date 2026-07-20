@@ -40,6 +40,8 @@ enum AB130Evidence {
             let bytes = try Data(contentsOf: artifacts.data)
             results.append(("ab130.exportIntegrityManifest", FileManager.default.fileExists(atPath: artifacts.integrityManifest.path) && bytes.count > 0))
         } catch {
+            // Self-check reports the typed boolean outcomes below. Export
+            // errors can include local file details, so never print them.
             results.append(("ab130.exportSeparateConfirmation", false))
             results.append(("ab130.exportIntegrityManifest", false))
         }

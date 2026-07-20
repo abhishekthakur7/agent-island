@@ -59,7 +59,6 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertNotNil(startObservation.events[0].sourceCursor)
         XCTAssertNil(startObservation.events[1].sourceCursor)
         XCTAssertEqual(startObservation.attributedContext.model, "model-a")
-        XCTAssertEqual(startObservation.attributedContext.transcriptPath, "/private/transcript")
 
         let backgroundData = Data("{\"hook_event_name\":\"Stop\",\"session_id\":\"sess-a\",\"event_id\":\"stop-bg\",\"background_task_count\":1}".utf8)
         let background = try ClaudeHookEnvelope.decode(backgroundData)
@@ -85,7 +84,7 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         let unsupported = try ClaudeHookEnvelope.decode(unsupportedData)
         guard case .failure(.unsupportedResponseSemantics) = ClaudeHookNormalizer.normalize(unsupported, snapshot: snapshot(), integrationInstanceID: IntegrationInstanceID("ab134-installation"), receiptTime: Date()) else { return XCTFail("unsupported free text must use Host fallback") }
 
-        let childData = Data("{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"sess-a\",\"event_id\":\"child-stop\",\"subagent_run_id\":\"child-1\",\"result\":{\"status\":\"ok\"}}".utf8)
+        let childData = Data("{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"sess-a\",\"event_id\":\"child-stop\",\"subagent_run_id\":\"child-1\",\"parent_turn_id\":\"turn-1\",\"result\":{\"status\":\"completed\"}}".utf8)
         let child = try ClaudeHookEnvelope.decode(childData)
         guard case .success(let childObservation) = ClaudeHookNormalizer.normalize(child, snapshot: snapshot(), integrationInstanceID: IntegrationInstanceID("ab134-installation"), receiptTime: Date()) else { return XCTFail("proven child stop should normalize") }
         XCTAssertEqual(childObservation.events.first?.activityKind, .completed)
@@ -105,11 +104,83 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         try Data("{\n  \"hooks\": []\n}\n".utf8).write(to: config)
         let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config)
         let discovery = ClaudeCodeInstallationCoordinator().discover(installationID: IntegrationInstanceID("i"), scope: scope, helperPath: root.appendingPathComponent("helper"))
-        XCTAssertEqual(discovery.state, .unsupported)
-        XCTAssertFalse(discovery.safeToMutate)
+        XCTAssertEqual(discovery.state, .notConfigured)
+        XCTAssertFalse(discovery.safeToMutate) // no negotiated configuration grant
         let health = ClaudeIntegrationHealth(enabledIntent: true, lastReason: .unauthenticated, observedAt: Date(timeIntervalSince1970: 1))
         XCTAssertEqual(health.redactedDiagnostic.scope.owner, .integration)
         XCTAssertEqual(health.redactedDiagnostic.reason, .permissionDenied)
+    }
+
+    func testJSONExactEntryPreservesJSONCAndRemovesOnlyReceiptEntry() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-jsonc-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.jsonc")
+        let original = "{\r\n  // keep this comment\r\n  \"other\": [1, 2],\r\n  \"hooks\": {\r\n    \"SessionStart\": [\r\n      {\"type\": \"command\", \"command\": \"upstream\"}\r\n    ],\r\n  },\r\n  \"unknown\": {\"x\": true}\r\n}\r\n"
+        try Data(original.utf8).write(to: config)
+        let entry = ClaudeJSONHookEditor.entry(helperPath: root.appendingPathComponent("helper"))
+        let before = ExactEntryEditor.snapshot(at: config)
+        let receipt = try ClaudeJSONHookEditor.add(entry: entry, at: config, expected: before.fingerprint)
+        let added = try XCTUnwrap(String(data: ExactEntryEditor.snapshot(at: config).content ?? Data(), encoding: .utf8))
+        XCTAssertTrue(added.contains("// keep this comment")); XCTAssertTrue(added.contains("\r\n")); XCTAssertTrue(added.contains(entry.selector.marker))
+        _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: .sessionStart, at: config, expected: ExactEntryEditor.snapshot(at: config).fingerprint)
+        XCTAssertEqual(String(data: ExactEntryEditor.snapshot(at: config).content ?? Data(), encoding: .utf8), original)
+    }
+
+    func testJSONEditorRejectsAmbiguousAndInvalidSourcesWithoutMutation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-json-invalid-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.json")
+        let entry = ClaudeJSONHookEditor.entry(helperPath: root.appendingPathComponent("helper"))
+
+        let sources: [(Data, ClaudeJSONHookEditor.EditorError)] = [
+            (Data("{\"hooks\":{},\"hooks\":{}}".utf8), .ambiguous),
+            (Data("{ // comments are JSONC only\n\"hooks\":{}}".utf8), .commentsInJSON),
+            (Data([0x7B, 0xFF, 0x7D]), .invalidUTF8),
+            (Data("[]".utf8), .unsupported)
+        ]
+        for (source, expected) in sources {
+            try source.write(to: config)
+            let before = ExactEntryEditor.snapshot(at: config).content
+            XCTAssertThrowsError(try ClaudeJSONHookEditor.add(entry: entry, at: config)) { error in
+                XCTAssertEqual(error as? ClaudeJSONHookEditor.EditorError, expected)
+            }
+            XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, before)
+        }
+    }
+
+    func testClaudeInstallationPlanCoversEveryDocumentedHookWithExactSelectors() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-plan-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.json")
+        try Data("{\"hooks\":{}}".utf8).write(to: config)
+        let helper = root.appendingPathComponent("helper")
+        let plan = ClaudeCodeInstallationCoordinator().makePlan(id: "plan", installationID: IntegrationInstanceID("installation"), scope: IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config), helperPath: helper, snapshot: snapshot())
+        XCTAssertEqual(plan.entries.count, ClaudeHookName.allCases.count)
+        XCTAssertEqual(Set(plan.entries.map(\.key)).count, plan.entries.count)
+        XCTAssertTrue(plan.entries.allSatisfy { $0.marker.hasPrefix(ClaudeJSONHookEditor.markerPrefix) })
+    }
+
+    func testHelperFramingAuthenticatesBoundedPayloadAndEndpointPolicy() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-endpoint-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpointURL = root.appendingPathComponent("endpoint")
+        try Data().write(to: endpointURL)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: endpointURL.path)
+        let transport = ClaudeInMemoryHookIPCTransport()
+        let runtime = ClaudeHookHelperRuntime(installationID: IntegrationInstanceID("i"), helperID: "h", authenticator: ClaudeIPCAuthenticator(secret: "s"), endpoint: ClaudeLocalEndpoint(path: endpointURL, appOwnedRoot: root))
+        let payload = Data("{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s\",\"event_id\":\"e\"}".utf8)
+        let message = try await runtime.forward(stdin: payload, transport: transport)
+        XCTAssertTrue(message.isAuthenticated(using: ClaudeIPCAuthenticator(secret: "s"), expectedInstallationID: IntegrationInstanceID("i"), expectedHelperID: "h", receivedAt: message.issuedAt))
+        let frames = await transport.frames
+        let frame = try XCTUnwrap(frames.first)
+        XCTAssertEqual(try ClaudeHookIPCFrame.decode(frame).payload, payload)
+        XCTAssertThrowsError(try ClaudeHookHelperRuntime(installationID: IntegrationInstanceID("i"), helperID: "h", credentialStore: InMemoryClaudeHookCredentialStore(secret: nil), endpoint: ClaudeLocalEndpoint(path: endpointURL, appOwnedRoot: root))) { error in
+            XCTAssertEqual(error as? ClaudeHookHelperError, .credentialMissing)
+        }
     }
 
     func testAdapterIntakeRejectsAuthCrossOwnerReplayAndRetainsIPCDegradation() async {
@@ -127,11 +198,40 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertTrue(accepted.accepted)
         let duplicate = await adapter.ingest(ClaudeHookIPCMessage(installationID: installation, helperID: "helper-a", nonce: "duplicate-event", payload: payload, issuedAt: Date(timeIntervalSince1970: 400), authenticator: auth), at: Date(timeIntervalSince1970: 400))
         XCTAssertEqual(duplicate.rejection, .duplicateEvent)
+        let otherSession = Data("{\"hook_event_name\":\"SessionStart\",\"session_id\":\"sess-b\",\"event_id\":\"start\",\"sequence\":1}".utf8)
+        let otherReport = await adapter.ingest(ClaudeHookIPCMessage(installationID: installation, helperID: "helper-a", nonce: "other-session", payload: otherSession, issuedAt: Date(timeIntervalSince1970: 400), authenticator: auth), at: Date(timeIntervalSince1970: 400))
+        XCTAssertTrue(otherReport.accepted, "same Product event IDs are scoped by native session owner")
         let crossOwner = ClaudeHookIPCMessage(installationID: IntegrationInstanceID("other"), helperID: "helper-a", nonce: "cross-owner", payload: payload, issuedAt: Date(timeIntervalSince1970: 400), authenticator: auth)
         let crossOwnerReport = await adapter.ingest(crossOwner, at: Date(timeIntervalSince1970: 400))
         XCTAssertEqual(crossOwnerReport.rejection, .crossOwner)
         await adapter.reportHelperLoss(at: Date(timeIntervalSince1970: 401))
         let health = await adapter.health
         XCTAssertEqual(health.helperReachability, .unavailable)
+    }
+
+    func testLiveChildLineageRejectsOrphanAndCrossParentStops() async {
+        let runtime = ApplicationRuntime(store: SessionStore(), idGenerator: { "generated" }, clock: { Date(timeIntervalSince1970: 400) })
+        let installation = IntegrationInstanceID("child-installation")
+        let auth = ClaudeIPCAuthenticator(secret: "child-secret")
+        let adapter = ClaudeCodeAdapter(port: runtime, integrationInstanceID: installation, helperID: "helper-child", authenticator: auth)
+        _ = await adapter.negotiate(version: ClaudeHooksVersionEvidence(productVersion: "1.0.0", observedAt: Date(timeIntervalSince1970: 400)), at: Date(timeIntervalSince1970: 400))
+        _ = await adapter.setEnabledIntent(true, at: Date(timeIntervalSince1970: 400))
+        let start = Data("{\"hook_event_name\":\"SubagentStart\",\"session_id\":\"sess\",\"event_id\":\"child-start\",\"subagent_run_id\":\"child\",\"parent_turn_id\":\"parent\"}".utf8)
+        let started = await adapter.ingest(ClaudeHookIPCMessage(installationID: installation, helperID: "helper-child", nonce: "child-start", payload: start, issuedAt: Date(timeIntervalSince1970: 400), authenticator: auth), at: Date(timeIntervalSince1970: 400))
+        XCTAssertTrue(started.accepted)
+        let orphan = Data("{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"sess\",\"event_id\":\"orphan\",\"subagent_run_id\":\"missing\",\"parent_turn_id\":\"parent\",\"result\":{\"status\":\"completed\"}}".utf8)
+        XCTAssertEqual((await adapter.ingest(ClaudeHookIPCMessage(installationID: installation, helperID: "helper-child", nonce: "orphan", payload: orphan, issuedAt: Date(timeIntervalSince1970: 400), authenticator: auth), at: Date(timeIntervalSince1970: 400))).rejection, .unprovenChildStop)
+        let crossParent = Data("{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"sess\",\"event_id\":\"cross\",\"subagent_run_id\":\"child\",\"parent_turn_id\":\"other\",\"result\":{\"status\":\"completed\"}}".utf8)
+        XCTAssertEqual((await adapter.ingest(ClaudeHookIPCMessage(installationID: installation, helperID: "helper-child", nonce: "cross", payload: crossParent, issuedAt: Date(timeIntervalSince1970: 400), authenticator: auth), at: Date(timeIntervalSince1970: 400))).rejection, .unprovenChildStop)
+        await adapter.reportHelperLoss(at: Date(timeIntervalSince1970: 401))
+        let stale = Data("{\"hook_event_name\":\"SubagentStop\",\"session_id\":\"sess\",\"event_id\":\"stale\",\"subagent_run_id\":\"child\",\"parent_turn_id\":\"parent\",\"result\":{\"status\":\"completed\"}}".utf8)
+        XCTAssertEqual((await adapter.ingest(ClaudeHookIPCMessage(installationID: installation, helperID: "helper-child", nonce: "stale", payload: stale, issuedAt: Date(timeIntervalSince1970: 401), authenticator: auth), at: Date(timeIntervalSince1970: 401))).rejection, .unprovenChildStop)
+    }
+
+    func testHookEnvelopeRejectsDuplicateIdentityKeys() {
+        let duplicate = Data("{\"hook_event_name\":\"SessionStart\",\"session_id\":\"first\",\"session_id\":\"second\",\"event_id\":\"event\"}".utf8)
+        XCTAssertThrowsError(try ClaudeHookEnvelope.decode(duplicate)) { error in
+            XCTAssertEqual(error as? ClaudeHookRejection, .malformedEnvelope)
+        }
     }
 }

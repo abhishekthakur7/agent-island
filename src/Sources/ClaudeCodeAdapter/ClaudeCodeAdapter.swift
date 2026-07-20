@@ -30,10 +30,23 @@ public enum ClaudeCodeIntegration {
         subagentCapability
     ]
 
-    /// The helper receives only a fixed, non-secret bootstrap script. Runtime
-    /// authentication is negotiated in memory over local IPC; credentials are
-    /// never written into Product configuration or diagnostics.
-    public static let helperBootstrap = Data("#!/bin/sh\n# Agent Island Claude Hooks observation helper\n".utf8)
+    /// A functional, non-secret launcher. The application-owned executable
+    /// performs bounded stdin intake and authenticated local IPC; this file
+    /// contains no installation secret, native command, or hook payload.
+    /// This is deliberately an absolute, application-owned executable. A hook
+    /// runs in a Product-controlled environment, so an environment override
+    /// would turn configuration ownership into command authority.
+    public static let helperExecutablePath = "/Applications/Agent Island.app/Contents/MacOS/ClaudeHookHelper"
+    public static let helperBootstrap = Data("#!/bin/sh\nset -eu\nexec \"/Applications/Agent Island.app/Contents/MacOS/ClaudeHookHelper\"\n".utf8)
+
+    /// The launcher carries only non-secret owner labels. The helper resolves
+    /// its credential from the app-owned Keychain service at runtime.
+    public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String) -> Data {
+        let quote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexec \"\(helperExecutablePath)\"\n".utf8)
+    }
+
+    public static func helperID(for helperPath: URL) -> String { "helper-" + ExactEntryDigest.value(Data(helperPath.path.utf8)) }
 }
 
 public struct ClaudeCodeVersion: Codable, Hashable, Sendable, Comparable, CustomStringConvertible {
@@ -151,6 +164,7 @@ public enum ClaudeHookRejection: String, Codable, Hashable, Sendable, Error {
     case missingEventIdentity
     case invalidParentage
     case unprovenChildStop
+    case missingStopEvidence
     case unsupportedResponseSemantics
     case capabilityUnavailable
     case transportUnavailable
@@ -262,18 +276,16 @@ public struct ClaudeQuestionObservation: Codable, Hashable, Sendable {
 }
 
 /// Product-attributed context retained for correlation only. These values are
-/// never merge keys, lifecycle evidence, or diagnostic text; transcriptPath
-/// is not dereferenced or shown by this adapter.
+/// never merge keys, lifecycle evidence, or diagnostic text. Transcript paths
+/// are deliberately discarded: this adapter neither reads nor displays them.
 public struct ClaudeAttributedContext: Codable, Hashable, Sendable {
     public let model: String?
     public let workingDirectory: String?
-    public let transcriptPath: String?
     public let promptID: String?
 
-    public init(model: String? = nil, workingDirectory: String? = nil, transcriptPath: String? = nil, promptID: String? = nil) {
+    public init(model: String? = nil, workingDirectory: String? = nil, promptID: String? = nil) {
         self.model = model
         self.workingDirectory = workingDirectory
-        self.transcriptPath = transcriptPath
         self.promptID = promptID
     }
 }
@@ -357,7 +369,7 @@ public struct ClaudeIntegrationHealth: Codable, Hashable, Sendable {
         case .unauthenticated, .untrustedHelper: .permissionDenied
         case .crossOwner: .ownerAmbiguous
         case .oversizedEnvelope: .payloadTooLarge
-        case .malformedEnvelope, .unsupportedHook, .missingNativeSessionIdentity, .missingEventIdentity, .invalidParentage, .unprovenChildStop, .unsupportedResponseSemantics: .malformedInput
+        case .malformedEnvelope, .unsupportedHook, .missingNativeSessionIdentity, .missingEventIdentity, .invalidParentage, .unprovenChildStop, .missingStopEvidence, .unsupportedResponseSemantics: .malformedInput
         case .duplicateEvent, .replayedNonce: .duplicateDelivery
         case .unknownVersion, .unsupportedVersion, .newerVersion: .staleEvidence
         case .capabilityUnavailable: .capabilityNotGranted
@@ -448,8 +460,16 @@ public struct ClaudeHookIPCMessage: Codable, Hashable, Sendable {
         self.installationID = installationID; self.helperID = helperID; self.nonce = nonce; self.payload = payload; self.issuedAt = issuedAt; self.authenticationTag = authenticationTag
     }
 
-    public func isAuthenticated(using authenticator: ClaudeIPCAuthenticator, expectedInstallationID: IntegrationInstanceID, expectedHelperID: String) -> Bool {
-        payload.count <= SessionDomainValidator.maxPayloadBytes && installationID == expectedInstallationID && helperID == expectedHelperID && nonce.utf8.count <= 128 && !nonce.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && authenticator.verify(tag: authenticationTag, installationID: installationID, helperID: helperID, nonce: nonce, payload: payload, issuedAt: issuedAt)
+    public func isAuthenticated(using authenticator: ClaudeIPCAuthenticator, expectedInstallationID: IntegrationInstanceID, expectedHelperID: String, receivedAt: Date? = nil, maxClockSkew: TimeInterval = 120) -> Bool {
+        guard payload.count <= SessionDomainValidator.maxPayloadBytes,
+              installationID == expectedInstallationID,
+              helperID == expectedHelperID,
+              nonce.utf8.count <= 128,
+              !nonce.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              issuedAt.timeIntervalSince1970.isFinite,
+              authenticator.verify(tag: authenticationTag, installationID: installationID, helperID: helperID, nonce: nonce, payload: payload, issuedAt: issuedAt) else { return false }
+        if let receivedAt { return abs(receivedAt.timeIntervalSince(issuedAt)) <= maxClockSkew }
+        return true
     }
 }
 
@@ -468,19 +488,19 @@ public struct ClaudeHookEnvelope: Sendable {
     public let occurrenceTime: Date?
     public let model: String?
     public let workingDirectory: String?
-    public let transcriptPath: String?
     public let promptID: String?
     public let payload: Data
     public let backgroundTaskCount: Int?
     public let scheduledWakeup: Bool?
     public let stopEvidencePresent: Bool
 
-    private init(name: ClaudeHookName, eventIdentity: EventIdentity, nativeSessionID: String, nativeTurnID: String?, nativeAttentionRequestID: String?, nativeSubagentRunID: String?, parentTurnID: String?, parentSessionID: String?, sourceSequence: Int64?, occurrenceTime: Date?, model: String?, workingDirectory: String?, transcriptPath: String?, promptID: String?, payload: Data, backgroundTaskCount: Int?, scheduledWakeup: Bool?, stopEvidencePresent: Bool) {
-        self.name = name; self.eventIdentity = eventIdentity; self.nativeSessionID = nativeSessionID; self.nativeTurnID = nativeTurnID; self.nativeAttentionRequestID = nativeAttentionRequestID; self.nativeSubagentRunID = nativeSubagentRunID; self.parentTurnID = parentTurnID; self.parentSessionID = parentSessionID; self.sourceSequence = sourceSequence; self.occurrenceTime = occurrenceTime; self.model = model; self.workingDirectory = workingDirectory; self.transcriptPath = transcriptPath; self.promptID = promptID; self.payload = payload; self.backgroundTaskCount = backgroundTaskCount; self.scheduledWakeup = scheduledWakeup; self.stopEvidencePresent = stopEvidencePresent
+    private init(name: ClaudeHookName, eventIdentity: EventIdentity, nativeSessionID: String, nativeTurnID: String?, nativeAttentionRequestID: String?, nativeSubagentRunID: String?, parentTurnID: String?, parentSessionID: String?, sourceSequence: Int64?, occurrenceTime: Date?, model: String?, workingDirectory: String?, promptID: String?, payload: Data, backgroundTaskCount: Int?, scheduledWakeup: Bool?, stopEvidencePresent: Bool) {
+        self.name = name; self.eventIdentity = eventIdentity; self.nativeSessionID = nativeSessionID; self.nativeTurnID = nativeTurnID; self.nativeAttentionRequestID = nativeAttentionRequestID; self.nativeSubagentRunID = nativeSubagentRunID; self.parentTurnID = parentTurnID; self.parentSessionID = parentSessionID; self.sourceSequence = sourceSequence; self.occurrenceTime = occurrenceTime; self.model = model; self.workingDirectory = workingDirectory; self.promptID = promptID; self.payload = payload; self.backgroundTaskCount = backgroundTaskCount; self.scheduledWakeup = scheduledWakeup; self.stopEvidencePresent = stopEvidencePresent
     }
 
     public static func decode(_ data: Data, maxBytes: Int = SessionDomainValidator.maxPayloadBytes) throws -> Self {
         guard data.count <= maxBytes else { throw ClaudeHookRejection.oversizedEnvelope }
+        guard (try? ClaudeJSONHookEditor.validateJSONObject(data)) != nil else { throw ClaudeHookRejection.malformedEnvelope }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ClaudeHookRejection.malformedEnvelope }
         func string(_ keys: [String]) -> String? {
             for key in keys { if let value = object[key] as? String, value.utf8.count <= SessionDomainValidator.maxMetadataStringBytes { return value } }
@@ -497,7 +517,7 @@ public struct ClaudeHookEnvelope: Sendable {
         let wake = (object["scheduled_wakeup"] as? NSNumber)?.boolValue ?? (object["scheduledWakeup"] as? NSNumber)?.boolValue
         let stopEvidence = string(["stop_reason", "stopReason", "result", "result_status"]) != nil || object["result"] != nil || object["stop_reason"] != nil
         let identity: EventIdentity = .stable(sourceID)
-        return Self(name: name, eventIdentity: identity, nativeSessionID: session, nativeTurnID: string(["turn_id", "turnId", "nativeTurnID"]), nativeAttentionRequestID: string(["request_id", "requestId", "attention_request_id"]), nativeSubagentRunID: string(["subagent_run_id", "subagentRunId", "child_id"]), parentTurnID: string(["parent_turn_id", "parentTurnId"]), parentSessionID: string(["parent_session_id", "parentSessionId"]), sourceSequence: sequence, occurrenceTime: timestamp, model: string(["model"]), workingDirectory: string(["cwd", "working_directory", "workingDirectory"]), transcriptPath: string(["transcript_path", "transcriptPath"]), promptID: string(["prompt_id", "promptId"]), payload: data, backgroundTaskCount: count, scheduledWakeup: wake, stopEvidencePresent: stopEvidence)
+        return Self(name: name, eventIdentity: identity, nativeSessionID: session, nativeTurnID: string(["turn_id", "turnId", "nativeTurnID"]), nativeAttentionRequestID: string(["request_id", "requestId", "attention_request_id"]), nativeSubagentRunID: string(["subagent_run_id", "subagentRunId", "child_id"]), parentTurnID: string(["parent_turn_id", "parentTurnId"]), parentSessionID: string(["parent_session_id", "parentSessionId"]), sourceSequence: sequence, occurrenceTime: timestamp, model: string(["model"]), workingDirectory: string(["cwd", "working_directory", "workingDirectory"]), promptID: string(["prompt_id", "promptId"]), payload: data, backgroundTaskCount: count, scheduledWakeup: wake, stopEvidencePresent: stopEvidence)
     }
 }
 
@@ -509,7 +529,7 @@ public enum ClaudeHookNormalizer {
         else { return .failure(.capabilityUnavailable) }
         if let parentSessionID = hook.parentSessionID, parentSessionID != hook.nativeSessionID { return .failure(.invalidParentage) }
         let identity = AgentSessionIdentity(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: NativeSessionID(hook.nativeSessionID))
-        let context = ClaudeAttributedContext(model: hook.model, workingDirectory: hook.workingDirectory, transcriptPath: hook.transcriptPath, promptID: hook.promptID)
+        let context = ClaudeAttributedContext(model: hook.model, workingDirectory: hook.workingDirectory, promptID: hook.promptID)
         let cursor = hook.sourceSequence.map { SourceCursor(scope: "claude-session:" + hook.nativeSessionID, value: $0) }
         func envelope(family: EventFamily, activity: SessionActivityKind? = nil, boundary: ObservationBoundaryReason? = nil, attention: AttentionRequestKind? = nil, ownership: LifecycleOwnership? = nil, reconciliation: ReconciliationScope? = nil, suffix: String? = nil, includeCursor: Bool = true) -> RawEventEnvelope {
             let eventIdentity: EventIdentity = suffix.map { .stable(sourceID(hook.eventIdentity) + ":" + $0) } ?? hook.eventIdentity
@@ -544,7 +564,11 @@ public enum ClaudeHookNormalizer {
             return .success(ClaudeNormalizedObservation(events: [], cue: ClaudeNotificationCue(kind: .notification, eventIdentity: hook.eventIdentity, sessionIdentity: identity, sourceObservedAt: hook.occurrenceTime), sourceName: hook.name, attributedContext: context))
         case .stop:
             let activeBackground = (hook.backgroundTaskCount ?? 0) > 0 || hook.scheduledWakeup == true
-            return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: activeBackground ? .waiting : .completed, ownership: hook.nativeTurnID.map { LifecycleOwnership(nativeTurnID: $0) }, suffix: "stop")], sourceName: hook.name, attributedContext: context))
+            if activeBackground { return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: .waiting, ownership: hook.nativeTurnID.map { LifecycleOwnership(nativeTurnID: $0) }, suffix: "stop")], sourceName: hook.name, attributedContext: context)) }
+            guard hook.stopEvidencePresent else { return .failure(.missingStopEvidence) }
+            let outcome = explicitStopOutcome(from: hook.payload)
+            guard let outcome else { return .failure(.missingStopEvidence) }
+            return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: outcome, ownership: hook.nativeTurnID.map { LifecycleOwnership(nativeTurnID: $0) }, suffix: "stop")], sourceName: hook.name, attributedContext: context))
         case .stopFailure, .permissionDenied:
             return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: .failed, ownership: hook.nativeTurnID.map { LifecycleOwnership(nativeTurnID: $0) }, suffix: "failure")], sourceName: hook.name, attributedContext: context))
         case .sessionEnd:
@@ -554,8 +578,9 @@ public enum ClaudeHookNormalizer {
             let owner = LifecycleOwnership(nativeTurnID: parentTurnID, nativeSubagentRunID: childID)
             return .success(ClaudeNormalizedObservation(events: [envelope(family: .subagentRunDeclared, ownership: owner, suffix: "child"), envelope(family: .sessionActivity, activity: .working, ownership: LifecycleOwnership(nativeTurnID: parentTurnID, nativeSubagentRunID: childID), suffix: "child-working", includeCursor: false)], sourceName: hook.name, attributedContext: context))
         case .subagentStop:
-            guard let childID = hook.nativeSubagentRunID, !childID.isEmpty, hook.stopEvidencePresent else { return .failure(.unprovenChildStop) }
-            return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: .completed, ownership: LifecycleOwnership(nativeSubagentRunID: childID), suffix: "child-stop")], sourceName: hook.name, attributedContext: context))
+            guard let childID = hook.nativeSubagentRunID, !childID.isEmpty, let parentTurnID = hook.parentTurnID ?? hook.nativeTurnID, !parentTurnID.isEmpty, hook.stopEvidencePresent else { return .failure(.unprovenChildStop) }
+            guard let outcome = explicitStopOutcome(from: hook.payload) else { return .failure(.unprovenChildStop) }
+            return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: outcome, ownership: LifecycleOwnership(nativeTurnID: parentTurnID, nativeSubagentRunID: childID), suffix: "child-stop")], sourceName: hook.name, attributedContext: context))
         case .configChange:
             return .success(ClaudeNormalizedObservation(events: [envelope(family: .reconciliation, reconciliation: .nonExhaustive, suffix: "reconcile")], sourceName: hook.name, attributedContext: context))
         case .wakeup:
@@ -568,6 +593,18 @@ public enum ClaudeHookNormalizer {
 
     private static func sourceID(_ identity: EventIdentity) -> String {
         switch identity { case .stable(let value), .weak(let value): return value }
+    }
+
+    private static func explicitStopOutcome(from payload: Data) -> SessionActivityKind? {
+        guard let root = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { return nil }
+        let raw = (root["stop_reason"] as? String) ?? (root["stopReason"] as? String) ?? (root["result_status"] as? String) ?? ((root["result"] as? [String: Any])?["status"] as? String)
+        guard let raw else { return nil }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "ok", "success", "completed", "complete", "done", "end", "end_turn", "max_tokens": return .completed
+        case "failure", "failed", "error", "tool_error": return .failed
+        case "stopped", "cancelled", "canceled", "user_stop", "interrupt", "interrupted": return .stopped
+        default: return nil
+        }
     }
 
     private static func questionShape(from payload: Data) -> GuidedSemanticShape? {
@@ -602,16 +639,36 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
     public init() {}
 
     public func selector(helperPath: URL) -> ExactEntrySelector {
-        let marker = "agent-island:claude-code-hooks-observation"
-        // This is a documented command-hook object for a line-oriented bridge
-        // source. Native nested settings JSON is deliberately rejected by
-        // `supportsLosslessHookSource` rather than receiving this fragment.
-        let escapedPath = helperPath.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let rendered = "{\"type\":\"command\",\"command\":\"" + escapedPath + "\",\"description\":\"" + marker + "\"}"
-        return ExactEntrySelector(key: "claude-code-hooks-observation", renderedLine: rendered, marker: marker)
+        ClaudeJSONHookEditor.entry(helperPath: helperPath).selector
+    }
+
+    /// Claude's documented settings map is keyed by hook event. One exact
+    /// marked entry is installed per supported event; each receipt is scoped
+    /// independently so a Product or policy-owned event can remain untouched.
+    public func selectors(helperPath: URL) -> [ExactEntrySelector] {
+        ClaudeHookName.allCases.map { ClaudeJSONHookEditor.entry(for: $0, helperPath: helperPath).selector }
     }
 
     public func discover(installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, manifest: OwnershipManifest? = nil, snapshot: NegotiationSnapshot? = nil, policy: ExactEntryWritePolicy = .allowed) -> IntegrationInstallationDiscovery {
+        if isClaudeJSON(scope.url) {
+            let entries = ClaudeHookName.allCases.map { ClaudeJSONHookEditor.entry(for: $0, helperPath: helperPath) }
+            let found = entries.map { ClaudeJSONHookEditor.inspect(at: scope.url, entry: $0) }
+            let inspectionState: ExactEntryInspectionState
+            let reason: ExactEntryFailureReason?
+            let source = found.first?.source ?? ExactEntryEditor.snapshot(at: scope.url)
+            let markerCount = found.reduce(0) { $0 + $1.markerMatches }
+            let compatibility = claudeCompatibility(snapshot: snapshot, policy: policy)
+            if compatibility == .policyBlocked { inspectionState = .unsupported; reason = .policyDenied }
+            else if found.contains(where: { !$0.supported || $0.source.symlinkTarget != nil }) { inspectionState = .unsupported; reason = source.symlinkTarget == nil ? .unsupported : .symlinkChanged }
+            else if found.contains(where: { $0.markerMatches > 1 }) { inspectionState = .shadowedManaged; reason = .ambiguous }
+            else if markerCount == 0 { inspectionState = .notConfigured; reason = nil }
+            else if let manifest, found.indices.allSatisfy({ found[$0].markerMatches == 1 && manifest.proving(entries[$0].selector, at: scope.path) != nil }) { inspectionState = .ownedIntact; reason = nil }
+            else if manifest != nil { inspectionState = .ownedDrifted; reason = .sourceChanged }
+            else { inspectionState = .externalCandidate; reason = nil }
+            let inspection = ExactEntryInspection(state: inspectionState, source: source, matchingEntryCount: markerCount, reason: reason)
+            let safe = inspectionState == .notConfigured && compatibility == .compatible && policy.allowsMutation
+            return IntegrationInstallationDiscovery(installationID: installationID, product: ClaudeCodeIntegration.productNamespace, integrationMode: ClaudeCodeIntegration.integrationMode, scope: scope, state: mapInspection(inspectionState), inspection: inspection, compatibility: compatibility, affectedCapabilities: snapshot?.capabilities.filter { $0.availability == .available }.map(\.id) ?? ClaudeCodeIntegration.allObservationCapabilities, safeToMutate: safe)
+        }
         guard supportsLosslessHookSource(scope.url) else {
             let source = ExactEntryEditor.snapshot(at: scope.url)
             let inspection = ExactEntryInspection(state: .unsupported, source: source, matchingEntryCount: 0, reason: .unsupported)
@@ -621,23 +678,29 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
     }
 
     public func makePlan(id: String, installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date(), expiresIn: TimeInterval = 300) -> IntegrationInstallationPlan {
-        let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(ClaudeCodeIntegration.helperBootstrap)), createdAt: now)
-        let base = coordinator.makePlan(id: id, installationID: installationID, action: .enable, product: ClaudeCodeIntegration.productNamespace, integrationMode: ClaudeCodeIntegration.integrationMode, scope: scope, selector: selector(helperPath: helperPath), snapshot: snapshot, policy: policy, now: now, expiresIn: expiresIn)
+        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+        let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
+        let base = coordinator.makePlan(id: id, installationID: installationID, action: .enable, product: ClaudeCodeIntegration.productNamespace, integrationMode: ClaudeCodeIntegration.integrationMode, scope: scope, selectors: selectors(helperPath: helperPath), snapshot: snapshot, policy: policy, now: now, expiresIn: expiresIn)
         let compatibility = supportsLosslessHookSource(scope.url) ? base.compatibility : .interfaceChanged
-        return IntegrationInstallationPlan(id: base.id, installationID: base.installationID, action: base.action, product: base.product, integrationMode: base.integrationMode, scope: base.scope, sourcePath: base.sourcePath, entries: base.entries, artifacts: [helper], compatibility: compatibility, productVersion: base.productVersion, interfaceVersion: base.interfaceVersion, policyFingerprint: base.policyFingerprint, sourceFingerprint: base.sourceFingerprint, permissionSummary: base.permissionSummary, affectedCapabilities: base.affectedCapabilities, capabilityEvidence: base.capabilityEvidence, rollback: base.rollback, manualRemedy: supportsLosslessHookSource(scope.url) ? base.manualRemedy : "The selected Claude JSON/policy source is not losslessly editable by this adapter; use Claude's documented setup manually.", nonEffects: base.nonEffects, createdAt: base.createdAt, expiresAt: base.expiresAt, manifestID: base.manifestID)
+        return IntegrationInstallationPlan(id: base.id, installationID: base.installationID, action: base.action, product: base.product, integrationMode: base.integrationMode, scope: base.scope, sourcePath: base.sourcePath, entries: base.entries, artifacts: [helper], compatibility: compatibility, productVersion: base.productVersion, interfaceVersion: base.interfaceVersion, policyFingerprint: base.policyFingerprint, sourceFingerprint: base.sourceFingerprint, permissionSummary: base.permissionSummary, affectedCapabilities: base.affectedCapabilities, capabilityEvidence: base.capabilityEvidence, rollback: base.rollback, manualRemedy: supportsLosslessHookSource(scope.url) ? base.manualRemedy : "The selected Claude settings source is not losslessly editable by this adapter; use Claude's documented setup manually.", nonEffects: base.nonEffects, createdAt: base.createdAt, expiresAt: base.expiresAt, manifestID: base.manifestID)
     }
 
     public func approve(_ plan: IntegrationInstallationPlan, personIdentifier: String, at date: Date = Date()) throws -> IntegrationInstallationApproval { try coordinator.approve(plan, personIdentifier: personIdentifier, at: date) }
 
     public func apply(_ approval: IntegrationInstallationApproval, currentSnapshot: NegotiationSnapshot, helperPath: URL, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationApplyResult {
+        if isClaudeJSON(URL(fileURLWithPath: approval.plan.sourcePath)) {
+            return applyJSON(approval, currentSnapshot: currentSnapshot, helperPath: helperPath, policy: policy, now: now)
+        }
         guard supportsLosslessHookSource(URL(fileURLWithPath: approval.plan.sourcePath)) else { return IntegrationInstallationApplyResult(status: .blocked, reason: .unsupported) }
-        let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(ClaudeCodeIntegration.helperBootstrap)), createdAt: now)
+        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: approval.plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+        let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let existed = FileManager.default.fileExists(atPath: helperPath.path)
         if existed {
-            guard ExactEntryEditor.snapshot(at: helperPath).fingerprint.content == helper.fingerprint else { return IntegrationInstallationApplyResult(status: .blocked, reason: .sourceChanged) }
+            let helperSnapshot = ExactEntryEditor.snapshot(at: helperPath)
+            guard helperSnapshot.symlinkTarget == nil, helperSnapshot.fingerprint.content == helper.fingerprint, (helperSnapshot.fingerprint.permissionBits ?? 0) & 0o077 == 0 else { return IntegrationInstallationApplyResult(status: .blocked, reason: .sourceChanged) }
         } else {
             guard FileManager.default.fileExists(atPath: helperPath.deletingLastPathComponent().path) else { return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable) }
-            do { try ClaudeCodeIntegration.helperBootstrap.write(to: helperPath, options: [.atomic]) } catch { return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable) }
+            do { try bootstrap.write(to: helperPath, options: [.atomic]); try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: helperPath.path) } catch { return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable) }
         }
         let result = coordinator.apply(approval, currentSnapshot: currentSnapshot, policy: policy, probe: { ExactEntryEditor.snapshot(at: helperPath).fingerprint.content == helper.fingerprint }, now: now)
         if result.manifest == nil && !existed { try? FileManager.default.removeItem(at: helperPath) }
@@ -652,16 +715,142 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
         return IntegrationInstallationPlan(id: base.id, installationID: base.installationID, action: base.action, product: base.product, integrationMode: base.integrationMode, scope: base.scope, sourcePath: base.sourcePath, entries: base.entries, artifacts: base.artifacts, compatibility: .interfaceChanged, productVersion: base.productVersion, interfaceVersion: base.interfaceVersion, policyFingerprint: base.policyFingerprint, sourceFingerprint: base.sourceFingerprint, permissionSummary: base.permissionSummary, affectedCapabilities: base.affectedCapabilities, capabilityEvidence: base.capabilityEvidence, rollback: base.rollback, manualRemedy: "Review and remove only the manifest-proven documented hook entry manually.", nonEffects: base.nonEffects, createdAt: base.createdAt, expiresAt: base.expiresAt, manifestID: base.manifestID)
     }
 
-    public func remove(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date = Date()) -> OwnershipManifestRemovalReport { coordinator.remove(approval, manifest: manifest, now: now) }
+    public func remove(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date = Date()) -> OwnershipManifestRemovalReport {
+        if isClaudeJSON(URL(fileURLWithPath: manifest.sourcePath)) { return removeJSON(approval, manifest: manifest, now: now) }
+        return coordinator.remove(approval, manifest: manifest, now: now)
+    }
 
     private func supportsLosslessHookSource(_ url: URL) -> Bool {
         let path = url.path.lowercased()
-        // ExactEntryEditor edits a line-oriented source only. Claude's nested
-        // settings JSON and symlink/policy sources require a manual remedy;
-        // this adapter never appends a synthetic line to invalid JSON.
-        guard !path.hasSuffix(".json"), !path.hasSuffix(".jsonc") else { return false }
+        if path.hasSuffix(".json") || path.hasSuffix(".jsonc") { return ClaudeJSONHookEditor.inspect(at: url, entry: ClaudeJSONHookEditor.entry(helperPath: URL(fileURLWithPath: "/dev/null"))).supported }
         return ExactEntryEditor.snapshot(at: url).symlinkTarget == nil
     }
+
+    private func isClaudeJSON(_ url: URL) -> Bool { let ext = url.pathExtension.lowercased(); return ext == "json" || ext == "jsonc" }
+
+    private func mapInspection(_ state: ExactEntryInspectionState) -> IntegrationInstallationDiscoveryState {
+        switch state { case .notConfigured: .notConfigured; case .ownedIntact: .ownedIntact; case .ownedDrifted: .ownedDrifted; case .externalCandidate: .externalCandidate; case .shadowedManaged: .shadowedManaged; case .unsupported: .unsupported; case .unavailable: .unavailable }
+    }
+
+    private func claudeCompatibility(snapshot: NegotiationSnapshot?, policy: ExactEntryWritePolicy) -> IntegrationInstallationCompatibility {
+        guard policy.allowsMutation else { return .policyBlocked }
+        guard let snapshot else { return .unknown }
+        guard snapshot.compatibility == .compatible, snapshot.grants(WellKnownCapability.configuration, direction: .configure), snapshot.killSwitches.isEnabled(.configure), snapshot.health.loadPolicy != .denied, snapshot.health.configured != .denied else { return .interfaceChanged }
+        return .compatible
+    }
+
+    private func applyJSON(_ approval: IntegrationInstallationApproval, currentSnapshot: NegotiationSnapshot, helperPath: URL, policy: ExactEntryWritePolicy, now: Date) -> IntegrationInstallationApplyResult {
+        let plan = approval.plan
+        guard plan.action == .enable, plan.isFresh(at: now), plan.compatibility == .compatible, policy.allowsMutation,
+              currentSnapshot.productNamespace == ClaudeCodeIntegration.productNamespace,
+              currentSnapshot.grants(WellKnownCapability.configuration, direction: .configure) else { return IntegrationInstallationApplyResult(status: .blocked, reason: .policyDenied) }
+        guard !plan.entries.isEmpty, plan.entries.allSatisfy({ $0.marker.hasPrefix(ClaudeJSONHookEditor.markerPrefix) }),
+              plan.artifacts.first?.path == helperPath.path else { return IntegrationInstallationApplyResult(status: .blocked, reason: .notManifestProven) }
+        var receipts: [(receipt: ExactEntryReceipt, event: ClaudeHookName)] = []
+        var expected = plan.sourceFingerprint
+        do {
+            for selector in plan.entries {
+                guard let event = ClaudeHookName(documentedName: selector.key.replacingOccurrences(of: "claude-code-hooks-", with: "")) else { throw ClaudeJSONHookEditor.EditorError.notManifestProven }
+                let entry = ClaudeJSONHookEditor.Entry(selector: selector, event: event, helperPath: helperPath.path)
+                let receipt = try ClaudeJSONHookEditor.add(entry: entry, at: URL(fileURLWithPath: plan.sourcePath), expected: expected, policy: policy, now: now)
+                receipts.append((receipt, event)); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: plan.sourcePath)).fingerprint
+            }
+        } catch let error as ClaudeJSONHookEditor.EditorError {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            return IntegrationInstallationApplyResult(status: .blocked, reason: mapJSONError(error))
+        } catch {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable)
+        }
+        let helperExisted = FileManager.default.fileExists(atPath: helperPath.path)
+        do {
+            let helperSource = ExactEntryEditor.snapshot(at: helperPath)
+            if helperSource.symlinkTarget != nil { throw ClaudeJSONHookEditor.EditorError.symlink }
+            if helperExisted {
+                guard helperSource.fingerprint.content == plan.artifacts[0].fingerprint, (helperSource.fingerprint.permissionBits ?? 0) & 0o077 == 0 else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
+            } else {
+                guard FileManager.default.fileExists(atPath: helperPath.deletingLastPathComponent().path) else { throw ClaudeJSONHookEditor.EditorError.unavailable }
+                let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+                try bootstrap.write(to: helperPath, options: .atomic)
+                try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: helperPath.path)
+            }
+        } catch let error as ClaudeJSONHookEditor.EditorError {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            if !helperExisted { try? FileManager.default.removeItem(at: helperPath) }
+            return IntegrationInstallationApplyResult(status: .blocked, reason: mapJSONError(error))
+        } catch {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            if !helperExisted { try? FileManager.default.removeItem(at: helperPath) }
+            return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable)
+        }
+        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+        let artifact = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
+        let source = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: plan.sourcePath))
+        let evidence = OwnershipManifestVerificationEvidence(verifiedAt: now, reread: true, probeSucceeded: true, sourceFingerprint: source.fingerprint, capabilityIDs: plan.affectedCapabilities)
+        let manifest = OwnershipManifest(id: plan.manifestID, installationID: plan.installationID.rawValue, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: receipts.map { $0.receipt }, artifacts: [artifact], productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, policyFingerprint: plan.policyFingerprint, verification: evidence, createdAt: now, updatedAt: now)
+        let installation = IntegrationInstallation(id: plan.installationID, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, manifestID: manifest.id, lifecycle: .enabled, enabledIntent: true, capabilities: plan.affectedCapabilities, health: nil)
+        return IntegrationInstallationApplyResult(status: .applied, manifest: manifest, installation: installation)
+    }
+
+    private func rollbackJSON(_ receipts: [(receipt: ExactEntryReceipt, event: ClaudeHookName)], sourcePath: String, now: Date) {
+        var current = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: sourcePath)).fingerprint
+        for item in receipts.reversed() {
+            guard let removed = try? ClaudeJSONHookEditor.remove(receipt: item.receipt, event: item.event, at: URL(fileURLWithPath: sourcePath), expected: current, now: now) else { continue }
+            current = removed.sourceFingerprint
+        }
+    }
+
+    private func removeJSON(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date) -> OwnershipManifestRemovalReport {
+        let plan = approval.plan
+        guard plan.action == .remove, plan.isFresh(at: now), plan.compatibility == .compatible, plan.sourcePath == manifest.sourcePath else { return OwnershipManifestRemovalReport(outcome: .notRemoved, reason: .sourceChanged, manifest: manifest) }
+        var expected = plan.sourceFingerprint
+        var removed: [ExactEntrySelector] = []
+        var residual: [ExactEntrySelector] = []
+        for receipt in manifest.entries {
+            let eventName = receipt.selector.key.replacingOccurrences(of: "claude-code-hooks-", with: "")
+            guard let event = ClaudeHookName(documentedName: eventName) else { residual.append(receipt.selector); continue }
+            do {
+                _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: event, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now)
+                removed.append(receipt.selector); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: manifest.sourcePath)).fingerprint
+            } catch { residual.append(receipt.selector) }
+        }
+        var removedArtifacts: [String] = []; var notRemovedArtifacts: [String] = []
+        // Keep the helper while any manifest-proven hook remains. A partial
+        // removal must never leave an exact owned entry pointing at a removed
+        // artifact merely because another entry drifted or became ambiguous.
+        if residual.isEmpty {
+            for artifact in manifest.artifacts {
+                let url = URL(fileURLWithPath: artifact.path); let current = ExactEntryEditor.snapshot(at: url)
+                guard current.symlinkTarget == nil, current.fingerprint.content == artifact.fingerprint else { notRemovedArtifacts.append(artifact.path); continue }
+                do { try FileManager.default.removeItem(at: url); removedArtifacts.append(artifact.path) } catch { notRemovedArtifacts.append(artifact.path) }
+            }
+        } else {
+            notRemovedArtifacts = manifest.artifacts.map(\.path)
+        }
+        let complete = residual.isEmpty && notRemovedArtifacts.isEmpty
+        let outcome: OwnershipManifestRemovalOutcome = complete ? .removed : ((removed.isEmpty && removedArtifacts.isEmpty) ? .notRemoved : .partialWithResidual)
+        return OwnershipManifestRemovalReport(outcome: outcome, removedEntries: removed, residualEntries: residual, removedArtifacts: removedArtifacts, notRemovedArtifacts: notRemovedArtifacts, reason: complete ? nil : .sourceChanged, manifest: manifest.replacing(lifecycle: complete ? .removed : .partial, at: now))
+    }
+
+    private func mapJSONError(_ error: ClaudeJSONHookEditor.EditorError) -> ExactEntryFailureReason {
+        switch error { case .sourceChanged: .sourceChanged; case .symlink: .symlinkChanged; case .policyDenied: .policyDenied; case .unsupported, .commentsInJSON: .unsupported; case .ambiguous: .ambiguous; case .notManifestProven: .notManifestProven; case .verificationFailed: .verificationFailed; case .unavailable, .invalidUTF8, .malformed: .unavailable }
+    }
+}
+
+private struct ClaudeEventOwnerKey: Hashable, Sendable {
+    let productNamespace: ProductNamespace
+    let nativeSessionID: String
+    let eventID: String
+    let nativeTurnID: String?
+    let nativeSubagentRunID: String?
+    let nativeAttentionRequestID: String?
+}
+
+private struct ClaudeChildOwnerKey: Hashable, Sendable {
+    let productNamespace: ProductNamespace
+    let nativeSessionID: String
+    let parentTurnID: String
+    let childID: String
 }
 
 public actor ClaudeCodeAdapter {
@@ -671,9 +860,10 @@ public actor ClaudeCodeAdapter {
     private let authenticator: ClaudeIPCAuthenticator
     private var snapshot: NegotiationSnapshot?
     private var enabledIntent = false
-    private var seenEventIDs: Set<String> = []
+    private var seenEventKeys: Set<ClaudeEventOwnerKey> = []
     private var seenNonces: [String: Date] = [:]
     private var knownSessions: Set<AgentSessionIdentity> = []
+    private var liveChildren: Set<ClaudeChildOwnerKey> = []
     public private(set) var health = ClaudeIntegrationHealth()
 
     public init(port: any AdapterIntakePort, integrationInstanceID: IntegrationInstanceID, helperID: String, authenticator: ClaudeIPCAuthenticator) {
@@ -700,6 +890,9 @@ public actor ClaudeCodeAdapter {
         let request = NegotiationRequest(integrationInstanceID: integrationInstanceID, adapterKind: ClaudeCodeIntegration.adapterKind, adapterBuildVersion: ClaudeCodeIntegration.adapterBuildVersion, productNamespace: ClaudeCodeIntegration.productNamespace, integrationMode: ClaudeCodeIntegration.integrationMode, offeredContractVersion: ContractVersion(major: SessionDomainValidator.supportedContractMajor, minor: 0), requestedCapabilities: records.map(\.id), catalogRevision: ClaudeCodeIntegration.catalogRevision, productVersion: version.productVersion, interfaceVersion: version.interfaceVersion, probeEvidence: NegotiationProbeEvidence(compatibility: probeCompatibility, productVersion: version.productVersion, interfaceVersion: version.interfaceVersion, setup: .loaded, observedAt: version.observedAt), requestedCapabilityRecords: records, compatibility: .compatible)
         let outcome = await port.negotiate(request)
         if case .compatible(let negotiated) = outcome {
+            // A new negotiation is a new helper/incarnation. Child authority
+            // is never recovered from in-memory state across it.
+            liveChildren.removeAll()
             snapshot = negotiated
             let obs = negotiated.capabilities.first(where: { $0.id == ClaudeCodeIntegration.observationCapability })?.availability ?? .unavailable
             let question = negotiated.capabilities.first(where: { $0.id == ClaudeCodeIntegration.questionCapability })?.availability ?? .unavailable
@@ -714,7 +907,7 @@ public actor ClaudeCodeAdapter {
         guard message.payload.count <= SessionDomainValidator.maxPayloadBytes else { return fail(.oversizedEnvelope, at: receiptTime) }
         guard message.installationID == integrationInstanceID else { return fail(.crossOwner, at: receiptTime) }
         guard message.helperID == helperID else { return fail(.untrustedHelper, at: receiptTime) }
-        guard message.isAuthenticated(using: authenticator, expectedInstallationID: integrationInstanceID, expectedHelperID: helperID) else { return fail(.unauthenticated, at: receiptTime) }
+        guard message.isAuthenticated(using: authenticator, expectedInstallationID: integrationInstanceID, expectedHelperID: helperID, receivedAt: receiptTime) else { return fail(.unauthenticated, at: receiptTime) }
         guard abs(receiptTime.timeIntervalSince(message.issuedAt)) <= 120 else { return fail(.unauthenticated, at: receiptTime) }
         guard !seenNonces.keys.contains(message.nonce) else { return fail(.replayedNonce, at: receiptTime) }
         if seenNonces.count >= 1_024, let oldest = seenNonces.min(by: { $0.value < $1.value })?.key { seenNonces.removeValue(forKey: oldest) }
@@ -724,21 +917,32 @@ public actor ClaudeCodeAdapter {
         let hook: ClaudeHookEnvelope
         do { hook = try ClaudeHookEnvelope.decode(message.payload) } catch let rejection as ClaudeHookRejection { return fail(rejection, at: receiptTime) } catch { return fail(.malformedEnvelope, at: receiptTime) }
         guard !hook.nativeSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return fail(.missingNativeSessionIdentity, at: receiptTime) }
-        let eventID = sourceID(hook.eventIdentity)
-        guard !seenEventIDs.contains(eventID) else { return ClaudeHookIntakeReport(accepted: false, duplicate: true, rejection: .duplicateEvent) }
-        guard case .success(let observation) = ClaudeHookNormalizer.normalize(hook, snapshot: snapshot, integrationInstanceID: integrationInstanceID, receiptTime: receiptTime) else { if case .failure(let reason) = ClaudeHookNormalizer.normalize(hook, snapshot: snapshot, integrationInstanceID: integrationInstanceID, receiptTime: receiptTime) { return fail(reason, at: receiptTime) }; return fail(.malformedEnvelope, at: receiptTime) }
+        let eventKey = ClaudeEventOwnerKey(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: hook.nativeSessionID, eventID: sourceID(hook.eventIdentity), nativeTurnID: hook.nativeTurnID, nativeSubagentRunID: hook.nativeSubagentRunID, nativeAttentionRequestID: hook.nativeAttentionRequestID)
+        guard !seenEventKeys.contains(eventKey) else { return ClaudeHookIntakeReport(accepted: false, duplicate: true, rejection: .duplicateEvent) }
+        if hook.name == .subagentStop {
+            guard let childID = hook.nativeSubagentRunID, let parentTurnID = hook.parentTurnID ?? hook.nativeTurnID,
+                  liveChildren.contains(ClaudeChildOwnerKey(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: hook.nativeSessionID, parentTurnID: parentTurnID, childID: childID)) else { return fail(.unprovenChildStop, at: receiptTime) }
+        }
+        let normalized = ClaudeHookNormalizer.normalize(hook, snapshot: snapshot, integrationInstanceID: integrationInstanceID, receiptTime: receiptTime)
+        guard case .success(let observation) = normalized else { if case .failure(let reason) = normalized { return fail(reason, at: receiptTime) }; return fail(.malformedEnvelope, at: receiptTime) }
         for envelope in observation.events {
             let outcome = await port.deliver(envelope)
             switch outcome { case .rejected(let reason): return fail(Self.map(reason), at: receiptTime); case .storageUnavailable: return fail(.transportUnavailable, at: receiptTime); case .committed, .duplicateIgnored: break }
         }
-        if seenEventIDs.count >= 4_096 { seenEventIDs.removeFirst() }
-        seenEventIDs.insert(eventID)
+        if seenEventKeys.count >= 4_096, let first = seenEventKeys.first { seenEventKeys.remove(first) }
+        seenEventKeys.insert(eventKey)
+        if hook.name == .subagentStart, let childID = hook.nativeSubagentRunID, let parentTurnID = hook.parentTurnID ?? hook.nativeTurnID {
+            liveChildren.insert(ClaudeChildOwnerKey(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: hook.nativeSessionID, parentTurnID: parentTurnID, childID: childID))
+        } else if hook.name == .subagentStop, let childID = hook.nativeSubagentRunID, let parentTurnID = hook.parentTurnID ?? hook.nativeTurnID {
+            liveChildren.remove(ClaudeChildOwnerKey(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: hook.nativeSessionID, parentTurnID: parentTurnID, childID: childID))
+        }
         knownSessions.insert(AgentSessionIdentity(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: NativeSessionID(hook.nativeSessionID)))
         health = ClaudeIntegrationHealth(enabledIntent: enabledIntent, observedHealth: health.observedHealth, observationCapability: health.observationCapability, questionCapability: health.questionCapability, planCapability: health.planCapability, helperReachability: .verified, lastReason: nil, configurationState: health.configurationState, observedAt: receiptTime)
         return ClaudeHookIntakeReport(accepted: true, events: observation.events, observation: observation, protectedContent: observation.protectedContent, cue: observation.cue, question: observation.question, plan: observation.plan)
     }
 
     public func reportHelperLoss(at date: Date = Date()) async {
+        liveChildren.removeAll()
         health = ClaudeIntegrationHealth(enabledIntent: enabledIntent, observedHealth: health.observedHealth, observationCapability: health.observationCapability, questionCapability: health.questionCapability, planCapability: health.planCapability, helperReachability: .unavailable, lastReason: .transportUnavailable, configurationState: health.configurationState, observedAt: date)
         guard let snapshot else { return }
         for identity in knownSessions {

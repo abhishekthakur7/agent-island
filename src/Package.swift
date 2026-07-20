@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "ApplicationRuntime", targets: ["ApplicationRuntime"]),
         .library(name: "AdapterFixtureKit", targets: ["AdapterFixtureKit"]),
         .library(name: "ClaudeCodeAdapter", targets: ["ClaudeCodeAdapter"]),
+        .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -70,6 +71,11 @@ let package = Package(
         // receives a SessionStore, ProtectedStore, Product action client, or
         // transcript reader.
         .target(name: "ClaudeCodeAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
+
+        // Application-owned documented-hook helper. It has no Product action,
+        // transcript, or store dependency; it only validates stdin and sends
+        // authenticated bounded frames through the local IPC abstraction.
+        .executableTarget(name: "ClaudeHookHelper", dependencies: ["ClaudeCodeAdapter", "SessionDomain"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
