@@ -1,4 +1,5 @@
 import Foundation
+import SessionDomain
 
 /// The ten destinations in the Atlas Settings sidebar.  The ordering is part
 /// of the presentation contract: it is also the order used by the default
@@ -151,6 +152,19 @@ public struct AtlasGeneralPreferences: Codable, Equatable, Hashable, Sendable {
 }
 
 public typealias AtlasGeneralSettings = AtlasGeneralPreferences
+
+/// Durable shortcut intent. The registry stores physical keys and modifiers;
+/// runtime registration remains capability/platform dependent and therefore
+/// reports unavailable rather than pretending to own global input.
+public struct AtlasShortcutPreferences: Codable, Equatable, Hashable, Sendable {
+    public var registry: ShortcutRegistry
+
+    public init(registry: ShortcutRegistry = ShortcutRegistry()) {
+        self.registry = registry
+    }
+
+    public static let `default` = Self()
+}
 
 /// The collapsed surface deliberately has two named forms.  `clean` keeps
 /// the aggregate calm; `detailed` adds only sourced metadata and never
@@ -333,6 +347,7 @@ public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
     public var selectedDestination: AtlasSettingsDestination
     public var general: AtlasGeneralPreferences
     public var display: AtlasDisplayPreferences
+    public var shortcuts: AtlasShortcutPreferences
     public var onboarding: AtlasOnboardingState
     public var integrations: [AtlasIntegrationState]
     public var preview: AtlasPreviewState
@@ -341,6 +356,7 @@ public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
         selectedDestination: AtlasSettingsDestination = .general,
         general: AtlasGeneralPreferences = .default,
         display: AtlasDisplayPreferences = .default,
+        shortcuts: AtlasShortcutPreferences = .default,
         onboarding: AtlasOnboardingState = .initial,
         integrations: [AtlasIntegrationState] = AtlasIntegrationState.defaults,
         preview: AtlasPreviewState? = nil
@@ -348,6 +364,7 @@ public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
         self.selectedDestination = selectedDestination
         self.general = general
         self.display = display
+        self.shortcuts = shortcuts
         self.onboarding = onboarding
         self.integrations = integrations
         self.preview = preview ?? AtlasPreviewState(general: general, display: display)
@@ -358,6 +375,7 @@ public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
     public init(
         selectedDestination: AtlasSettingsDestination,
         general: AtlasGeneralPreferences,
+        shortcuts: AtlasShortcutPreferences = .default,
         onboarding: AtlasOnboardingState,
         integrations: [AtlasIntegrationState],
         preview: AtlasPreviewState? = nil
@@ -366,6 +384,7 @@ public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
             selectedDestination: selectedDestination,
             general: general,
             display: .default,
+            shortcuts: shortcuts,
             onboarding: onboarding,
             integrations: integrations,
             preview: preview

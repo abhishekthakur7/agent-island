@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import AgentIslandApp
+@testable import SessionDomain
 
 final class AtlasSettingsRepositoryTests: XCTestCase {
     func testDefaultsAreExplicitAndRoundTripInAnIsolatedSuite() {
@@ -79,5 +80,25 @@ final class AtlasSettingsRepositoryTests: XCTestCase {
         var evidenceOnly = try XCTUnwrap(loaded)
         evidenceOnly.apply(evidence: AtlasIntegrationEvidence(health: .healthy, freshness: .current))
         XCTAssertTrue(evidenceOnly.enabledIntent)
+    }
+
+    func testShortcutBindingsPersistAndMasterDisablePreservesMapping() {
+        let suite = "AtlasSettingsRepositoryTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = AtlasSettingsRepository(defaults: defaults, namespace: "test.atlas")
+        let binding = ShortcutBinding(key: PhysicalKey(0), modifiers: [.option])
+        var preferences = repository.shortcuts
+        XCTAssertEqual(preferences.registry.setBinding(binding, for: .toggleOverlay), .valid)
+        repository.shortcuts = preferences
+
+        var disabled = repository.shortcuts
+        disabled.registry.setMasterEnabled(false)
+        repository.shortcuts = disabled
+
+        let loaded = repository.shortcuts
+        XCTAssertFalse(loaded.registry.masterEnabled)
+        XCTAssertTrue(loaded.registry.activeBindings.isEmpty)
+        XCTAssertEqual(loaded.registry.bindings[.toggleOverlay], binding)
     }
 }

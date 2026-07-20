@@ -18,7 +18,7 @@ struct AtlasSettingsDetail: View {
             case .display: AtlasDisplaySection(model: model, preview: model.preview, send: model.sendPreview, liveDisplayControls: liveDisplayControls)
             case .sound: AtlasSoundSection(model: notificationSettings)
             case .usage: AtlasPlaceholderSection(title: "Usage", icon: "chart.bar", message: "Usage Snapshots are display-only source evidence. Agent Island never estimates unavailable usage.")
-            case .shortcuts: AtlasPlaceholderSection(title: "Shortcuts", icon: "command", message: "Global and focused shortcuts will expose collisions and can be disabled without changing Agent Product state.")
+            case .shortcuts: AtlasShortcutsSection(model: model)
             case .labs: AtlasPlaceholderSection(title: "Labs", icon: "flask", message: "Experimental capabilities remain opt-in and clearly separate from stable settings.")
             case .diagnostics: AtlasDiagnosticsSection(integrations: model.integrations)
             case .maintenance: AtlasMaintenanceSection()
@@ -423,6 +423,151 @@ private struct AtlasPlaceholderSection: View {
             Label(message, systemImage: icon).foregroundStyle(.secondary)
             Text("This destination is reserved now so its capability, privacy, and failure semantics remain distinct.")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AtlasShortcutsSection: View {
+    @ObservedObject var model: AtlasSettingsModel
+
+    private let commands: [ShortcutCommand] = [
+        .toggleOverlay, .nextSession, .previousSession, .showAll, .collapse, .inspect
+    ]
+
+    var body: some View {
+        AtlasCard(title: "Keyboard and global shortcuts") {
+            Toggle("Enable global shortcuts", isOn: Binding(
+                get: { model.shortcuts.registry.masterEnabled },
+                set: { model.setShortcutsEnabled($0) }
+            ))
+            .accessibilityHint("Disabling unregisters every shortcut while preserving saved bindings.")
+            Text("Bindings use physical keys and current input-source labels. Agent Island does not simulate Host input or require Accessibility permission.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Label("Global registration is reported unavailable until a native safe registration capability is proven; saved mappings remain intact.", systemImage: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(commands, id: \.identifier) { command in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(command.shortcutTitle)
+                        Text(command.shortcutDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.shortcutCaptureCommand == command {
+                        ShortcutCaptureView { binding in
+                            model.captureShortcut(binding, for: command)
+                        } onCancel: {
+                            model.cancelShortcutCapture()
+                        }
+                        .frame(width: 130, height: 28)
+                        .accessibilityLabel("Press a physical key for \(command.shortcutTitle)")
+                    } else {
+                        Button(model.shortcuts.registry.bindings[command]?.renderedLabel() ?? "Set shortcut") {
+                            model.beginShortcutCapture(command)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Shortcut for \(command.shortcutTitle)")
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+            if let feedback = model.shortcutFeedback {
+                Text(feedback)
+                    .font(.caption)
+                    .foregroundStyle(feedback.hasPrefix("Saved") ? Color.secondary : Color.orange)
+            }
+        }
+        .accessibilityIdentifier("atlas.shortcuts.section")
+    }
+}
+
+private struct ShortcutCaptureView: NSViewRepresentable {
+    let onBinding: (ShortcutBinding) -> Void
+    let onCancel: () -> Void
+
+    func makeNSView(context: Context) -> ShortcutCaptureNSView {
+        let view = ShortcutCaptureNSView()
+        view.onBinding = onBinding
+        view.onCancel = onCancel
+        DispatchQueue.main.async { view.window?.makeFirstResponder(view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: ShortcutCaptureNSView, context: Context) {
+        nsView.onBinding = onBinding
+        nsView.onCancel = onCancel
+    }
+}
+
+private final class ShortcutCaptureNSView: NSView {
+    var onBinding: ((ShortcutBinding) -> Void)?
+    var onCancel: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+    override func becomeFirstResponder() -> Bool { true }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.controlBackgroundColor.setFill()
+        dirtyRect.fill()
+        let text = NSString(string: "Press a key")
+        text.draw(at: NSPoint(x: 10, y: 7), withAttributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode != PhysicalKey.escape.rawValue else { onCancel?(); return }
+        let flags = event.modifierFlags
+        var modifiers: ShortcutModifiers = []
+        if flags.contains(.command) { modifiers.insert(.command) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.function) { modifiers.insert(.function) }
+        onBinding?(ShortcutBinding(key: PhysicalKey(event.keyCode), modifiers: modifiers))
+    }
+}
+
+private extension ShortcutCommand {
+    var shortcutTitle: String {
+        switch self {
+        case .toggleOverlay: "Open / toggle Overlay"
+        case .nextSession: "Next Agent Session"
+        case .previousSession: "Previous Agent Session"
+        case .showAll: "Show all sessions"
+        case .collapse: "Collapse Overlay"
+        case .inspect: "Inspect selected session"
+        case let .safeAction(id): id
+        }
+    }
+
+    var shortcutDescription: String {
+        switch self {
+        case .toggleOverlay, .nextSession, .previousSession: "Global shortcut; physical key remains stable across input sources."
+        case .showAll, .collapse, .inspect: "Focused Overlay shortcut; hidden rows are never traversed."
+        case .safeAction: "Explicitly configured safe action; Product actions still require their normal gates."
+        }
+    }
+}
+
+private extension ShortcutBindingValidation {
+    var shortcutMessage: String {
+        switch self {
+        case .valid: "Saved."
+        case let .rejected(reason):
+            switch reason {
+            case .duplicateBinding: "Not saved: another command already uses that binding."
+            case .reservedSystemShortcut: "Not saved: that shortcut is reserved by macOS."
+            case .registeredCollision: "Not saved: another registered shortcut owns that binding."
+            case .emptySafeAction: "Not saved: safe action identifier is empty."
+            case .invalidKey: "Not saved: invalid physical key."
+            }
         }
     }
 }

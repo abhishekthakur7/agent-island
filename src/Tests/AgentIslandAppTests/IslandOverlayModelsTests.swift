@@ -89,4 +89,15 @@ final class IslandOverlayModelsTests: XCTestCase {
         XCTAssertEqual(geometry.protectedGap, 0)
         XCTAssertEqual(geometry.hitRegions, [CGRect(origin: .zero, size: geometry.frame.size)])
     }
+
+    func testVisibleFocusTargetsExcludeEmptyRowsAndKeepNotchGapNonInteractive() {
+        XCTAssertEqual(
+            IslandOverlayController.visibleFocusTargets(hasSessions: false, canInspect: false, canShowAll: false),
+            [.summary, .collapse, .settings]
+        )
+        XCTAssertEqual(
+            IslandOverlayController.visibleFocusTargets(hasSessions: true, canInspect: true, canShowAll: true),
+            [.summary, .session, .inspect, .showAll, .collapse, .settings]
+        )
+    }
 }

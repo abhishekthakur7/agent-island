@@ -24,6 +24,8 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var displayStatus = "Looking for a selected display…"
     @Published private(set) var selectionAvailability: IslandDisplayAvailability = .selectionUnavailable
     @Published private(set) var lastClickOutcome: PresentationClickOutcome?
+    @Published private(set) var focusedSessionIndex: Int? = nil
+    @Published private(set) var shortcutRegistrationStatus: ShortcutRegistrationStatus = .unavailable("Global registration is unavailable in this build; saved bindings remain intact.")
 
     private let presentation: PresentationRuntime
     private var stateMachine = IslandOverlayStateMachine()
@@ -31,6 +33,11 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private var container: IslandOverlayContainerView?
     private var observers: [NSObjectProtocol] = []
     private var keyMonitor: Any?
+    private var precedingKeyWindow: NSWindow?
+    private var shortcutGate = ShortcutInvocationGate()
+    private var shortcutRegistry = ShortcutRegistry()
+    private var keyboardFocus = KeyboardEngagementState()
+    private var localEditActive = false
     private var presentationCancellable: AnyCancellable?
     private var hoverWork: DispatchWorkItem?
     private var dismissalWork: DispatchWorkItem?
@@ -146,7 +153,14 @@ final class IslandOverlayController: NSObject, ObservableObject {
     }
 
     func engageKeyboard() {
+        precedingKeyWindow = NSApp.keyWindow === panel ? nil : NSApp.keyWindow
         stateMachine.reduce(.engageKeyboard)
+        keyboardFocus.engage(visibleTargets: Self.visibleFocusTargets(
+            hasSessions: !presentation.cards.isEmpty,
+            canInspect: !presentation.cards.isEmpty,
+            canShowAll: presentation.cards.count > 1
+        ))
+        focusedSessionIndex = presentation.cards.isEmpty ? nil : 0
         applyState()
         guard stateMachine.state.keyboardEngaged, let panel else { return }
         panel.keyboardEngaged = true
@@ -158,6 +172,9 @@ final class IslandOverlayController: NSObject, ObservableObject {
     func releaseKeyboard() {
         guard stateMachine.state.keyboardEngaged || panel?.keyboardEngaged == true else { return }
         stateMachine.reduce(.releaseKeyboard)
+        keyboardFocus.end()
+        focusedSessionIndex = nil
+        shortcutGate.reset()
         panel?.keyboardEngaged = false
         panel?.resignKey()
         renderIfVisible()
@@ -167,9 +184,37 @@ final class IslandOverlayController: NSObject, ObservableObject {
         dismissalWork?.cancel()
         hoverWork?.cancel()
         stateMachine.reduce(.collapse)
+        keyboardFocus.end()
+        focusedSessionIndex = nil
+        shortcutGate.reset()
         panel?.keyboardEngaged = false
         panel?.resignKey()
         applyState()
+        restorePrecedingKeyWindowIfEligible()
+    }
+
+    /// Apply durable bindings without claiming that a global monitor or Host
+    /// input simulation is available. The current process only has a local
+    /// engaged-panel monitor; mappings remain durable for a future native
+    /// registration capability.
+    func applyShortcutPreferences(_ preferences: AtlasShortcutPreferences) {
+        shortcutRegistry = preferences.registry
+        shortcutRegistrationStatus = preferences.registry.masterEnabled
+            ? .unavailable("Global registration is unavailable in this build; saved bindings remain intact.")
+            : .disabled
+    }
+
+    var keyboardFocusTarget: KeyboardFocusTarget? { keyboardFocus.focusedTarget }
+
+    func setLocalEditActive(_ active: Bool) { localEditActive = active }
+
+    nonisolated static func visibleFocusTargets(hasSessions: Bool, canInspect: Bool, canShowAll: Bool) -> [KeyboardFocusTarget] {
+        var targets: [KeyboardFocusTarget] = [.summary]
+        if hasSessions { targets.append(.session) }
+        if canInspect { targets.append(.inspect) }
+        if canShowAll { targets.append(.showAll) }
+        targets += [.collapse, .settings]
+        return targets
     }
 
     func reconcilePresentation() {
@@ -232,9 +277,44 @@ final class IslandOverlayController: NSObject, ObservableObject {
         observers.append(workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.reconcilePresentation() }
         })
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: NSEvent.EventTypeMask([.keyDown, .keyUp])) { [weak self] event in
             guard let self, self.stateMachine.state.keyboardEngaged else { return event }
-            if event.keyCode == 53 { self.collapse(); return nil }
+            let modifiers = ShortcutModifiers(rawValue: [
+                event.modifierFlags.contains(.command) ? ShortcutModifiers.command.rawValue : 0,
+                event.modifierFlags.contains(.option) ? ShortcutModifiers.option.rawValue : 0,
+                event.modifierFlags.contains(.control) ? ShortcutModifiers.control.rawValue : 0,
+                event.modifierFlags.contains(.shift) ? ShortcutModifiers.shift.rawValue : 0,
+                event.modifierFlags.contains(.function) ? ShortcutModifiers.function.rawValue : 0
+            ].reduce(0) { $0 | $1 })
+            let keyEvent = ShortcutKeyEvent(binding: ShortcutBinding(key: PhysicalKey(event.keyCode), modifiers: modifiers), phase: event.type == .keyUp ? .up : .down, isRepeat: event.isARepeat)
+            let isNavigationKey = [PhysicalKey.escape.rawValue, PhysicalKey.tab.rawValue].contains(event.keyCode)
+            if event.type == .keyUp {
+                _ = self.shortcutGate.shouldInvoke(keyEvent)
+                return event
+            }
+            if let command = self.shortcutRegistry.activeBindings.first(where: { $0.value == keyEvent.binding })?.key,
+               command.dispatchDisposition == .localOverlayNavigation {
+                guard self.shortcutGate.shouldInvoke(keyEvent) else { return nil }
+                self.dispatchLocalShortcut(command)
+                return nil
+            }
+            if isNavigationKey, !self.shortcutGate.shouldInvoke(keyEvent) { return nil }
+            if event.keyCode == PhysicalKey.escape.rawValue {
+                if self.localEditActive {
+                    self.localEditActive = false
+                } else {
+                    self.collapse()
+                }
+                return nil
+            }
+            if event.keyCode == PhysicalKey.tab.rawValue {
+                if event.modifierFlags.contains(.shift) { self.keyboardFocus.moveBackward() } else { self.keyboardFocus.moveForward() }
+                return nil
+            }
+            if event.keyCode == PhysicalKey.leftArrow.rawValue || event.keyCode == PhysicalKey.rightArrow.rawValue {
+                self.navigateSession(offset: event.keyCode == PhysicalKey.leftArrow.rawValue ? -1 : 1)
+                return nil
+            }
             return event
         }
     }
@@ -244,6 +324,30 @@ final class IslandOverlayController: NSObject, ObservableObject {
         dismissalWork?.cancel()
         stateMachine.reduce(.sleep)
         applyState()
+    }
+
+    private func navigateSession(offset: Int) {
+        guard !presentation.cards.isEmpty else { return }
+        let current = focusedSessionIndex ?? 0
+        let next = (current + offset + presentation.cards.count) % presentation.cards.count
+        focusedSessionIndex = next
+    }
+
+    private func dispatchLocalShortcut(_ command: ShortcutCommand) {
+        switch command {
+        case .toggleOverlay: toggleOverlay()
+        case .nextSession: navigateSession(offset: 1)
+        case .previousSession: navigateSession(offset: -1)
+        case .showAll:
+            stateMachine.reduce(.hoverEntered)
+            applyState()
+        case .collapse: collapse()
+        case .inspect: primaryClick()
+        case .safeAction:
+            // Consequential Product actions intentionally have no local
+            // dispatch path; Guided workflow/Action Lease remains authoritative.
+            break
+        }
     }
 
     private func refreshDisplays(coldResume: Bool) {
@@ -294,6 +398,13 @@ final class IslandOverlayController: NSObject, ObservableObject {
 
     private func renderIfVisible() {
         guard stateMachine.state.hasVisibleRegions, let screen = selectedScreen else { return }
+        if stateMachine.state.keyboardEngaged {
+            keyboardFocus.updateVisibleTargets(Self.visibleFocusTargets(
+                hasSessions: !presentation.cards.isEmpty,
+                canInspect: !presentation.cards.isEmpty,
+                canShowAll: presentation.cards.count > 1
+            ))
+        }
         let geometry = IslandOverlayGeometry.make(for: screen, presentation: stateMachine.state.presentation, settings: displayPreferences)
         let root = IslandOverlayView(
             presentation: stateMachine.state.presentation,
@@ -301,6 +412,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
             cards: presentation.cards,
             ledgerRevision: presentation.ledgerRevision,
             keyboardEngaged: stateMachine.state.keyboardEngaged,
+            focusedSessionIndex: focusedSessionIndex,
             clickBehavior: clickBehavior,
             displayPreferences: displayPreferences,
             onPrimaryClick: { [weak self] in self?.primaryClick() },
@@ -334,6 +446,9 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private func removeOverlayRegionsAndWindow() {
         // Order matters: make invisible regions non-interactive/non-AX before
         // ordering out the panel, including on display loss and termination.
+        keyboardFocus.end()
+        shortcutGate.reset()
+        focusedSessionIndex = nil
         container?.regions = []
         container?.setAccessibilityHidden(true)
         panel?.ignoresMouseEvents = true
@@ -370,5 +485,15 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private static func displayIdentity(for screen: NSScreen) -> String? {
         guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
         return IslandDisplay.identity(for: CGDirectDisplayID(number.uint32Value))
+    }
+
+    private func restorePrecedingKeyWindowIfEligible() {
+        guard let previous = precedingKeyWindow,
+              previous !== panel,
+              previous.isVisible,
+              previous.canBecomeKey
+        else { precedingKeyWindow = nil; return }
+        previous.makeKey()
+        precedingKeyWindow = nil
     }
 }

@@ -11,6 +11,7 @@ struct IslandOverlayView: View {
     let cards: [AgentSessionCardSnapshot]
     let ledgerRevision: Int64
     let keyboardEngaged: Bool
+    let focusedSessionIndex: Int?
     let clickBehavior: AtlasClickBehavior
     let displayPreferences: AtlasDisplayPreferences
     let onPrimaryClick: () -> Void
@@ -21,10 +22,20 @@ struct IslandOverlayView: View {
     let onEngageKeyboard: () -> Void
 
     @StateObject private var horizon = HorizonController()
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var attentionCount: Int { cards.filter { $0.attention == .pending }.count }
     private var isExpanded: Bool { presentation == .expanded || presentation == .focused }
     private var contentScale: CGFloat { CGFloat(displayPreferences.contentScale) }
+    private var adaptation: AccessibilityAdaptation {
+        AccessibilityAdaptation(
+            reduceTransparency: reduceTransparency,
+            increasedContrast: contrast == .increased,
+            textScale: dynamicTypeSize.isAccessibilitySize ? 1.3 : 1
+        )
+    }
 
     var body: some View {
         Group {
@@ -38,6 +49,18 @@ struct IslandOverlayView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .accessibilityElement(children: .contain)
+        .accessibilityHint(keyboardEngaged ? "Keyboard engagement active. Tab moves through visible controls; Escape collapses." : "Activate Keyboard to begin bounded Overlay engagement.")
+        .accessibilityValue(focusedSessionAccessibility)
+        .overlay {
+            if keyboardEngaged {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.85), lineWidth: 2)
+                    .padding(1)
+                    .accessibilityHidden(true)
+            }
+        }
+        .animation(.easeInOut(duration: adaptation.crossFadeDuration), value: presentation)
     }
 
     @ViewBuilder private var leftWing: some View {
@@ -130,6 +153,11 @@ struct IslandOverlayView: View {
         .accessibilityLabel(collapsedAccessibilityLabel)
     }
 
+    private var focusedSessionAccessibility: String {
+        guard let index = focusedSessionIndex, !cards.isEmpty else { return "No Agent Session focused" }
+        return "Focused Agent Session " + String(index + 1) + " of " + String(cards.count)
+    }
+
     private var collapsedAccessibilityLabel: String {
         let action = clickBehavior == .jumpBack ? "Jump Back when revalidated" : "Inspect or expand"
         return "\(attentionCount) Attention Requests; \(cards.count) Agent Sessions. \(action)"
@@ -178,10 +206,13 @@ struct IslandOverlayView: View {
 }
 
 private struct IslandSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+
     func body(content: Content) -> some View {
         content
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.18)) }
+            .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor)) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(contrast == .increased ? Color.primary : Color.white.opacity(0.18), lineWidth: contrast == .increased ? 1.5 : 1) }
             .shadow(color: .black.opacity(0.3), radius: 14, y: 5)
     }
 }

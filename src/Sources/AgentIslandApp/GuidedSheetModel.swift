@@ -12,6 +12,7 @@ public final class GuidedSheetModel: ObservableObject {
     @Published public private(set) var isCollapsed = false
     @Published public private(set) var isTextEntryFocused = false
     @Published public private(set) var announcement: String?
+    private var announcementLedger = AccessibilityAnnouncementLedger()
 
     public init(requests: [GuidedAttentionRequest] = []) {
         apply(requests: requests)
@@ -62,6 +63,18 @@ public final class GuidedSheetModel: ObservableObject {
             if lhs.priority != rhs.priority { return lhs.priority.rawValue > rhs.priority.rawValue }
             if lhs.sourceObservedAt != rhs.sourceObservedAt { return lhs.sourceObservedAt < rhs.sourceObservedAt }
             return lhs.id.id < rhs.id.id
+        }
+        let candidates = requests.filter { incoming in
+            guard let previous = priorByID[incoming.id] else { return incoming.sourceOutcome == .pending }
+            return incoming.priority.rawValue > previous.priority.rawValue
+        }
+        if let candidate = candidates.first,
+           let text = announcementLedger.announce(
+               requestID: candidate.id.id,
+               priority: candidate.priority.rawValue,
+               owner: candidate.owner.productNamespace.rawValue + " / " + candidate.owner.nativeSessionID.rawValue
+           ) {
+            announcement = text
         }
         if let prior, requests.contains(where: { $0.id == prior }) {
             selectedRequestID = prior

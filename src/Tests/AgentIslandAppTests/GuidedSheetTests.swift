@@ -26,5 +26,12 @@ final class GuidedSheetTests: XCTestCase {
         model.apply(requests: [request(), request()])
         XCTAssertEqual(model.selectedRequestID, selected)
     }
-}
 
+    func testAttentionAnnouncementIsOneShotAndIncludesOwner() {
+        let first = request()
+        let model = GuidedSheetModel(requests: [first])
+        XCTAssertTrue(model.announcement?.contains("fixture / session") == true)
+        model.apply(requests: [first])
+        XCTAssertTrue(model.announcement?.contains("fixture / session") == true)
+    }
+}

@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsCancellable: AnyCancellable?
     private var displaySettingsCancellable: AnyCancellable?
     private var displayAvailabilityCancellable: AnyCancellable?
+    private var shortcutsCancellable: AnyCancellable?
 
     init(presentation: PresentationRuntime, fixtureController: FixtureController) {
         self.presentation = presentation
@@ -46,12 +47,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyLaunchAtLogin(atlasSettings.general.launchBehavior)
         applyAtlasPresentationPreferences(atlasSettings.general)
         applyAtlasDisplayPreferences(atlasSettings.display)
+        overlay.applyShortcutPreferences(atlasSettings.shortcuts)
         settingsCancellable = atlasSettings.$general.sink { [weak self] general in
             self?.applyLaunchAtLogin(general.launchBehavior)
             self?.applyAtlasPresentationPreferences(general)
         }
         displaySettingsCancellable = atlasSettings.$display.sink { [weak self] display in
             self?.applyAtlasDisplayPreferences(display)
+        }
+        shortcutsCancellable = atlasSettings.$shortcuts.sink { [weak self] shortcuts in
+            self?.overlay.applyShortcutPreferences(shortcuts)
         }
         overlay.start()
         // This is a one-way, read-only bridge into the Settings preview. The

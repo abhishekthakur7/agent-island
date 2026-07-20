@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SessionDomain
 
 /// A typed, namespaced UserDefaults boundary for Atlas.  Callers never need
 /// to know a raw key and an isolated suite can be injected in tests.
@@ -29,6 +30,7 @@ public struct AtlasSettingsRepository {
         static let generalRevealAttention = "general.revealOnAttention"
         static let generalClickBehavior = "general.clickBehavior"
         static let display = "display"
+        static let shortcuts = "shortcuts"
         static let onboarding = "onboarding"
         static let integrations = "integrations"
     }
@@ -102,6 +104,24 @@ public struct AtlasSettingsRepository {
         nonmutating set { saveDisplay(newValue) }
     }
 
+    public func loadShortcuts() -> AtlasShortcutPreferences {
+        guard let data = defaults.data(forKey: key(Key.shortcuts)),
+              let decoded = try? JSONDecoder().decode(AtlasShortcutPreferences.self, from: data)
+        else { return .default }
+        return decoded
+    }
+
+    public func saveShortcuts(_ shortcuts: AtlasShortcutPreferences) {
+        if let data = try? JSONEncoder().encode(shortcuts) {
+            defaults.set(data, forKey: key(Key.shortcuts))
+        }
+    }
+
+    public var shortcuts: AtlasShortcutPreferences {
+        get { loadShortcuts() }
+        nonmutating set { saveShortcuts(newValue) }
+    }
+
     public func loadOnboarding() -> AtlasOnboardingState {
         guard let data = defaults.data(forKey: key(Key.onboarding)) else { return .initial }
         do {
@@ -143,6 +163,7 @@ public struct AtlasSettingsRepository {
     public func loadSnapshot() -> AtlasSettingsSnapshot {
         let general = loadGeneral()
         let display = loadDisplay()
+        let shortcuts = loadShortcuts()
         let preview = AtlasPreviewState(
             general: general,
             display: display,
@@ -153,6 +174,7 @@ public struct AtlasSettingsRepository {
             selectedDestination: selectedDestination,
             general: general,
             display: display,
+            shortcuts: shortcuts,
             onboarding: loadOnboarding(),
             integrations: loadIntegrations(),
             preview: preview
@@ -163,6 +185,7 @@ public struct AtlasSettingsRepository {
         selectedDestination = snapshot.selectedDestination
         saveGeneral(snapshot.general)
         saveDisplay(snapshot.display)
+        saveShortcuts(snapshot.shortcuts)
         saveOnboarding(snapshot.onboarding)
         saveIntegrations(snapshot.integrations)
     }
@@ -180,6 +203,9 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     @Published public private(set) var general: AtlasGeneralPreferences
     @Published public private(set) var launchAtLoginState: AtlasLaunchAtLoginState = .unknown
     @Published public private(set) var display: AtlasDisplayPreferences
+    @Published public private(set) var shortcuts: AtlasShortcutPreferences
+    @Published public private(set) var shortcutCaptureCommand: ShortcutCommand?
+    @Published public private(set) var shortcutFeedback: String?
     @Published public private(set) var onboarding: AtlasOnboardingState
     @Published public private(set) var integrations: [AtlasIntegrationState]
     @Published public private(set) var preview: AtlasPreviewState
@@ -193,6 +219,9 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
         self.selectedDestination = loaded.selectedDestination
         self.general = loaded.general
         self.display = loaded.display
+        self.shortcuts = loaded.shortcuts
+        self.shortcutCaptureCommand = nil
+        self.shortcutFeedback = nil
         self.onboarding = loaded.onboarding
         self.integrations = loaded.integrations
         self.previewRouter = AtlasPreviewRouter(initialState: loaded.preview)
@@ -241,6 +270,49 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
         var value = display
         update(&value)
         setDisplay(value)
+    }
+
+    public func setShortcuts(_ value: AtlasShortcutPreferences) {
+        guard shortcuts != value else { return }
+        shortcuts = value
+        repository.saveShortcuts(value)
+        publishSnapshot()
+    }
+
+    @discardableResult
+    public func setShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) -> ShortcutBindingValidation {
+        var value = shortcuts
+        let result = value.registry.setBinding(binding, for: command)
+        if case .valid = result { setShortcuts(value) }
+        return result
+    }
+
+    public func removeShortcut(for command: ShortcutCommand) {
+        var value = shortcuts
+        value.registry.removeBinding(for: command)
+        setShortcuts(value)
+    }
+
+    public func setShortcutsEnabled(_ enabled: Bool) {
+        var value = shortcuts
+        value.registry.setMasterEnabled(enabled)
+        setShortcuts(value)
+    }
+
+    public func beginShortcutCapture(_ command: ShortcutCommand) {
+        shortcutFeedback = nil
+        shortcutCaptureCommand = command
+    }
+
+    public func cancelShortcutCapture() { shortcutCaptureCommand = nil }
+
+    public func captureShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) {
+        let result = setShortcut(binding, for: command)
+        switch result {
+        case .valid: shortcutFeedback = "Saved."
+        case let .rejected(reason): shortcutFeedback = "Not saved: \(reason.rawValue)."
+        }
+        shortcutCaptureCommand = nil
     }
 
     public func onboarding(_ action: AtlasOnboardingAction) {
@@ -305,6 +377,7 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
             selectedDestination: selectedDestination,
             general: general,
             display: display,
+            shortcuts: shortcuts,
             onboarding: onboarding,
             integrations: integrations,
             preview: preview
