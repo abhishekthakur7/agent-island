@@ -3,10 +3,11 @@ set -eu
 
 # Reproducible AB-137 semantic artifact check. The generator's raw key order
 # is nondeterministic, so compare canonical parsed JSON, never raw bytes.
-ab137_out=$(mktemp -d /tmp/ab137-schema-check.XXXXXX)
-trap 'rm -rf "$ab137_out"' EXIT
-ab137_again="$ab137_out/again"
-mkdir "$ab137_again"
+ab137_tmp=$(mktemp -d /tmp/ab137-schema-check.XXXXXX)
+trap 'rm -rf "$ab137_tmp"' EXIT
+ab137_out="$ab137_tmp/first"
+ab137_again="$ab137_tmp/second"
+mkdir "$ab137_out" "$ab137_again"
 codex app-server generate-json-schema --out "$ab137_out"
 codex app-server generate-json-schema --out "$ab137_again"
 ab137_digest=$(cd "$ab137_out" && find . -type f -name '*.json' -print | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$f"; jq -S -c . "$f"; done | shasum -a 256 | awk '{print $1}')
