@@ -107,9 +107,9 @@ public struct ShortcutBinding: Codable, Hashable, Sendable, Equatable {
     }
 }
 
-/// Commands intentionally stop at local Overlay/session navigation and
-/// explicitly configured safe actions. Product-specific action integrations
-/// remain behind Guided workflow and Action Lease ports in later tickets.
+/// Commands intentionally stop at local Overlay/session navigation and the
+/// explicitly configured safe actions below. Product-specific action
+/// integrations remain behind the Guided workflow and Action Lease ports.
 public enum ShortcutCommand: Codable, Hashable, Sendable, Equatable {
     case toggleOverlay
     case nextSession
@@ -118,6 +118,21 @@ public enum ShortcutCommand: Codable, Hashable, Sendable, Equatable {
     case collapse
     case inspect
     case safeAction(String)
+
+    /// Constructs a command only from the closed set of safe actions exposed
+    /// by Settings.  The string-backed case remains decodable so older local
+    /// mappings can be retained, but unknown IDs never acquire authority.
+    public static func safeAction(_ action: ShortcutSafeAction) -> Self {
+        .safeAction(action.rawValue)
+    }
+
+    /// Returns the typed safe action only when this command is one of the
+    /// explicitly supported Guided semantics.  Arbitrary persisted strings
+    /// are intentionally not treated as Product authority.
+    public var configuredSafeAction: ShortcutSafeAction? {
+        guard case let .safeAction(id) = self else { return nil }
+        return ShortcutSafeAction(rawValue: id)
+    }
 
     public var identifier: String {
         switch self {
@@ -147,8 +162,12 @@ public enum ShortcutCommand: Codable, Hashable, Sendable, Equatable {
         switch self {
         case .toggleOverlay, .nextSession, .previousSession:
             return true
-        case .showAll, .collapse, .inspect, .safeAction:
+        case .showAll, .collapse, .inspect:
             return false
+        case .safeAction:
+            // Only the closed, source-supported choices may have a native
+            // callback. Unknown legacy IDs remain persisted but inert.
+            return configuredSafeAction != nil
         }
     }
 
@@ -186,6 +205,150 @@ public enum ShortcutCommand: Codable, Hashable, Sendable, Equatable {
     }
 }
 
+/// Explicit safe-action choices that can be configured in Settings.  Each
+/// value maps to one existing Guided semantic shape; there is deliberately no
+/// generic command, terminal input, or arbitrary Product extension choice.
+public enum ShortcutSafeAction: String, Codable, Hashable, Sendable, Equatable, CaseIterable, Identifiable {
+    case allow
+    case deny
+    case persistentAllow
+    case persistentDeny
+    case planAccept
+
+    public var id: String { rawValue }
+
+    /// Stable process-local Carbon event ID. It is distinct for every
+    /// supported safe action; the base range does not overlap local Overlay
+    /// navigation IDs.
+    public var nativeRegistrationID: UInt32 {
+        1000 + UInt32(Self.allCases.firstIndex(of: self) ?? 0)
+    }
+
+    public var title: String {
+        switch self {
+        case .allow: "Allow response"
+        case .deny: "Deny response"
+        case .persistentAllow: "Allow persistent suggestion"
+        case .persistentDeny: "Deny persistent suggestion"
+        case .planAccept: "Accept plan review"
+        }
+    }
+
+    public var guidedAction: GuidedAction {
+        switch self {
+        case .allow: .allow
+        case .deny: .deny
+        case .persistentAllow: .persistentSuggestion(allow: true)
+        case .persistentDeny: .persistentSuggestion(allow: false)
+        case .planAccept: .planReview(.accept, reason: nil)
+        }
+    }
+
+    public var semanticKind: GuidedSemanticKind { guidedAction.semanticKind }
+}
+
+/// A resolved route is only a request-opening instruction.  It contains the
+/// exact owner and typed Guided action so an injected coordinator can focus the
+/// request, but it is not a lease and cannot dispatch by itself.
+public struct ShortcutGuidedRoute: Codable, Hashable, Sendable, Equatable {
+    public let safeAction: ShortcutSafeAction
+    public let requestID: GuidedAttentionRequestID
+    public let owner: GuidedAttentionOwner
+    public let action: GuidedAction
+
+    public init(safeAction: ShortcutSafeAction, requestID: GuidedAttentionRequestID, owner: GuidedAttentionOwner, action: GuidedAction) {
+        self.safeAction = safeAction
+        self.requestID = requestID
+        self.owner = owner
+        self.action = action
+    }
+}
+
+public enum ShortcutGuidedRouteFailure: String, Codable, Hashable, Sendable, Equatable, Error {
+    case unknownSafeAction
+    case noLiveRequest
+    case ambiguousRequest
+    case sourceResolved
+    case capabilityUnavailable
+    case semanticResponseUnavailable
+    case guidedWorkflowUnavailable
+
+    public var humanReadableDescription: String {
+        switch self {
+        case .unknownSafeAction:
+            "This safe action is not configured; no Product action was sent."
+        case .noLiveRequest:
+            "No live Attention Request is eligible for this safe action; continue in the native Host."
+        case .ambiguousRequest:
+            "More than one live Attention Request matches this safe action; select one in Guided workflow first."
+        case .sourceResolved:
+            "The matching Attention Request is already resolved or superseded; no Product action was sent."
+        case .capabilityUnavailable:
+            "The matching Action capability is stale or unavailable; continue in the native Host."
+        case .semanticResponseUnavailable:
+            "The safe action does not match the live Guided response shape; no Product action was sent."
+        case .guidedWorkflowUnavailable:
+            "The Guided workflow is unavailable; continue in the native Host."
+        }
+    }
+}
+
+public enum ShortcutGuidedRouteResolution: Sendable, Equatable {
+    case eligible(ShortcutGuidedRoute)
+    case unavailable(ShortcutGuidedRouteFailure)
+}
+
+/// Result returned by an injected live Guided coordinator. `opened` means
+/// only that the exact request was focused/presented; it does not mean an
+/// Action Attempt was reserved or that a Product accepted anything.
+public enum ShortcutGuidedRouteOutcome: Sendable, Equatable {
+    case opened
+    case unavailable(ShortcutGuidedRouteFailure)
+}
+
+/// Pure, deterministic lookup used by a live Guided coordinator seam.  It
+/// validates exact request identity, source liveness, capability provenance,
+/// and typed semantic compatibility before opening a request.  It never
+/// issues a lease, reserves an Action Attempt, or dispatches a Product action.
+public enum ShortcutGuidedRouteResolver {
+    public static func resolve(command: ShortcutCommand, requests: [GuidedAttentionRequest]) -> ShortcutGuidedRouteResolution {
+        guard let safeAction = command.configuredSafeAction else {
+            return .unavailable(.unknownSafeAction)
+        }
+
+        let matching = requests.filter { $0.semanticShape.kind == safeAction.semanticKind }
+        guard !matching.isEmpty else { return .unavailable(.noLiveRequest) }
+
+        let pending = matching.filter { $0.sourceOutcome == .pending }
+        guard !pending.isEmpty else { return .unavailable(.sourceResolved) }
+        guard pending.count == 1 else { return .unavailable(.ambiguousRequest) }
+        let capable = pending.filter { request in
+            guard request.canRouteAction else { return false }
+            // Reassert the exact owner/capability provenance at the route
+            // boundary even when a caller supplies a reconstructed snapshot.
+            return request.capability.provenance?.productNamespace == request.owner.productNamespace
+                && request.capability.provenance?.integrationInstanceID == request.owner.integrationInstanceID
+                && request.capability.provenance?.snapshotID == request.owner.negotiationSnapshotID
+        }
+        guard !capable.isEmpty else { return .unavailable(.capabilityUnavailable) }
+
+        let action = safeAction.guidedAction
+        guard let request = capable.sorted(by: Self.requestOrder).first else {
+            return .unavailable(.noLiveRequest)
+        }
+        guard case .success = action.validating(against: request, confirmation: true) else {
+            return .unavailable(.semanticResponseUnavailable)
+        }
+        return .eligible(ShortcutGuidedRoute(safeAction: safeAction, requestID: request.id, owner: request.owner, action: action))
+    }
+
+    private static func requestOrder(_ lhs: GuidedAttentionRequest, _ rhs: GuidedAttentionRequest) -> Bool {
+        if lhs.priority != rhs.priority { return lhs.priority.rawValue > rhs.priority.rawValue }
+        if lhs.sourceObservedAt != rhs.sourceObservedAt { return lhs.sourceObservedAt < rhs.sourceObservedAt }
+        return lhs.id.id < rhs.id.id
+    }
+}
+
 /// A safe-action shortcut is only a discovery/configuration record here. Its
 /// invocation must enter the canonical Guided workflow and Action Lease gate;
 /// this module intentionally provides no alternate Product dispatch callback.
@@ -203,6 +366,19 @@ public enum ShortcutBindingValidationFailure: String, Codable, Hashable, Sendabl
     case requiresModifier
     case registrationUnavailable
     case registrationFailed
+
+    public var humanReadableDescription: String {
+        switch self {
+        case .duplicateBinding: "another configured command already uses that physical shortcut"
+        case .reservedSystemShortcut: "that physical shortcut is reserved by macOS"
+        case .registeredCollision: "another registered shortcut owns that physical shortcut"
+        case .emptySafeAction: "the safe action choice is empty"
+        case .invalidKey: "the physical key is invalid"
+        case .requiresModifier: "global shortcuts need Command, Option, Control, or Function"
+        case .registrationUnavailable: "native global shortcut registration is unavailable"
+        case .registrationFailed: "native global shortcut registration failed"
+        }
+    }
 }
 
 public enum ShortcutBindingValidation: Equatable, Sendable {
@@ -455,8 +631,10 @@ public final class ShortcutRegistrationCoordinator {
         self.backend = backend
     }
 
-    /// Applies one complete registry snapshot. Focused and consequential
-    /// commands are intentionally omitted from native registration.
+    /// Applies one complete registry snapshot. Focused controls are omitted;
+    /// explicitly configured safe actions may be registered, but their
+    /// callback can only open the Guided workflow through the injected local
+    /// route and never dispatches a Product action.
     public func apply(
         _ registry: ShortcutRegistry,
         invocation: @escaping Invocation
@@ -550,9 +728,10 @@ public final class ShortcutRegistrationCoordinator {
         guard registeredBindings[command] == binding else { return }
         let event = ShortcutKeyEvent(binding: binding, phase: phase)
         guard gate.shouldInvoke(event), phase == .down else { return }
-        // The coordinator has no alternate dispatch surface: only the
-        // configured local Overlay callback receives globally registered IDs.
-        guard command.dispatchDisposition == .localOverlayNavigation else { return }
+        // The configured local Overlay callback receives both local
+        // navigation and typed safe-action IDs. The callback owns the
+        // Guided/lease boundary; this coordinator never dispatches a Product
+        // action itself.
         callback?(command)
     }
 

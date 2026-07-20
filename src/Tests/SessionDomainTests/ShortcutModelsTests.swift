@@ -37,6 +37,76 @@ final class ShortcutModelsTests: XCTestCase {
     func testSafeActionShortcutCannotCreateParallelProductDispatchPath() {
         XCTAssertEqual(ShortcutCommand.inspect.dispatchDisposition, .localOverlayNavigation)
         XCTAssertEqual(ShortcutCommand.safeAction("answer").dispatchDisposition, .guidedWorkflowAction)
+        XCTAssertTrue(ShortcutCommand.safeAction(.allow).isGloballyEligible)
+        XCTAssertFalse(ShortcutCommand.safeAction("arbitrary-product-command").isGloballyEligible)
+    }
+
+    func testSafeActionChoicesMapOnlyToGuidedSemantics() {
+        XCTAssertEqual(ShortcutSafeAction.allow.guidedAction, .allow)
+        XCTAssertEqual(ShortcutSafeAction.persistentDeny.guidedAction, .persistentSuggestion(allow: false))
+        XCTAssertEqual(ShortcutSafeAction.planAccept.guidedAction, .planReview(.accept, reason: nil))
+        XCTAssertEqual(ShortcutSafeAction.planAccept.semanticKind, .planReview)
+        XCTAssertEqual(Set(ShortcutSafeAction.allCases.map(\.nativeRegistrationID)).count, ShortcutSafeAction.allCases.count)
+    }
+
+    func testGuidedSafeShortcutResolvesOneLiveRequestWithoutDispatchAuthority() {
+        let snapshot = NegotiationSnapshotID("snapshot")
+        let instance = IntegrationInstanceID("instance")
+        let product = ProductNamespace("fixture")
+        let owner = GuidedAttentionOwner(
+            productNamespace: product,
+            nativeSessionID: NativeSessionID("session"),
+            nativeAttentionRequestID: "request",
+            integrationInstanceID: instance,
+            negotiationSnapshotID: snapshot
+        )
+        let provenance = CapabilityProvenance(snapshotID: snapshot, integrationInstanceID: instance, productNamespace: product, integrationMode: "fixture")
+        let capability = CapabilityRecord(id: "attention.respond", direction: .act, availability: .available, provenance: provenance)
+        let request = GuidedAttentionRequest(evidence: GuidedAttentionEvidence(
+            owner: owner,
+            eventIdentity: .stable("event"),
+            sourceVariant: "allow-deny",
+            capability: capability,
+            semanticShape: .allowDeny,
+            constraints: GuidedAttentionConstraints(nativeFingerprint: "fp"),
+            sourceObservedAt: Date(timeIntervalSince1970: 1)
+        ))
+
+        let result = ShortcutGuidedRouteResolver.resolve(command: .safeAction(.allow), requests: [request])
+        guard case let .eligible(route) = result else { return XCTFail("one live request should be eligible") }
+        XCTAssertEqual(route.requestID, request.id)
+        XCTAssertEqual(route.owner, request.owner)
+        XCTAssertEqual(route.action, .allow)
+        // The route is an opening/focus instruction only; ActionLease and
+        // ActionAttempt types remain outside this resolver.
+    }
+
+    func testGuidedSafeShortcutFailsClosedForMissingStaleAndAmbiguousAuthority() {
+        let snapshot = NegotiationSnapshotID("snapshot")
+        let instance = IntegrationInstanceID("instance")
+        let product = ProductNamespace("fixture")
+        func request(id: String, outcome: GuidedSourceOutcome = .pending, capability: CapabilityRecord? = nil) -> GuidedAttentionRequest {
+            let owner = GuidedAttentionOwner(productNamespace: product, nativeSessionID: NativeSessionID("session-\(id)"), nativeAttentionRequestID: id, integrationInstanceID: instance, negotiationSnapshotID: snapshot)
+            let provenance = CapabilityProvenance(snapshotID: snapshot, integrationInstanceID: instance, productNamespace: product, integrationMode: "fixture")
+            let granted = capability ?? CapabilityRecord(id: "attention.respond", direction: .act, availability: .available, provenance: provenance)
+            var value = GuidedAttentionRequest(evidence: GuidedAttentionEvidence(owner: owner, eventIdentity: .stable("event-\(id)"), sourceVariant: "allow-deny", capability: granted, semanticShape: .allowDeny, constraints: GuidedAttentionConstraints(nativeFingerprint: "fp"), sourceObservedAt: Date(timeIntervalSince1970: 1)))
+            value.sourceOutcome = outcome
+            return value
+        }
+
+        guard case .unavailable(.noLiveRequest) = ShortcutGuidedRouteResolver.resolve(command: .safeAction(.allow), requests: []) else { return XCTFail("missing request must be unavailable") }
+        guard case .unavailable(.sourceResolved) = ShortcutGuidedRouteResolver.resolve(command: .safeAction(.allow), requests: [request(id: "resolved", outcome: .resolvedElsewhere)]) else { return XCTFail("resolved request must be unavailable") }
+        let unavailable = CapabilityRecord(id: "attention.respond", direction: .observe, availability: .available, provenance: CapabilityProvenance(snapshotID: snapshot, integrationInstanceID: instance, productNamespace: product, integrationMode: "fixture"))
+        guard case .unavailable(.capabilityUnavailable) = ShortcutGuidedRouteResolver.resolve(command: .safeAction(.allow), requests: [request(id: "stale", capability: unavailable)]) else { return XCTFail("observation-only request must be unavailable") }
+        let staleCapability = CapabilityRecord(id: "attention.respond", direction: .act, availability: .available, freshness: .stale, provenance: CapabilityProvenance(snapshotID: snapshot, integrationInstanceID: instance, productNamespace: product, integrationMode: "fixture"))
+        guard case .unavailable(.capabilityUnavailable) = ShortcutGuidedRouteResolver.resolve(command: .safeAction(.allow), requests: [request(id: "stale-freshness", capability: staleCapability)]) else { return XCTFail("stale capability must be unavailable") }
+        guard case .unavailable(.ambiguousRequest) = ShortcutGuidedRouteResolver.resolve(command: .safeAction(.allow), requests: [request(id: "one"), request(id: "two")]) else { return XCTFail("ambiguous live requests must fail closed") }
+        guard case .unavailable(.unknownSafeAction) = ShortcutGuidedRouteResolver.resolve(command: .safeAction("arbitrary"), requests: []) else { return XCTFail("unknown safe action must be unavailable") }
+    }
+
+    func testShortcutFailureDescriptionsAreHumanReadable() {
+        XCTAssertFalse(ShortcutBindingValidationFailure.registeredCollision.humanReadableDescription.contains("registeredCollision"))
+        XCTAssertTrue(ShortcutGuidedRouteFailure.capabilityUnavailable.humanReadableDescription.contains("stale or unavailable"))
     }
 
     func testMarkedCompositionBlocksOrdinaryCharactersAndRepeatDispatchesOnce() {
@@ -178,6 +248,24 @@ final class ShortcutRegistrationCoordinatorTests: XCTestCase {
         XCTAssertEqual(registry.setBinding(ShortcutBinding(key: PhysicalKey(3)), for: .showAll), .valid)
         XCTAssertEqual(coordinator.apply(registry, invocation: { _ in }), .accepted(.active))
         XCTAssertTrue(backend.registered.isEmpty)
+    }
+
+    func testConfiguredSafeActionsRegisterAndRouteOnlyThroughTheInjectedCallback() {
+        let backend = FakeBackend()
+        let coordinator = ShortcutRegistrationCoordinator(backend: backend)
+        var registry = ShortcutRegistry()
+        XCTAssertEqual(registry.setBinding(ShortcutBinding(key: PhysicalKey(2), modifiers: [.option]), for: .safeAction(.allow)), .valid)
+        XCTAssertEqual(registry.setBinding(ShortcutBinding(key: PhysicalKey(3), modifiers: [.option]), for: .safeAction(.deny)), .valid)
+        var callbacks: [ShortcutCommand] = []
+        XCTAssertEqual(coordinator.apply(registry, invocation: { callbacks.append($0) }), .accepted(.active))
+        XCTAssertEqual(backend.registered.count, 2)
+        backend.emit(.safeAction(.allow), phase: .down)
+        backend.emit(.safeAction(.allow), phase: .down)
+        backend.emit(.safeAction(.deny), phase: .down)
+        XCTAssertEqual(callbacks, [.safeAction(.allow), .safeAction(.deny)])
+        backend.emit(.safeAction(.allow), phase: .up)
+        backend.emit(.safeAction(.allow), phase: .down)
+        XCTAssertEqual(callbacks, [.safeAction(.allow), .safeAction(.deny), .safeAction(.allow)])
     }
 
     func testRemovingLastGlobalBindingUnregistersItWhileFocusedMappingCanPersist() {

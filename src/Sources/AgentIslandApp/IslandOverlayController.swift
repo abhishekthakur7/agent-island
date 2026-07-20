@@ -26,6 +26,11 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var lastClickOutcome: PresentationClickOutcome?
     @Published private(set) var focusedSessionIndex: Int? = nil
     @Published private(set) var shortcutRegistrationStatus: ShortcutRegistrationStatus = .unavailable("Native global registration is not configured.")
+    /// Invocation feedback is separate from registration status: a native
+    /// shortcut can remain registered while a live Guided request becomes
+    /// unavailable. Settings receives this as an accessible, human-readable
+    /// announcement rather than a misleading registration failure.
+    @Published private(set) var shortcutInvocationFeedback: String?
 
     private let presentation: PresentationRuntime
     private let shortcutRegistrar: ShortcutRegistrationCoordinator
@@ -44,6 +49,13 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private var dismissalWork: DispatchWorkItem?
     private var exactForegroundEvidence: (observation: ExactHostForegroundObservation, association: HostContextAssociation)?
 
+    /// Optional bounded seam for a future/live Guided coordinator. The
+    /// controller resolves one exact source-proven request before asking the
+    /// coordinator to focus it. The focus handler must not auto-advance,
+    /// reserve, consume, or dispatch an Action Attempt.
+    private var guidedShortcutRequestsProvider: (() -> [GuidedAttentionRequest])?
+    private var guidedShortcutFocusHandler: ((ShortcutGuidedRoute) -> ShortcutGuidedRouteOutcome)?
+
     /// The composition root may supply a Host-specific Jump Back coordinator.
     /// Without one, enabled Jump Back remains visibly unavailable and cannot
     /// accidentally activate a plausible app/window.
@@ -53,6 +65,23 @@ final class IslandOverlayController: NSObject, ObservableObject {
         self.presentation = presentation
         self.shortcutRegistrar = shortcutRegistrar ?? ShortcutRegistrationCoordinator(backend: CarbonShortcutRegistrationBackend())
         self.shortcutRegistrationStatus = self.shortcutRegistrar.status
+        self.shortcutInvocationFeedback = nil
+    }
+
+    /// Installs the narrow live Guided seam when composition has a coordinator
+    /// and a current request snapshot. Without it, safe shortcuts fail closed
+    /// to the native Host and never invent Product authority.
+    func setGuidedShortcutRouting(
+        requests: @escaping () -> [GuidedAttentionRequest],
+        focus: @escaping (ShortcutGuidedRoute) -> ShortcutGuidedRouteOutcome
+    ) {
+        guidedShortcutRequestsProvider = requests
+        guidedShortcutFocusHandler = focus
+    }
+
+    func clearGuidedShortcutRouting() {
+        guidedShortcutRequestsProvider = nil
+        guidedShortcutFocusHandler = nil
     }
 
     var selectedScreen: NSScreen? {
@@ -316,7 +345,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
                 return event
             }
             if let command = self.shortcutRegistry.activeBindings.first(where: { $0.value == keyEvent.binding })?.key,
-               command.dispatchDisposition == .localOverlayNavigation {
+               command.isGloballyEligible {
                 guard self.shortcutGate.shouldInvoke(keyEvent) else { return nil }
                 self.dispatchLocalShortcut(command)
                 return nil
@@ -367,10 +396,39 @@ final class IslandOverlayController: NSObject, ObservableObject {
         case .collapse: collapse()
         case .inspect: primaryClick()
         case .safeAction:
-            // Consequential Product actions intentionally have no local
-            // dispatch path; Guided workflow/Action Lease remains authoritative.
-            break
+            routeSafeAction(command)
         }
+    }
+
+    /// Resolves one exact live Guided request and asks the injected
+    /// coordinator only to focus/present it. A safe shortcut never constructs
+    /// a lease or Action Attempt and never calls a Product client directly.
+    private func routeSafeAction(_ command: ShortcutCommand) {
+        guard case .safeAction = command else { return }
+        guard guidedShortcutRequestsProvider != nil, guidedShortcutFocusHandler != nil else {
+            publishShortcutInvocationFeedback(.guidedWorkflowUnavailable)
+            return
+        }
+
+        switch ShortcutGuidedRouteResolver.resolve(command: command, requests: guidedShortcutRequestsProvider?() ?? []) {
+        case let .unavailable(reason):
+            publishShortcutInvocationFeedback(reason)
+        case let .eligible(route):
+            guard let outcome = guidedShortcutFocusHandler?(route) else {
+                publishShortcutInvocationFeedback(.guidedWorkflowUnavailable)
+                return
+            }
+            switch outcome {
+            case .opened:
+                shortcutInvocationFeedback = "Guided workflow focused the matching Attention Request. Review and confirm before sending; no Product action was sent."
+            case let .unavailable(reason):
+                publishShortcutInvocationFeedback(reason)
+            }
+        }
+    }
+
+    private func publishShortcutInvocationFeedback(_ reason: ShortcutGuidedRouteFailure) {
+        shortcutInvocationFeedback = reason.humanReadableDescription
     }
 
     /// Global callbacks are deliberate engagement requests, not ambient
@@ -380,7 +438,11 @@ final class IslandOverlayController: NSObject, ObservableObject {
         guard command.isGloballyEligible else { return }
         guard selectedScreen != nil else {
             removeOverlayRegionsAndWindow()
-            shortcutRegistrationStatus = .unavailable("No selected display is available; the Overlay remains withdrawn.")
+            if command.configuredSafeAction != nil {
+                shortcutInvocationFeedback = "No selected display is available; the Guided workflow remains withdrawn. Continue in the native Host."
+            } else {
+                shortcutRegistrationStatus = .unavailable("No selected display is available; the Overlay remains withdrawn.")
+            }
             return
         }
         if command == .toggleOverlay {

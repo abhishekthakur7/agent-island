@@ -1,6 +1,7 @@
 import XCTest
 @testable import AgentIslandApp
 @testable import SessionDomain
+@testable import SessionStore
 
 @MainActor
 final class GuidedSheetTests: XCTestCase {
@@ -33,5 +34,19 @@ final class GuidedSheetTests: XCTestCase {
         XCTAssertTrue(model.announcement?.contains("fixture / session") == true)
         model.apply(requests: [first])
         XCTAssertTrue(model.announcement?.contains("fixture / session") == true)
+    }
+
+    func testSafeShortcutFocusesExactRequestWithoutAdvancingOrCreatingAttempt() async {
+        let request = request()
+        let model = GuidedSheetModel(requests: [request])
+        let store = ActionAttemptStore()
+        let coordinator = GuidedSheetCoordinator(store: store, model: model)
+        let route = ShortcutGuidedRoute(safeAction: .allow, requestID: request.id, owner: request.owner, action: .allow)
+        XCTAssertEqual(coordinator.focusSafeShortcut(route), .opened)
+        XCTAssertEqual(model.selectedRequestID, request.id)
+        XCTAssertEqual(model.selectedStage, .arrived)
+        XCTAssertTrue(model.requests.count == 1)
+        let attempts = await store.attempts()
+        XCTAssertTrue(attempts.isEmpty)
     }
 }

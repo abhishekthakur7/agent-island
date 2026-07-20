@@ -303,6 +303,12 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
         shortcutRegistrationStatus = status
     }
 
+    /// Runtime shortcut invocation feedback is ephemeral and intentionally
+    /// separate from persisted bindings and native registration health.
+    public func updateShortcutFeedback(_ feedback: String?) {
+        shortcutFeedback = feedback
+    }
+
     public func refreshShortcutInputSource() {
         shortcutInputSource = shortcutInputSourceResolver()
     }
@@ -339,7 +345,7 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
         let result = setShortcut(binding, for: command)
         switch result {
         case .valid: shortcutFeedback = "Saved."
-        case let .rejected(reason): shortcutFeedback = "Not saved: \(reason.rawValue)."
+        case let .rejected(reason): shortcutFeedback = "Not saved: \(reason.humanReadableDescription)."
         }
         shortcutCaptureCommand = nil
     }
@@ -432,7 +438,7 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
                 return .valid
             case let .rejected(reason, status, collisionBinding):
                 shortcutRegistrationStatus = status
-                shortcutFeedback = "Not saved: \(reason.rawValue)."
+                shortcutFeedback = Self.shortcutRegistrationFeedback(reason: reason, status: status, binding: collisionBinding, inputSource: shortcutInputSource)
                 // A native collision is retained as model evidence without
                 // replacing the prior valid command mapping. Unavailable and
                 // generic failures remain transient status only.
@@ -459,5 +465,20 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
             publishSnapshot()
             return .valid
         }
+    }
+
+    private static func shortcutRegistrationFeedback(
+        reason: ShortcutBindingValidationFailure,
+        status: ShortcutRegistrationStatus,
+        binding: ShortcutBinding?,
+        inputSource: ShortcutInputSource
+    ) -> String {
+        let base = reason.humanReadableDescription
+        guard reason == .registeredCollision else { return "Not saved: \(base)." }
+        let label = binding.map { " (\($0.renderedLabel(inputSource: inputSource)))" } ?? ""
+        if case let .unavailable(detail) = status, !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Not saved: \(detail)\(label)."
+        }
+        return "Not saved: \(base)\(label)."
     }
 }

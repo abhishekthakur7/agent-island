@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var displaySettingsCancellable: AnyCancellable?
     private var displayAvailabilityCancellable: AnyCancellable?
     private var shortcutStatusCancellable: AnyCancellable?
+    private var shortcutFeedbackCancellable: AnyCancellable?
 
     init(presentation: PresentationRuntime, fixtureController: FixtureController) {
         self.presentation = presentation
@@ -65,6 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         shortcutStatusCancellable = overlay.$shortcutRegistrationStatus.sink { [weak self] status in
             self?.atlasSettings.updateShortcutRegistrationStatus(status)
+        }
+        shortcutFeedbackCancellable = overlay.$shortcutInvocationFeedback.sink { [weak self] feedback in
+            guard let self, let feedback else { return }
+            self.atlasSettings.updateShortcutFeedback(feedback)
         }
         overlay.start()
         // This is a one-way, read-only bridge into the Settings preview. The

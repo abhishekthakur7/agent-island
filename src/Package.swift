@@ -99,7 +99,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AgentIslandAppTests",
-            dependencies: ["AgentIslandApp"]
+            dependencies: ["AgentIslandApp", "SessionStore"]
         ),
     ]
 )

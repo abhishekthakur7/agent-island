@@ -103,6 +103,20 @@ final class AtlasSettingsRepositoryTests: XCTestCase {
     }
 
     @MainActor
+    func testExplicitSafeActionBindingPersistsAndUnknownChoiceCannotBeGlobal() {
+        let suite = "AtlasSafeShortcutSettingsTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = AtlasSettingsRepository(defaults: defaults, namespace: "test.atlas")
+        let model = AtlasSettingsModel(repository: repository)
+        let binding = ShortcutBinding(key: PhysicalKey(4), modifiers: [.option])
+        XCTAssertEqual(model.setShortcut(binding, for: .safeAction(.allow)), .valid)
+        XCTAssertEqual(repository.shortcuts.registry.bindings[.safeAction(.allow)], binding)
+        XCTAssertTrue(ShortcutCommand.safeAction(.allow).isGloballyEligible)
+        XCTAssertFalse(ShortcutCommand.safeAction("arbitrary").isGloballyEligible)
+    }
+
+    @MainActor
     func testNativeRegistrationFailureKeepsPriorBindingAndRecordsCollisionEvidence() {
         let suite = "AtlasShortcutRegistrationTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -129,5 +143,7 @@ final class AtlasSettingsRepositoryTests: XCTestCase {
         XCTAssertEqual(repository.shortcuts.registry.bindings[.toggleOverlay], prior)
         XCTAssertEqual(model.shortcutInputSource.label(for: PhysicalKey(0)), "Q")
         XCTAssertEqual(model.shortcutRegistrationStatus, .unavailable("OS-owned collision"))
+        XCTAssertTrue(model.shortcutFeedback?.contains("OS-owned collision") == true)
+        XCTAssertFalse(model.shortcutFeedback?.contains("registeredCollision") == true)
     }
 }

@@ -430,9 +430,11 @@ private struct AtlasPlaceholderSection: View {
 private struct AtlasShortcutsSection: View {
     @ObservedObject var model: AtlasSettingsModel
 
-    private let commands: [ShortcutCommand] = [
-        .toggleOverlay, .nextSession, .previousSession, .showAll, .collapse, .inspect
-    ]
+    private var commands: [ShortcutCommand] {
+        [
+            .toggleOverlay, .nextSession, .previousSession, .showAll, .collapse, .inspect
+        ] + ShortcutSafeAction.allCases.map(ShortcutCommand.safeAction)
+    }
 
     var body: some View {
         AtlasCard(title: "Keyboard and global shortcuts") {
@@ -482,6 +484,7 @@ private struct AtlasShortcutsSection: View {
                 Text(feedback)
                     .font(.caption)
                     .foregroundStyle(feedback.hasPrefix("Saved") ? Color.secondary : Color.orange)
+                    .accessibilityLabel("Shortcut feedback: \(feedback)")
             }
         }
         .accessibilityIdentifier("atlas.shortcuts.section")
@@ -546,7 +549,7 @@ private extension ShortcutCommand {
         case .showAll: "Show all sessions"
         case .collapse: "Collapse Overlay"
         case .inspect: "Inspect selected session"
-        case let .safeAction(id): id
+        case let .safeAction(id): ShortcutSafeAction(rawValue: id)?.title ?? "Unavailable safe action"
         }
     }
 
@@ -554,7 +557,7 @@ private extension ShortcutCommand {
         switch self {
         case .toggleOverlay, .nextSession, .previousSession: "Global shortcut; physical key remains stable across input sources."
         case .showAll, .collapse, .inspect: "Focused Overlay shortcut; hidden rows are never traversed."
-        case .safeAction: "Explicitly configured safe action; Product actions still require their normal gates."
+        case .safeAction: "Guided shortcut; focuses one eligible request and never sends a Product action directly."
         }
     }
 }
@@ -563,17 +566,7 @@ private extension ShortcutBindingValidation {
     var shortcutMessage: String {
         switch self {
         case .valid: "Saved."
-        case let .rejected(reason):
-            switch reason {
-            case .duplicateBinding: "Not saved: another command already uses that binding."
-            case .reservedSystemShortcut: "Not saved: that shortcut is reserved by macOS."
-            case .registeredCollision: "Not saved: another registered shortcut owns that binding."
-            case .emptySafeAction: "Not saved: safe action identifier is empty."
-            case .invalidKey: "Not saved: invalid physical key."
-            case .requiresModifier: "Not saved: global shortcuts need Command, Option, Control, or Function."
-            case .registrationUnavailable: "Not saved: native global registration is unavailable."
-            case .registrationFailed: "Not saved: native global registration failed."
-            }
+        case let .rejected(reason): "Not saved: \(reason.humanReadableDescription)."
         }
     }
 }

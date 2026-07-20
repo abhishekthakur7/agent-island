@@ -126,14 +126,19 @@ final class CarbonShortcutRegistrationBackend: ShortcutRegistrationBackend {
     private static let signature: OSType = 0x4154_4C53 // "ATLS"
 
     private static func identifier(for command: ShortcutCommand) -> UInt32 {
-        switch command {
+        return switch command {
         case .toggleOverlay: 1
         case .nextSession: 2
         case .previousSession: 3
         case .showAll: 4
         case .collapse: 5
         case .inspect: 6
-        case .safeAction: 1000
+        case let .safeAction(id):
+            // Carbon identifies hot keys by the event ID, not by the
+            // binding. Every configured safe action therefore needs a stable
+            // process-local ID of its own; unknown legacy IDs are never
+            // registered by the coordinator.
+            (ShortcutSafeAction(rawValue: id)?.nativeRegistrationID ?? 0)
         }
     }
 

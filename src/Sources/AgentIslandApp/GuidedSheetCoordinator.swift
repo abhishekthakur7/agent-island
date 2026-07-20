@@ -42,4 +42,31 @@ public final class GuidedSheetCoordinator: ObservableObject {
 
     public func collapse() { model.setCollapsed(true) }
     public func resume() { model.setCollapsed(false) }
+
+    /// Focuses an exact request for a safe shortcut. This is intentionally a
+    /// presentation-only operation: the route's typed action is revalidated
+    /// against the live model, but no lease is issued and no Action Attempt is
+    /// reserved, consumed, or dispatched here.
+    @discardableResult
+    public func focusSafeShortcut(_ route: ShortcutGuidedRoute) -> ShortcutGuidedRouteOutcome {
+        guard let request = model.requests.first(where: { $0.id == route.requestID }) else {
+            return .unavailable(.noLiveRequest)
+        }
+        guard request.owner == route.owner else { return .unavailable(.noLiveRequest) }
+        guard request.sourceOutcome == .pending else { return .unavailable(.sourceResolved) }
+        guard request.canRouteAction,
+              request.capability.provenance?.productNamespace == request.owner.productNamespace,
+              request.capability.provenance?.integrationInstanceID == request.owner.integrationInstanceID,
+              request.capability.provenance?.snapshotID == request.owner.negotiationSnapshotID
+        else { return .unavailable(.capabilityUnavailable) }
+        guard route.safeAction.guidedAction == route.action else {
+            return .unavailable(.semanticResponseUnavailable)
+        }
+        guard case .success = route.action.validating(against: request, confirmation: true) else {
+            return .unavailable(.semanticResponseUnavailable)
+        }
+        model.select(route.requestID)
+        model.setCollapsed(false)
+        return .opened
+    }
 }
