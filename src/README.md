@@ -18,6 +18,12 @@ telemetry, live Product control, Host navigation, or action routing. It builds
 on the already owner-accepted [Overlay](../spikes/native-island-overlay) and
 [protected-store](../spikes/sqlcipher-protected-store) spikes.
 
+AB-131 preserves a typed future Service Egress seam without enabling a service:
+the protocol consumes only classified, schema-versioned, purpose-consented
+copies from a local outbox. It has no endpoint, account, network client, retry
+loop, inbound read/merge/action/configuration/presentation capability, or
+canonical-store access. See the [AB-131 evidence template](Evidence/AB-131-REPORT-TEMPLATE.md).
+
 ## Module boundaries
 
 Enforced by `Package.swift` dependency edges, not just convention — a target
@@ -33,6 +39,9 @@ ApplicationRuntime  <---- AdapterPort <---- AdapterFixtureKit
      |          ---- PresentationPort <---- PresentationRuntime
      v
 SessionStore  ---->  SessionDomain (pure: identity, validation, negotiation, reducer, projection)
+      ^
+      |
+ServiceEgressPort ----> SessionDomain (one-way classified future copy only)
 ```
 
 | Module | Owns | Depends on |
@@ -40,6 +49,7 @@ SessionStore  ---->  SessionDomain (pure: identity, validation, negotiation, red
 | `SessionDomain` | Identity types, envelope validation, negotiation rules, the pure replay-safe reducer, projection/outcome types | nothing |
 | `AdapterPort` | The `AdapterIntakePort` protocol an Adapter/fixture submits through | `SessionDomain` |
 | `PresentationPort` | The `PresentationPort` protocol the UI subscribes through | `SessionDomain` |
+| `ServiceEgressPort` | Absent-by-default, one-way future Service Egress protocol, consent ledger, and local outbox | `SessionDomain` |
 | `SessionStore` | Single-writer append-only fact ledger, commit ordinal, idempotent dedup, revisioned projection publication, redacted diagnostics | `SessionDomain` |
 | `ApplicationRuntime` | The only component holding `SessionStore`; implements both ports | `SessionDomain`, `AdapterPort`, `PresentationPort`, `SessionStore` |
 | `AdapterFixtureKit` | The controllable first-party Adapter fixture and its required-evidence scenarios | `SessionDomain`, `AdapterPort` **only** |

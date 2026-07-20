@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "SessionDomain", targets: ["SessionDomain"]),
         .library(name: "AdapterPort", targets: ["AdapterPort"]),
+        .library(name: "ServiceEgressPort", targets: ["ServiceEgressPort"]),
         .library(name: "PresentationPort", targets: ["PresentationPort"]),
         .library(name: "SessionStore", targets: ["SessionStore"]),
         .library(name: "ProtectedStore", targets: ["ProtectedStore"]),
@@ -27,6 +28,11 @@ let package = Package(
 
         // Typed port the UI subscribes through for revisioned projections.
         .target(name: "PresentationPort", dependencies: ["SessionDomain"]),
+
+        // One-way, future-only Service Egress boundary.  It deliberately
+        // depends on the classified domain contract only; it cannot import
+        // SessionStore, ProtectedStore, AdapterPort, or presentation code.
+        .target(name: "ServiceEgressPort", dependencies: ["SessionDomain"]),
 
         // Single-writer canonical fact ledger and deterministic projection
         // cache. Depends only on the domain; no port or UI may reach it.
@@ -80,6 +86,7 @@ let package = Package(
         ),
 
         .testTarget(name: "SessionDomainTests", dependencies: ["SessionDomain"]),
+        .testTarget(name: "ServiceEgressPortTests", dependencies: ["SessionDomain", "ServiceEgressPort"]),
         .testTarget(name: "SessionStoreTests", dependencies: ["SessionDomain", "SessionStore", "ProtectedStore"]),
         .testTarget(name: "ProtectedStoreTests", dependencies: ["SessionDomain", "ProtectedStore"]),
         .testTarget(

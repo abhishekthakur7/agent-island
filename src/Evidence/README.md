@@ -1,5 +1,10 @@
 # AB-118 evidence capture
 
+AB-131 uses [AB-131-REPORT-TEMPLATE.md](AB-131-REPORT-TEMPLATE.md) for the
+absent-port, consent, classification, one-way delivery, and architecture
+review evidence. The template intentionally leaves live/offline observations
+unchecked until they are captured on the target machine.
+
 `Scripts/self-check.sh` produces the automated portion of the required
 evidence: a positive fixture trace and every negative capture named in the
 ticket, run against the real `ApplicationRuntime`/`SessionStore` pair.
