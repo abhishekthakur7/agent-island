@@ -204,10 +204,25 @@ public actor ActionAttemptStore {
         case .superseded: .superseded
         case .indeterminate: .indeterminate
         }
+        // A helper refusal proves that no native callback response was
+        // written. Keep the durable intent but do not claim a Product dispatch.
+        if outcome == .rejected { attempt.dispatchCount = 0 }
         attempt.completedAt = date
         attempt.productEvidence = evidence.map { String($0.prefix(SessionDomainValidator.maxMetadataStringBytes)) }
         attemptsByID[attemptID] = attempt
         return .updated(attempt)
+    }
+
+    /// Final local gate failures that occur after reservation but before the
+    /// one native handoff remain auditable with zero dispatches.
+    public func rejectReservedAttempt(id: String, at date: Date, reason: ActionAttemptRejectionReason) -> ActionAttempt {
+        guard var attempt = attemptsByID[id] else {
+            return ActionAttempt(id: id, requestID: GuidedAttentionRequestID(productNamespace: ProductNamespace("unknown"), nativeAttentionRequestID: "unknown"), owner: GuidedAttentionOwner(productNamespace: ProductNamespace("unknown"), nativeSessionID: NativeSessionID("unknown"), nativeAttentionRequestID: "unknown", integrationInstanceID: IntegrationInstanceID("unknown"), negotiationSnapshotID: NegotiationSnapshotID("unknown")), action: .interruption, leaseID: nil, reservedAt: date, outcome: .rejected, rejectionReason: .unknownRequest)
+        }
+        guard attempt.outcome == .reserved else { return attempt }
+        attempt.outcome = .rejected; attempt.rejectionReason = reason; attempt.completedAt = date; attempt.dispatchCount = 0
+        attemptsByID[id] = attempt
+        return attempt
     }
 
     public func attempt(for id: String) -> ActionAttempt? { attemptsByID[id] }

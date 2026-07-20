@@ -263,6 +263,22 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         }
     }
 
+    func testSynchronousActionHelperUsesSeparateTypedRoundTripAndWritesOnlyExactResponse() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab135-action-endpoint-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let endpointURL = root.appendingPathComponent("endpoint")
+        try Data().write(to: endpointURL)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: endpointURL.path)
+        let runtime = ClaudeHookHelperRuntime(installationID: IntegrationInstanceID("i"), helperID: "h", authenticator: ClaudeIPCAuthenticator(secret: "s"), endpoint: ClaudeLocalEndpoint(path: endpointURL, appOwnedRoot: root))
+        let payload = Data("{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"s\",\"event_id\":\"e\",\"tool_use_id\":\"tool\",\"tool_name\":\"ExitPlanMode\",\"tool_input\":{\"plan\":\"x\"}}".utf8)
+        let transport = ClaudeInMemoryHookActionIPCTransport(echoedResponse: .preToolAllow(updatedInput: Data("{\"plan\":\"x\",\"approved\":true}".utf8)))
+        let output = try await runtime.respondToAction(stdin: payload, deadline: Date().addingTimeInterval(1), transport: transport)
+        let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: output) as? [String: Any])
+        XCTAssertEqual((decoded["hookSpecificOutput"] as? [String: Any])?["permissionDecision"] as? String, "allow")
+        XCTAssertEqual((await transport.requests).count, 1)
+    }
+
     #if canImport(Network)
     func testIPCCompletionGateIsOneShotAcrossEarlyFinishAndCompletion() async throws {
         let early = ClaudeIPCCompletionGate()

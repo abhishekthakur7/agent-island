@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import SessionDomain
 #if canImport(Network)
 import Network
@@ -124,6 +125,80 @@ public protocol ClaudeHookIPCTransport: Sendable {
     func send(frame: Data, timeout: TimeInterval) async throws
 }
 
+/// A separate request/reply protocol is used only for the documented
+/// synchronous action hooks. Observation frames are deliberately one-way and
+/// can never acquire action authority by being decoded as these messages.
+public struct ClaudeHelperActionRequest: Codable, Sendable, Hashable {
+    public let installationID: IntegrationInstanceID
+    public let helperID: String
+    public let nonce: String
+    public let callbackFingerprint: String
+    public let payload: Data
+    public let issuedAt: Date
+    public let deadline: Date
+    public let authenticationTag: String
+
+    public init(installationID: IntegrationInstanceID, helperID: String, nonce: String, callbackFingerprint: String, payload: Data, issuedAt: Date, deadline: Date, authenticator: ClaudeIPCAuthenticator) {
+        self.installationID = installationID; self.helperID = helperID; self.nonce = nonce; self.callbackFingerprint = callbackFingerprint; self.payload = payload; self.issuedAt = issuedAt; self.deadline = deadline
+        self.authenticationTag = authenticator.tag(installationID: installationID, helperID: helperID, nonce: nonce, payload: payload, issuedAt: issuedAt)
+    }
+}
+
+public enum ClaudeHelperNativeResponse: Codable, Sendable, Hashable {
+    case permission(ClaudePermissionDecision, suggestionJSON: Data?)
+    case preToolAllow(updatedInput: Data)
+}
+
+public struct ClaudeHelperActionResponse: Codable, Sendable, Hashable {
+    public let nonce: String
+    public let callbackFingerprint: String
+    public let response: ClaudeHelperNativeResponse?
+    public let applied: Bool
+    public let superseded: Bool
+
+    public init(nonce: String, callbackFingerprint: String, response: ClaudeHelperNativeResponse?, applied: Bool = false, superseded: Bool = false) {
+        self.nonce = nonce; self.callbackFingerprint = callbackFingerprint; self.response = response; self.applied = applied; self.superseded = superseded
+    }
+}
+
+public protocol ClaudeHookActionIPCTransport: Sendable {
+    func request(_ request: ClaudeHelperActionRequest, timeout: TimeInterval) async throws -> ClaudeHelperActionResponse
+}
+
+public actor ClaudeInMemoryHookActionIPCTransport: ClaudeHookActionIPCTransport {
+    public private(set) var requests: [ClaudeHelperActionRequest] = []
+    public var nextResponse: ClaudeHelperActionResponse?
+    public var echoedResponse: ClaudeHelperNativeResponse?
+    public init(nextResponse: ClaudeHelperActionResponse? = nil, echoedResponse: ClaudeHelperNativeResponse? = nil) { self.nextResponse = nextResponse; self.echoedResponse = echoedResponse }
+    public func request(_ request: ClaudeHelperActionRequest, timeout: TimeInterval) async throws -> ClaudeHelperActionResponse {
+        requests.append(request)
+        if let echoedResponse { return ClaudeHelperActionResponse(nonce: request.nonce, callbackFingerprint: request.callbackFingerprint, response: echoedResponse) }
+        guard let nextResponse else { throw ClaudeHookHelperError.transportTimeout }
+        return nextResponse
+    }
+}
+
+public struct ClaudeHookActionIPCFrame: Sendable {
+    private static let magic = Data([0x41, 0x49, 0x43, 0x41]) // AICA
+    private static let version: UInt8 = 1
+    public static func encode<T: Encodable>(_ value: T) throws -> Data {
+        let body = try JSONEncoder().encode(value)
+        guard body.count <= ClaudeHookIPCFrame.maxFrameBytes else { throw ClaudeHookHelperError.frameTooLarge }
+        var frame = magic; frame.append(version)
+        var length = UInt32(body.count).bigEndian
+        withUnsafeBytes(of: &length) { frame.append(contentsOf: $0) }
+        frame.append(body); return frame
+    }
+    public static func decode<T: Decodable>(_ frame: Data, as: T.Type) throws -> T {
+        guard frame.count >= magic.count + 5, frame.prefix(magic.count) == magic, frame[magic.count] == version else { throw ClaudeHookHelperError.transportFailure }
+        let offset = magic.count + 1
+        let length = frame[offset..<(offset + 4)].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard Int(length) <= ClaudeHookIPCFrame.maxFrameBytes, frame.count == offset + 4 + Int(length) else { throw ClaudeHookHelperError.frameTooLarge }
+        do { return try JSONDecoder().decode(T.self, from: frame.suffix(Int(length))) }
+        catch { throw ClaudeHookHelperError.malformedJSON }
+    }
+}
+
 public struct ClaudeHookIPCFrame: Sendable {
     public static let magic = Data([0x41, 0x49, 0x43, 0x48]) // AICH
     public static let version: UInt8 = 1
@@ -195,6 +270,50 @@ public final class ClaudeUnixDomainHookIPCTransport: ClaudeHookIPCTransport, @un
             completion.finish(.failure(ClaudeHookHelperError.transportFailure))
         })
     }
+}
+
+/// Real request/reply UDS transport for a synchronous action callback. The
+/// AICA frame/version is intentionally incompatible with AICH observation
+/// frames, so an observation listener cannot be mistaken for an action peer.
+public final class ClaudeUnixDomainActionIPCTransport: ClaudeHookActionIPCTransport, @unchecked Sendable {
+    public let endpoint: ClaudeLocalEndpoint
+    public init(endpoint: ClaudeLocalEndpoint) { self.endpoint = endpoint }
+    public func request(_ request: ClaudeHelperActionRequest, timeout: TimeInterval) async throws -> ClaudeHelperActionResponse {
+        switch endpoint.validate() { case .success: break; case .failure(let error): throw error }
+        guard let kind = try? FileManager.default.attributesOfItem(atPath: endpoint.path)[.type] as? FileAttributeType, kind == .typeSocket else { throw ClaudeHookHelperError.endpointUnavailable }
+        let frame = try ClaudeHookActionIPCFrame.encode(request)
+        let connection = NWConnection(to: .unix(path: endpoint.path), using: .tcp)
+        return try await withCheckedThrowingContinuation { continuation in
+            let gate = ClaudeActionRoundTripGate(continuation: continuation, connection: connection)
+            gate.armTimeout(after: timeout)
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    connection.send(content: frame, completion: .contentProcessed { error in
+                        if let error { gate.finish(.failure(error)); return }
+                        connection.receive(minimumIncompleteLength: 1, maximumLength: ClaudeHookIPCFrame.maxFrameBytes) { data, _, complete, error in
+                            if let error { gate.finish(.failure(error)); return }
+                            guard complete, let data else { gate.finish(.failure(ClaudeHookHelperError.transportFailure)); return }
+                            do { gate.finish(.success(try ClaudeHookActionIPCFrame.decode(data, as: ClaudeHelperActionResponse.self))) }
+                            catch { gate.finish(.failure(error)) }
+                        }
+                    })
+                case .failed(let error): gate.finish(.failure(error))
+                case .cancelled: gate.finish(.failure(ClaudeHookHelperError.transportFailure))
+                default: break
+                }
+            }
+            connection.start(queue: .global(qos: .userInitiated))
+        }
+    }
+}
+
+private final class ClaudeActionRoundTripGate: @unchecked Sendable {
+    private let lock = NSLock(); private var continuation: CheckedContinuation<ClaudeHelperActionResponse, Error>?
+    private let connection: NWConnection; private var timeoutTask: Task<Void, Never>?
+    init(continuation: CheckedContinuation<ClaudeHelperActionResponse, Error>, connection: NWConnection) { self.continuation = continuation; self.connection = connection }
+    func armTimeout(after seconds: TimeInterval) { timeoutTask = Task { [weak self] in try? await Task.sleep(for: .seconds(seconds)); self?.finish(.failure(ClaudeHookHelperError.transportTimeout)) } }
+    func finish(_ result: Result<ClaudeHelperActionResponse, Error>) { lock.lock(); let continuation = self.continuation; self.continuation = nil; let timeoutTask = self.timeoutTask; self.timeoutTask = nil; lock.unlock(); guard let continuation else { return }; timeoutTask?.cancel(); connection.cancel(); continuation.resume(with: result) }
 }
 
 /// Network callbacks may report ready, send completion, failure, cancellation,
@@ -279,5 +398,52 @@ public struct ClaudeHookHelperRuntime: Sendable {
         let frame = try ClaudeHookIPCFrame.encode(message)
         try await transport.send(frame: frame, timeout: timeout)
         return message
+    }
+
+    /// Performs exactly one bounded synchronous callback round trip. It is
+    /// intentionally unavailable for observations, malformed callbacks, a
+    /// stale deadline, identity/fingerprint mismatch, or an unsupported typed
+    /// response. The caller writes the returned native JSON once to stdout.
+    public func respondToAction(stdin: Data, deadline: Date, now: Date = Date(), transport: any ClaudeHookActionIPCTransport) async throws -> Data {
+        guard authenticator.isUsable else { throw ClaudeHookHelperError.emptyAuthenticator }
+        guard stdin.count <= SessionDomainValidator.maxPayloadBytes, now <= deadline else { throw ClaudeHookHelperError.transportTimeout }
+        guard let hook = try? ClaudeHookEnvelope.decode(stdin), isDocumentedActionHook(hook) else { throw ClaudeHookHelperError.malformedJSON }
+        switch endpoint.validate() { case .success: break; case .failure(let error): throw error }
+        let fingerprint = SHA256.hash(data: stdin).map { String(format: "%02x", $0) }.joined()
+        let nonce = UUID().uuidString
+        let request = ClaudeHelperActionRequest(installationID: installationID, helperID: helperID, nonce: nonce, callbackFingerprint: fingerprint, payload: stdin, issuedAt: now, deadline: deadline, authenticator: authenticator)
+        let remaining = max(0, min(timeout, deadline.timeIntervalSince(now)))
+        guard remaining > 0 else { throw ClaudeHookHelperError.transportTimeout }
+        let reply = try await transport.request(request, timeout: remaining)
+        guard Date() <= deadline, reply.nonce == nonce, reply.callbackFingerprint == fingerprint, !reply.superseded, let response = reply.response else { throw ClaudeHookHelperError.transportFailure }
+        return try nativeJSON(response, for: hook)
+    }
+
+    private func isDocumentedActionHook(_ hook: ClaudeHookEnvelope) -> Bool {
+        guard hook.name == .permissionRequest || hook.name == .preToolUse else { return false }
+        guard hook.name == .permissionRequest ? hook.nativeAttentionRequestID?.isEmpty == false && hook.nativeToolUseID == nil : hook.nativeToolUseID?.isEmpty == false else { return false }
+        guard hook.name == .preToolUse,
+              let root = try? JSONSerialization.jsonObject(with: hook.payload) as? [String: Any] else { return hook.name == .permissionRequest }
+        let name = root["tool_name"] as? String ?? root["toolName"] as? String
+        return name == "AskUserQuestion" || name == "ExitPlanMode"
+    }
+
+    private func nativeJSON(_ response: ClaudeHelperNativeResponse, for hook: ClaudeHookEnvelope) throws -> Data {
+        let body: [String: Any]
+        switch (hook.name, response) {
+        case (.permissionRequest, .permission(let decision, let suggestion)):
+            var output: [String: Any] = ["hookEventName": "PermissionRequest", "permissionDecision": decision.rawValue]
+            if let suggestion {
+                guard let object = try? JSONSerialization.jsonObject(with: suggestion) else { throw ClaudeHookHelperError.malformedJSON }
+                output["permissionSuggestions"] = [object]
+            }
+            body = ["hookSpecificOutput": output]
+        case (.preToolUse, .preToolAllow(let updated)):
+            guard let input = try? JSONSerialization.jsonObject(with: updated) else { throw ClaudeHookHelperError.malformedJSON }
+            body = ["hookSpecificOutput": ["hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": input]]
+        default: throw ClaudeHookHelperError.malformedJSON
+        }
+        guard JSONSerialization.isValidJSONObject(body) else { throw ClaudeHookHelperError.malformedJSON }
+        return try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
     }
 }

@@ -20,6 +20,58 @@ public enum ClaudeActionRoutingResult: Sendable, Equatable {
     case rejected(ActionAttempt?, ClaudeLiveActionRejection)
 }
 
+/// The only composition boundary permitted to hand a response back to the
+/// still-blocked Claude hook.  It deliberately reports delivery evidence,
+/// rather than treating construction of `ClaudeTypedHookResponse` as delivery.
+public struct ClaudeActionDispatchRequest: Sendable {
+    public let callback: ClaudeLiveCallback
+    public let response: ClaudeTypedHookResponse
+    public let attemptID: String
+
+    public init(callback: ClaudeLiveCallback, response: ClaudeTypedHookResponse, attemptID: String) {
+        self.callback = callback; self.response = response; self.attemptID = attemptID
+    }
+}
+
+public enum ClaudeActionDispatchOutcome: Sendable, Equatable {
+    /// No byte was handed to the helper/Product.  This is a zero-dispatch
+    /// rejection, not an ambiguous Product outcome.
+    case rejectedBeforeDispatch
+    /// The authenticated helper explicitly accepted the exact callback tuple.
+    case acceptedByProduct
+    /// A documented Product application acknowledgement was received.
+    case applied
+    /// The Product reported the request had already resolved elsewhere.
+    case superseded
+    /// The send may have occurred but its result cannot be proven. Never retry.
+    case indeterminate
+}
+
+public protocol ClaudeActionDispatchPort: Sendable {
+    func dispatch(_ request: ClaudeActionDispatchRequest, at: Date) async -> ClaudeActionDispatchOutcome
+}
+
+/// Dispatch-time evidence is intentionally separate from callback creation:
+/// a wake, reconnect, capability update, or helper reincarnation can fail it.
+public protocol ClaudeLiveActionValidationPort: Sendable {
+    func validate(_ callback: ClaudeLiveCallback, at: Date) async -> Bool
+}
+
+public struct ClaudeStaticLiveActionValidationPort: ClaudeLiveActionValidationPort {
+    public init() {}
+    public func validate(_ callback: ClaudeLiveCallback, at now: Date) async -> Bool {
+        callback.isWellFormed && now <= callback.deadline &&
+        callback.capability.availability == .available && callback.capability.freshness == .current
+    }
+}
+
+/// Safe default for composition that has not installed the helper callback
+/// bridge. It makes that absence explicit instead of fabricating acceptance.
+public struct ClaudeUnavailableActionDispatchPort: ClaudeActionDispatchPort {
+    public init() {}
+    public func dispatch(_ request: ClaudeActionDispatchRequest, at: Date) async -> ClaudeActionDispatchOutcome { .rejectedBeforeDispatch }
+}
+
 /// The composition-side bridge between the durable Guided ledger and one
 /// synchronous Claude callback.  The Claude adapter remains store-free; only
 /// this local action coordinator has both a protected callback and the local
@@ -29,10 +81,14 @@ public actor ClaudeGuidedActionRouter {
     private struct LiveCallback { var callback: ClaudeLiveCallback; var state: CallbackState }
 
     private let store: ActionAttemptStore
+    private let dispatchPort: any ClaudeActionDispatchPort
+    private let validationPort: any ClaudeLiveActionValidationPort
     private var live: [UUID: LiveCallback] = [:]
     private var identityOwners: [CallbackOwnerKey: UUID] = [:]
 
-    public init(store: ActionAttemptStore) { self.store = store }
+    public init(store: ActionAttemptStore, dispatchPort: any ClaudeActionDispatchPort = ClaudeUnavailableActionDispatchPort(), validationPort: any ClaudeLiveActionValidationPort = ClaudeStaticLiveActionValidationPort()) {
+        self.store = store; self.dispatchPort = dispatchPort; self.validationPort = validationPort
+    }
 
     /// Creates exactly one durable Attention Request while the native callback
     /// remains live. Reusing an otherwise identical callback is rejected by
@@ -73,14 +129,19 @@ public actor ClaudeGuidedActionRouter {
         attemptID: String,
         at now: Date
     ) async -> ClaudeActionRoutingResult {
-        guard var liveCallback = live[callbackIdentity.nonce], liveCallback.callback.identity == callbackIdentity else {
+        guard var liveCallback = live[callbackIdentity.nonce] else {
             return .rejected(nil, .staleCallback)
+        }
+        guard liveCallback.callback.identity == callbackIdentity else {
+            let attempt = await rejectKnown(liveCallback.callback, attemptID: attemptID, action: submission.action, at: now, reason: .ownerMismatch)
+            return .rejected(attempt, .ownerMismatch)
         }
         guard liveCallback.state == .open else { return .rejected(nil, .duplicateCallback) }
         guard now <= liveCallback.callback.deadline else {
+            let attempt = await rejectKnown(liveCallback.callback, attemptID: attemptID, action: submission.action, at: now, reason: .expiredLease)
             live.removeValue(forKey: callbackIdentity.nonce); identityOwners.removeValue(forKey: CallbackOwnerKey(callbackIdentity))
             await store.invalidateForSourceChange()
-            return .rejected(nil, .expired)
+            return .rejected(attempt, .expired)
         }
         guard submission.deliberateConfirmation else {
             let attempt = await store.recordRejectedAttempt(id: attemptID, requestID: liveCallback.callback.requestID, owner: liveCallback.callback.owner, action: submission.action, at: now, reason: .missingConfirmation)
@@ -109,13 +170,21 @@ public actor ClaudeGuidedActionRouter {
         let leaseID = "claude-live-" + callbackIdentity.nonce.uuidString + "-" + attemptID
         guard case .issued = await store.issueLease(id: leaseID, requestID: callback.requestID, action: submission.action, semanticFingerprint: binding.semanticFingerprint, nativeFingerprint: binding.nativeFingerprint, capability: callback.capability, issuedAt: now, deadline: callback.deadline, confirmation: true) else {
             live[callbackIdentity.nonce]?.state = .open
-            return .rejected(nil, .capabilityUnavailable)
+            let attempt = await rejectKnown(callback, attemptID: attemptID, action: submission.action, at: now, reason: .capabilityUnavailable)
+            return .rejected(attempt, .capabilityUnavailable)
         }
         let reservation = await store.reserveAttempt(id: attemptID, requestID: callback.requestID, owner: callback.owner, action: submission.action, leaseID: leaseID, context: context, confirmation: true, reservedAt: now)
         guard case .reserved = reservation else {
             live[callbackIdentity.nonce]?.state = .open
             let attempt = reservation.attempt
             return .rejected(attempt, .invalidAnswer)
+        }
+        // Re-check current authority immediately before consuming the lease;
+        // callback construction evidence is not authorization at dispatch time.
+        guard await validationPort.validate(callback, at: now) else {
+            let attempt = await store.rejectReservedAttempt(id: attemptID, at: now, reason: .capabilityUnavailable)
+            live[callbackIdentity.nonce]?.state = .consumed
+            return .rejected(attempt, .capabilityUnavailable)
         }
         guard case .dispatch = await store.prepareDispatch(attemptID: attemptID, context: context, now: now, confirmation: true) else {
             live[callbackIdentity.nonce]?.state = .consumed
@@ -127,16 +196,22 @@ public actor ClaudeGuidedActionRouter {
             live[callbackIdentity.nonce]?.state = .consumed
             return .rejected(await store.attempt(for: attemptID), .invalidAnswer)
         }
-        // Handoff to the helper is the only Product acknowledgement we can
-        // prove synchronously. It is not a claim that Claude applied it.
-        let updated: ActionAttempt
-        switch await store.recordProductOutcome(attemptID: attemptID, outcome: .acceptedByProduct, at: now) {
-        case .updated(let attempt): updated = attempt
-        case .rejected(let attempt): return .rejected(attempt, .staleCallback)
+        // The lease was consumed before this await. This is the one and only
+        // handoff; ambiguous delivery is terminal and is never retried.
+        let delivery = await dispatchPort.dispatch(ClaudeActionDispatchRequest(callback: callback, response: response, attemptID: attemptID), at: now)
+        let productOutcome: ActionProductOutcome = switch delivery {
+        case .rejectedBeforeDispatch: .rejected
+        case .acceptedByProduct: .acceptedByProduct
+        case .applied: .applied
+        case .superseded: .superseded
+        case .indeterminate: .indeterminate
         }
+        let transition = await store.recordProductOutcome(attemptID: attemptID, outcome: productOutcome, at: now)
+        let updated = transition.attempt
         live[callbackIdentity.nonce]?.state = .consumed
         live.removeValue(forKey: callbackIdentity.nonce)
         identityOwners.removeValue(forKey: CallbackOwnerKey(callbackIdentity))
+        if delivery == .rejectedBeforeDispatch { return .rejected(updated, .helperUnavailable) }
         return .dispatched(response, updated)
     }
 
@@ -183,12 +258,54 @@ public actor ClaudeGuidedActionRouter {
 
     private func encode(_ action: GuidedAction, callback: ClaudeLiveCallback) -> ClaudeTypedHookResponse? {
         switch (callback.semantic, action) {
-        case (.permission, .allow): return .permission(.allow, exactSuggestionJSON: nil)
-        case (.permission, .deny): return .permission(.deny, exactSuggestionJSON: nil)
-        case (.permissionSuggestion, .persistentSuggestion): return callback.offeredSuggestion.map { .permission(.allow, exactSuggestionJSON: $0.exactNativeJSON) }
-        case (.questionAnswers, .structuredResponse), (.planApproval, .planReview): return .preToolAllow(updatedInput: callback.nativeInput)
+        case (.permission, .allow): return .permission(.allow, suggestionJSON: nil)
+        case (.permission, .deny): return .permission(.deny, suggestionJSON: nil)
+        case (.permissionSuggestion, .persistentSuggestion): return callback.offeredSuggestion.map { .permission(.allow, suggestionJSON: $0.canonicalNativeJSON) }
+        case (.questionAnswers, .structuredResponse(let answer)):
+            return updatedQuestionInput(callback: callback, selectedIDs: answer.selectedChoiceIDs)
+        case (.planApproval, .planReview):
+            return updatedPlanInput(callback: callback)
         default: return nil
         }
+    }
+
+    private func updatedQuestionInput(callback: ClaudeLiveCallback, selectedIDs: [String]) -> ClaudeTypedHookResponse? {
+        guard selectedIDs.count == Set(selectedIDs).count,
+              let root = try? JSONSerialization.jsonObject(with: callback.nativeInput) as? [String: Any] else { return nil }
+        var output = root
+        let usesToolInput = root["tool_input"] != nil || root["toolInput"] != nil
+        let key = root["tool_input"] != nil ? "tool_input" : "toolInput"
+        let candidate = (usesToolInput ? root[key] : root) as? [String: Any]
+        guard var input = candidate, var questions = input["questions"] as? [[String: Any]], questions.count == callback.questionGroups.count else { return nil }
+        let selected = Set(selectedIDs)
+        for group in callback.questionGroups {
+            guard questions.indices.contains(group.questionIndex),
+                  let options = questions[group.questionIndex]["options"] as? [[String: Any]] else { return nil }
+            let values = group.choiceIDs.enumerated().compactMap { index, id -> Any? in
+                guard selected.contains(id), options.indices.contains(index), let value = options[index]["label"] as? String, !value.isEmpty else { return nil }
+                return value
+            }
+            let count = group.choiceIDs.filter(selected.contains).count
+            guard count == values.count, group.allowsMultiple ? count >= 1 : count == 1 else { return nil }
+            questions[group.questionIndex]["answers"] = values
+        }
+        input["questions"] = questions
+        if usesToolInput { output[key] = input } else { output = input }
+        guard JSONSerialization.isValidJSONObject(output), let encoded = try? JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]) else { return nil }
+        return .preToolAllow(updatedInput: encoded)
+    }
+
+    private func updatedPlanInput(callback: ClaudeLiveCallback) -> ClaudeTypedHookResponse? {
+        guard var root = try? JSONSerialization.jsonObject(with: callback.nativeInput) as? [String: Any] else { return nil }
+        let key = root["tool_input"] != nil ? "tool_input" : "toolInput"
+        if var input = root[key] as? [String: Any] { input["approved"] = true; root[key] = input }
+        else { root["approved"] = true }
+        guard JSONSerialization.isValidJSONObject(root), let encoded = try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys]) else { return nil }
+        return .preToolAllow(updatedInput: encoded)
+    }
+
+    private func rejectKnown(_ callback: ClaudeLiveCallback, attemptID: String, action: GuidedAction, at: Date, reason: ActionAttemptRejectionReason) async -> ActionAttempt {
+        await store.recordRejectedAttempt(id: attemptID, requestID: callback.requestID, owner: callback.owner, action: action, at: at, reason: reason)
     }
 
     private func semanticFingerprint(_ action: GuidedAction) -> String {
@@ -210,4 +327,8 @@ private struct CallbackOwnerKey: Hashable {
 
 private extension ActionAttemptReservationResult {
     var attempt: ActionAttempt? { switch self { case .reserved(let value), .rejected(let value), .duplicate(let value): value } }
+}
+
+private extension ActionAttemptTransitionResult {
+    var attempt: ActionAttempt { switch self { case .updated(let value), .rejected(let value): value } }
 }

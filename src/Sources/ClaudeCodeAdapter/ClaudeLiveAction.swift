@@ -44,17 +44,17 @@ public struct ClaudeLiveCallbackIdentity: Hashable, Sendable {
 
 public enum ClaudePermissionDecision: String, Codable, Hashable, Sendable { case allow, deny }
 
-/// A Product-offered permission update. The exact encoded JSON remains only in
-/// the live callback, while this opaque ID is sufficient for the Guided UI.
+/// A Product-offered permission update. The canonical value remains only in
+/// the live callback; parsed JSON cannot promise source-byte preservation.
 public struct ClaudeOfferedPermissionSuggestion: Hashable, Sendable {
     public let id: String
     public let persistenceScope: String
-    public let exactNativeJSON: Data
+    public let canonicalNativeJSON: Data
 
-    public init(id: String, persistenceScope: String, exactNativeJSON: Data) {
+    public init(id: String, persistenceScope: String, canonicalNativeJSON: Data) {
         self.id = id
         self.persistenceScope = persistenceScope
-        self.exactNativeJSON = exactNativeJSON
+        self.canonicalNativeJSON = canonicalNativeJSON
     }
 }
 
@@ -106,7 +106,7 @@ public struct ClaudeLiveCallback: Sendable {
 /// Product-specific output. There is intentionally no string command, shell
 /// input, cancellation, revision text, or mode-control case.
 public enum ClaudeTypedHookResponse: Sendable, Equatable {
-    case permission(ClaudePermissionDecision, exactSuggestionJSON: Data?)
+    case permission(ClaudePermissionDecision, suggestionJSON: Data?)
     case preToolAllow(updatedInput: Data)
 }
 
@@ -137,7 +137,7 @@ public enum ClaudeLiveCallbackFactory {
         let input = (root["tool_input"] ?? root["toolInput"]) as? [String: Any] ?? root
         let fingerprint = SHA256.hash(data: hook.payload).map { String(format: "%02x", $0) }.joined()
         func callback(requestID: String, capabilityID: String, semantic: ClaudeLiveActionSemantic, shape: GuidedSemanticShape, suggestion: ClaudeOfferedPermissionSuggestion? = nil, groups: [ClaudeQuestionGroup] = []) -> Result<ClaudeLiveCallback, ClaudeLiveActionRejection> {
-            guard let capability = snapshot.capabilities.first(where: { $0.id == capabilityID && $0.direction == .act }), snapshot.grants(capability, at: deadline) else { return .failure(.capabilityUnavailable) }
+            guard let capability = snapshot.capabilities.first(where: { $0.id == capabilityID && $0.direction == .act }), capability.availability == .available, capability.freshness == .current else { return .failure(.capabilityUnavailable) }
             let owner = GuidedAttentionOwner(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: session, nativeAttentionRequestID: requestID, nativeTurnID: hook.nativeTurnID, integrationInstanceID: integrationInstanceID, negotiationSnapshotID: snapshot.id)
             return .success(ClaudeLiveCallback(identity: ClaudeLiveCallbackIdentity(nativeSessionID: session, promptID: hook.promptID, hook: hook.name, toolUseID: hook.nativeToolUseID, callbackInputFingerprint: fingerprint), owner: owner, capability: capability, semantic: semantic, semanticShape: shape, deadline: deadline, nativeInput: hook.payload, offeredSuggestion: suggestion, questionGroups: groups))
         }
@@ -167,7 +167,7 @@ public enum ClaudeLiveCallbackFactory {
               JSONSerialization.isValidJSONObject(suggestions[0]),
               let exact = try? JSONSerialization.data(withJSONObject: suggestions[0], options: [.sortedKeys]) else { return nil }
         let id = SHA256.hash(data: exact).map { String(format: "%02x", $0) }.joined()
-        return ClaudeOfferedPermissionSuggestion(id: id, persistenceScope: scope, exactNativeJSON: exact)
+        return ClaudeOfferedPermissionSuggestion(id: id, persistenceScope: scope, canonicalNativeJSON: exact)
     }
 
     private static func questions(in root: [String: Any]) -> (shape: GuidedSemanticShape, groups: [ClaudeQuestionGroup])? {

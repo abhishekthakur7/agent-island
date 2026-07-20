@@ -12,7 +12,7 @@ Claude Code recording. No manual recording is claimed by this change.
 | Double submit, stale and resolved elsewhere | `testPermissionCallbackIsBoundToOneExactIdentityAndOneDispatch`, `testResolvedElsewhereAndAcknowledgementOutcomesNeverClaimLifecycleCompletion` | authored | Callback gate is consumed before dispatch; resolved elsewhere has zero dispatch. |
 | Rejected / accepted / applied / superseded / indeterminate acknowledgement model | `ActionAttemptStore`, `ClaudeGuidedActionRouter.recordApplied/recordSuperseded/recordIndeterminate` | authored | Accepted means helper handoff only; no local lifecycle completion claim. |
 | Restart, reconnect, wake, helper loss, deadline/capability retirement | `ActionAttemptStore.invalidate*`, `ClaudeGuidedActionRouter.retireAll` | authored | Live callbacks and leases are volatile; no callback recreation or automatic retry. |
-| Accessibility and unsupported fallback | `GuidedSheetView`, existing GuidedSheet tests | authored review | Owner, consequence, disabled/fallback state and local-only acknowledgement remain exposed; no unsupported action control is added. |
+| Accessibility and unsupported fallback | Pending dedicated routing UI wiring and tests | pending | The existing Guided workflow is not evidence that callback availability, confirmation, scope consequence, or dispatch outcome is exposed accessibly. |
 
 ## C-mode parity matrix
 

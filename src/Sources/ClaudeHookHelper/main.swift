@@ -30,9 +30,18 @@ struct ClaudeHookHelperMain {
             if body.count > SessionDomainValidator.maxPayloadBytes { exit(64) }
         }
         #if canImport(Network)
-        let transport = ClaudeUnixDomainHookIPCTransport(endpoint: endpoint)
         do {
-            _ = try await runtime.forward(stdin: body, transport: transport)
+            if isDocumentedSynchronousAction(body) {
+                // The Product-controlled environment supplies neither endpoint
+                // nor timeout. Bound waiting by the helper's provisioned safe
+                // timeout and write one native response only on exact success.
+                let transport = ClaudeUnixDomainActionIPCTransport(endpoint: endpoint)
+                let response = try await runtime.respondToAction(stdin: body, deadline: Date().addingTimeInterval(runtime.timeout), transport: transport)
+                try FileHandle.standardOutput.write(contentsOf: response)
+            } else {
+                let transport = ClaudeUnixDomainHookIPCTransport(endpoint: endpoint)
+                _ = try await runtime.forward(stdin: body, transport: transport)
+            }
             exit(0)
         } catch let error as ClaudeHookHelperError {
             switch error {
@@ -49,5 +58,14 @@ struct ClaudeHookHelperMain {
         #else
         exit(69)
         #endif
+    }
+
+    private static func isDocumentedSynchronousAction(_ body: Data) -> Bool {
+        guard let hook = try? ClaudeHookEnvelope.decode(body) else { return false }
+        if hook.name == .permissionRequest { return hook.nativeAttentionRequestID?.isEmpty == false && hook.nativeToolUseID == nil }
+        guard hook.name == .preToolUse, hook.nativeToolUseID?.isEmpty == false,
+              let root = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return false }
+        let name = root["tool_name"] as? String ?? root["toolName"] as? String
+        return name == "AskUserQuestion" || name == "ExitPlanMode"
     }
 }
