@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let presentation: PresentationRuntime
     private let fixtureController: FixtureController
     private let claudeActionComposition: ClaudeActionApplicationComposition
+    private let claudeActionLifecycle: ClaudeActionIntegrationLifecycle
     private let atlasSettings: AtlasSettingsModel
     private let notificationSettings = NotificationPolicySettingsModel()
     private lazy var settingsCoordinator = AtlasSettingsWindowCoordinator { [unowned self] in
@@ -34,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.presentation = presentation
         self.fixtureController = fixtureController
         self.claudeActionComposition = claudeActionComposition
+        self.claudeActionLifecycle = ClaudeActionIntegrationLifecycle(composition: claudeActionComposition)
         let atlasSettings = AtlasSettingsModel(shortcutInputSourceResolver: {
             NativeShortcutInputSourceResolver.current()
         })
@@ -87,13 +89,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         overlay.terminate()
-        claudeActionComposition.retire()
+        Task { await claudeActionLifecycle.retireCurrentInstallation() }
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         overlay.terminate()
-        claudeActionComposition.retire()
+        Task { await claudeActionLifecycle.retireCurrentInstallation() }
         return .terminateNow
     }
 

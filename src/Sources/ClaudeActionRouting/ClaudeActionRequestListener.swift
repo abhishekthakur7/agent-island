@@ -53,7 +53,7 @@ public actor ClaudeActionRequestListener: ClaudeActionDispatchPort {
     /// channel below.  Invalid input never creates a durable request.
     @discardableResult
     public func receive(_ request: ClaudeHelperActionRequest, channel: any ClaudeActionReplyChannel, at now: Date = Date()) async -> Bool {
-        prune(at: now)
+        await prune(at: now)
         guard let router,
               waiters.count < configuration.maximumWaiters,
               request.isAuthenticated(using: configuration.authenticator, expectedInstallationID: configuration.installationID, expectedHelperID: configuration.helperID, receivedAt: now, maxClockSkew: configuration.clockSkew),
@@ -95,7 +95,7 @@ public actor ClaudeActionRequestListener: ClaudeActionDispatchPort {
     /// The router's only dispatch port.  It cannot reconstruct callbacks,
     /// retry writes, or report Product application without explicit evidence.
     public func dispatch(_ request: ClaudeActionDispatchRequest, at now: Date) async -> ClaudeActionDispatchOutcome {
-        prune(at: now)
+        await prune(at: now)
         guard let waiter = waiters.removeValue(forKey: request.callback.identity),
               waiter.callback.identity == request.callback.identity,
               waiter.request.nonce == request.callback.identity.nonce.uuidString,
@@ -111,12 +111,13 @@ public actor ClaudeActionRequestListener: ClaudeActionDispatchPort {
             response: native,
             authenticator: configuration.authenticator
         )
-        // `true` proves the channel accepted exactly one complete reply frame,
-        // not that Claude applied it. A false/throwing channel is ambiguous
-        // because the peer may have observed a prefix before it disappeared.
-        let result = await waiter.channel.send(reply)
+        // A successful local socket write only proves a kernel handoff. The
+        // documented Hook protocol has no Product acceptance acknowledgement,
+        // so it is deliberately terminal-but-indeterminate rather than a
+        // fabricated Product acceptance claim.
+        _ = await waiter.channel.send(reply)
         await waiter.channel.close()
-        return result ? .acceptedByProduct : .indeterminate
+        return .indeterminate
     }
 
     /// A connection close, wake/reconnect, restart, source change, or timeout
@@ -130,8 +131,8 @@ public actor ClaudeActionRequestListener: ClaudeActionDispatchPort {
     }
 
     public func connectionLost(identity: ClaudeLiveCallbackIdentity) async {
-        guard waiters.removeValue(forKey: identity) != nil else { return }
-        await router?.retireAll(reason: .helperUnavailable)
+        guard waiters[identity] != nil else { return }
+        await retireAll(reason: .helperUnavailable)
     }
 
     public var liveWaiterCount: Int { waiters.count }
@@ -139,18 +140,19 @@ public actor ClaudeActionRequestListener: ClaudeActionDispatchPort {
     /// Called by the socket server's bounded timer.  Expiry is a source-state
     /// change, so every live lease is invalidated rather than reconstructed.
     public func expire(at now: Date = Date()) async {
-        let expired = waiters.values.filter { $0.request.deadline < now }
-        guard !expired.isEmpty else { return }
-        for waiter in expired { waiters.removeValue(forKey: waiter.callback.identity); await waiter.channel.close() }
-        await router?.retireAll(reason: .expired)
-        prune(at: now)
+        await prune(at: now)
     }
 
-    private func prune(at now: Date) {
-        let expired = waiters.filter { $0.value.request.deadline < now }
-        for (identity, waiter) in expired {
-            waiters.removeValue(forKey: identity)
-            Task { await waiter.channel.close() }
+    /// An expiry is an authority-incarnation boundary.  The router only has a
+    /// retire-all operation, therefore all waiter channels are closed in the
+    /// same awaited transaction before its leases/callbacks are invalidated.
+    private func prune(at now: Date) async {
+        let hasExpiredWaiter = waiters.values.contains { $0.request.deadline < now }
+        if hasExpiredWaiter {
+            let channels = waiters.values.map(\.channel)
+            waiters.removeAll()
+            for channel in channels { await channel.close() }
+            await router?.retireAll(reason: .expired)
         }
         seenNonces = seenNonces.filter { $0.value >= now }
         if seenNonces.count > 1_024 {
@@ -194,11 +196,11 @@ public actor ClaudeGuidedActionService {
     public let listener: ClaudeActionRequestListener
     public let router: ClaudeGuidedActionRouter
 
-    public init(configuration: ClaudeActionRequestListener.Configuration, store: ActionAttemptStore = ActionAttemptStore()) {
+    public init(configuration: ClaudeActionRequestListener.Configuration, store: ActionAttemptStore = ActionAttemptStore()) async {
         self.store = store
         let listener = ClaudeActionRequestListener(configuration: configuration)
         self.listener = listener
         self.router = ClaudeGuidedActionRouter(store: store, dispatchPort: listener, validationPort: ClaudeStaticLiveActionValidationPort())
-        Task { await listener.attach(router: self.router) }
+        await listener.attach(router: self.router)
     }
 }

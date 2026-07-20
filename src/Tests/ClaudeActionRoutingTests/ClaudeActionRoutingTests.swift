@@ -1,5 +1,10 @@
 import XCTest
 import CryptoKit
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import ClaudeActionRouting
 @testable import ClaudeCodeAdapter
 @testable import SessionDomain
@@ -49,7 +54,7 @@ final class ClaudeActionRoutingTests: XCTestCase {
         guard case .success = await router.open(live, at: now) else { return XCTFail("open") }
         guard case .dispatched(let response, let attempt) = await router.submit(callbackIdentity: live.identity, submission: ClaudeActionSubmission(action: .allow, deliberateConfirmation: true), attemptID: "allow-1", at: now) else { return XCTFail("allow should dispatch") }
         XCTAssertEqual(response, .permission(.allow, suggestionJSON: nil))
-        XCTAssertEqual(attempt.outcome, .acceptedByProduct)
+        XCTAssertEqual(attempt.outcome, .indeterminate)
         XCTAssertEqual(attempt.dispatchCount, 1)
         guard case .rejected(_, .staleCallback) = await router.submit(callbackIdentity: live.identity, submission: ClaudeActionSubmission(action: .allow, deliberateConfirmation: true), attemptID: "allow-repeat", at: now) else { return XCTFail("repeat must not dispatch") }
         XCTAssertEqual((await store.attempts()).count, 1)
@@ -161,5 +166,85 @@ final class ClaudeActionRoutingTests: XCTestCase {
         let expired = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(-1), authenticator: secret)
         XCTAssertFalse(await listener.receive(expired, channel: ClaudeInMemoryActionReplyChannel(), at: now))
         XCTAssertEqual((await store.requests()).count, 1)
+    }
+
+    func testExpiryRetiresWaitersAndRouterAuthorityBeforeAnySubmit() async throws {
+        let secret = ClaudeIPCAuthenticator(secret: "listener-secret")
+        let configuration = ClaudeActionRequestListener.Configuration(installationID: instance, helperID: "helper", authenticator: secret, snapshot: snapshot(), maximumFutureDeadline: 2)
+        let listener = ClaudeActionRequestListener(configuration: configuration)
+        let store = ActionAttemptStore(); let router = ClaudeGuidedActionRouter(store: store, dispatchPort: listener)
+        await listener.attach(router: router)
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\"}".utf8)
+        let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let nonce = UUID().uuidString
+        let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: nonce, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: secret)
+        let channel = ClaudeInMemoryActionReplyChannel()
+        XCTAssertTrue(await listener.receive(request, channel: channel, at: now))
+        await listener.expire(at: now.addingTimeInterval(2))
+        XCTAssertEqual(await listener.liveWaiterCount, 0)
+        XCTAssertTrue(await channel.isClosed)
+        let identity = ClaudeLiveCallbackIdentity(nativeSessionID: NativeSessionID("session-a"), promptID: nil, hook: .permissionRequest, toolUseID: nil, callbackInputFingerprint: fingerprint, nonce: try XCTUnwrap(UUID(uuidString: nonce)))
+        guard case .rejected(_, .staleCallback) = await router.submit(callbackIdentity: identity, submission: ClaudeActionSubmission(action: .allow, deliberateConfirmation: true), attemptID: "expired-before-submit", at: now.addingTimeInterval(2)) else { return XCTFail("expired callback must not dispatch") }
+        XCTAssertTrue((await store.attempts()).isEmpty)
+    }
+
+    func testServiceBootstrapAttachesRouterBeforeItCanReceive() async {
+        let service = await ClaudeGuidedActionService(configuration: .init(installationID: instance, helperID: "helper", authenticator: ClaudeIPCAuthenticator(secret: "listener-secret"), snapshot: snapshot()))
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\"}".utf8)
+        let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: ClaudeIPCAuthenticator(secret: "listener-secret"))
+        XCTAssertTrue(await service.listener.receive(request, channel: ClaudeInMemoryActionReplyChannel(), at: now))
+    }
+
+    func testHeadlessProductionCompositionStartsOrderedListener() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("agent-island-ab135-\(UUID().uuidString)", isDirectory: true)
+        let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("actions.sock"), appOwnedRoot: root)
+        let production = await ClaudeActionProductionComposition(endpoint: endpoint, configuration: .init(installationID: instance, helperID: "helper", authenticator: ClaudeIPCAuthenticator(secret: "listener-secret"), snapshot: snapshot()))
+        XCTAssertTrue(production.start())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: endpoint.path))
+        await production.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: endpoint.path))
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    func testSlowlorisFramesReleaseAllFramingSlotsAtBoundedDeadline() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("agent-island-ab135-slow-\(UUID().uuidString)", isDirectory: true)
+        let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("actions.sock"), appOwnedRoot: root)
+        let production = await ClaudeActionProductionComposition(endpoint: endpoint, configuration: .init(installationID: instance, helperID: "helper", authenticator: ClaudeIPCAuthenticator(secret: "listener-secret"), snapshot: snapshot()))
+        XCTAssertTrue(production.start())
+        var peers: [Int32] = []
+        defer {
+            for fd in peers { _ = close(fd) }
+            Task { await production.stop() }
+            try? FileManager.default.removeItem(at: root)
+        }
+        for _ in 0..<32 {
+            let peer = try openLocalPeer(endpoint.path)
+            peers.append(peer)
+            var byte: UInt8 = 0x41
+            XCTAssertEqual(write(peer, &byte, 1), 1)
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(production.server.activeFramingConnectionCount, 32)
+        try await Task.sleep(for: .milliseconds(2_250))
+        XCTAssertEqual(production.server.activeFramingConnectionCount, 0)
+    }
+
+    private func openLocalPeer(_ path: String) throws -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw NSError(domain: "ClaudeActionRoutingTests", code: 1) }
+        var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
+        let capacity = MemoryLayout.size(ofValue: address.sun_path)
+        path.withCString { source in
+            withUnsafeMutablePointer(to: &address.sun_path) { destination in
+                destination.withMemoryRebound(to: CChar.self, capacity: capacity) { _ = strncpy($0, source, capacity - 1) }
+            }
+        }
+        let length = socklen_t(MemoryLayout<sa_family_t>.size + path.utf8.count + 1)
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, length) }
+        }
+        guard connected == 0 else { _ = close(fd); throw NSError(domain: "ClaudeActionRoutingTests", code: 2) }
+        return fd
     }
 }
