@@ -2,5 +2,5 @@
   "artifact": "stable-schema.json",
   "validation": "captured 2026-07-20 from /opt/homebrew/bin/codex (codex-cli 0.144.6) using `codex app-server generate-json-schema --out <directory>` without --experimental or --enable; SHA-256 dac1766a4569654dbda02f879f5e977085863f9714273eae1295095a055ca50f over every generated JSON file sorted by relative path and canonicalized with `jq -S -c`. Raw monolith bytes vary by object order and are non-authoritative. The Codex command is itself labelled experimental, so live capability remains pending unless this exact semantic output is reproven; fixtures never enable live capabilities",
   "fixtures": ["initialize-valid.json", "initialize-incompatible.json", "thread-turn-item.json", "approval.json"],
-  "approvalNote": "v0.144.6's generated stable schema has no server approval request/response shape. This auto-review notification is display-only and does not mint an Action Lease."
+  "approvalNote": "v0.144.6's generated ServerRequest schema proves command and file-change approval responses on the same JSON-RPC ID; this adapter exposes only their one-use `decision: accept|decline` subset after direct thread ownership. Permissions approval requires a GrantedPermissionProfile and is source-visible but unavailable: it never mints an Action Lease or response."
 }
