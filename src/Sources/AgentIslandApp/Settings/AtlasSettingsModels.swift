@@ -61,6 +61,13 @@ public enum AtlasLaunchBehavior: String, CaseIterable, Codable, Equatable, Hasha
     case atLogin
 }
 
+public enum AtlasLaunchAtLoginState: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case unknown
+    case enabled
+    case disabled
+    case unavailable
+}
+
 /// The click action is explicit because inspect/expand must never silently
 /// become an unvalidated Host navigation attempt.
 public enum AtlasClickBehavior: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
@@ -145,12 +152,187 @@ public struct AtlasGeneralPreferences: Codable, Equatable, Hashable, Sendable {
 
 public typealias AtlasGeneralSettings = AtlasGeneralPreferences
 
+/// The collapsed surface deliberately has two named forms.  `clean` keeps
+/// the aggregate calm; `detailed` adds only sourced metadata and never
+/// invents project, worktree, model, or activity values.
+public enum AtlasCollapsedLayout: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case clean
+    case detailed
+}
+
+public typealias AtlasDisplayLayout = AtlasCollapsedLayout
+
+public enum AtlasDisplayContentSize: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
+    case small
+    case medium
+    case large
+
+    public var scale: Double {
+        switch self {
+        case .small: 0.9
+        case .medium: 1.0
+        case .large: 1.15
+        }
+    }
+}
+
+/// Display preferences are value data only.  A display identity is an
+/// opaque, stable CoreGraphics UUID; it is not a screen index or a Space.
+public struct AtlasDisplayPreferences: Codable, Equatable, Hashable, Sendable {
+    public var selectedDisplayID: String?
+    public var collapsedLayout: AtlasCollapsedLayout
+    public var contentSize: AtlasDisplayContentSize
+    public var maximumPanelWidth: Double
+    public var maximumPanelHeight: Double
+    public var completionCardHeight: Double
+    public var showProjectMetadata: Bool
+    public var showWorktreeMetadata: Bool
+    public var showModelMetadata: Bool
+    public var showSubagentRunMetadata: Bool
+    public var showActivityMetadata: Bool
+
+    public init(
+        selectedDisplayID: String? = nil,
+        collapsedLayout: AtlasCollapsedLayout = .clean,
+        contentSize: AtlasDisplayContentSize = .medium,
+        maximumPanelWidth: Double = 820,
+        maximumPanelHeight: Double = 500,
+        completionCardHeight: Double = 220,
+        showProjectMetadata: Bool = false,
+        showWorktreeMetadata: Bool = false,
+        showModelMetadata: Bool = false,
+        showSubagentRunMetadata: Bool = false,
+        showActivityMetadata: Bool = false
+    ) {
+        self.selectedDisplayID = selectedDisplayID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.collapsedLayout = collapsedLayout
+        self.contentSize = contentSize
+        self.maximumPanelWidth = maximumPanelWidth
+        self.maximumPanelHeight = maximumPanelHeight
+        self.completionCardHeight = completionCardHeight
+        self.showProjectMetadata = showProjectMetadata
+        self.showWorktreeMetadata = showWorktreeMetadata
+        self.showModelMetadata = showModelMetadata
+        self.showSubagentRunMetadata = showSubagentRunMetadata
+        self.showActivityMetadata = showActivityMetadata
+        self = normalized()
+    }
+
+    public static let `default` = AtlasDisplayPreferences()
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedDisplayID, collapsedLayout, contentSize, maximumPanelWidth,
+             maximumPanelHeight, completionCardHeight, showProjectMetadata,
+             showWorktreeMetadata, showModelMetadata, showSubagentRunMetadata,
+             showActivityMetadata
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            selectedDisplayID: try c.decodeIfPresent(String.self, forKey: .selectedDisplayID) ?? nil,
+            collapsedLayout: try c.decodeIfPresent(AtlasCollapsedLayout.self, forKey: .collapsedLayout) ?? .clean,
+            contentSize: try c.decodeIfPresent(AtlasDisplayContentSize.self, forKey: .contentSize) ?? .medium,
+            maximumPanelWidth: try c.decodeIfPresent(Double.self, forKey: .maximumPanelWidth) ?? 820,
+            maximumPanelHeight: try c.decodeIfPresent(Double.self, forKey: .maximumPanelHeight) ?? 500,
+            completionCardHeight: try c.decodeIfPresent(Double.self, forKey: .completionCardHeight) ?? 220,
+            showProjectMetadata: try c.decodeIfPresent(Bool.self, forKey: .showProjectMetadata) ?? false,
+            showWorktreeMetadata: try c.decodeIfPresent(Bool.self, forKey: .showWorktreeMetadata) ?? false,
+            showModelMetadata: try c.decodeIfPresent(Bool.self, forKey: .showModelMetadata) ?? false,
+            showSubagentRunMetadata: try c.decodeIfPresent(Bool.self, forKey: .showSubagentRunMetadata) ?? false,
+            showActivityMetadata: try c.decodeIfPresent(Bool.self, forKey: .showActivityMetadata) ?? false
+        )
+    }
+
+    public var maxPanelWidth: Double {
+        get { maximumPanelWidth }
+        set { maximumPanelWidth = newValue }
+    }
+
+    public var maxPanelHeight: Double {
+        get { maximumPanelHeight }
+        set { maximumPanelHeight = newValue }
+    }
+
+    public var contentScale: Double { contentSize.scale }
+
+    /// Values written by older builds or hand-edited defaults fail closed to
+    /// a readable, finite range rather than producing an off-screen panel.
+    public func normalized() -> Self {
+        var value = self
+        if let selectedDisplayID, selectedDisplayID.isEmpty { value.selectedDisplayID = nil }
+        value.maximumPanelWidth = Self.clampFinite(maximumPanelWidth, lower: 240, upper: 2400, fallback: 820)
+        value.maximumPanelHeight = Self.clampFinite(maximumPanelHeight, lower: 80, upper: 1600, fallback: 500)
+        value.completionCardHeight = Self.clampFinite(completionCardHeight, lower: 80, upper: 900, fallback: 220)
+        return value
+    }
+
+    public func clamped(to visibleBounds: AtlasVisibleBounds, isBuiltIn: Bool) -> AtlasClampedDisplayGeometry {
+        let bounds = visibleBounds.normalized
+        let safeInset: Double = isBuiltIn ? 12 : 8
+        let safeWidth = max(1, bounds.width - safeInset * 2)
+        let safeHeight = max(1, bounds.height - safeInset * 2)
+        let width = min(maximumPanelWidth, safeWidth)
+        let height = min(maximumPanelHeight, safeHeight)
+        let x = bounds.minX + (bounds.width - width) / 2
+        let y = bounds.maxY - safeInset - height
+        let gap = isBuiltIn ? min(136, max(32, width - 160)) : 0
+        return AtlasClampedDisplayGeometry(x: x, y: y, width: width, height: height, protectedGap: gap, isBuiltIn: isBuiltIn)
+    }
+
+    private static func clampFinite(_ value: Double, lower: Double, upper: Double, fallback: Double) -> Double {
+        guard value.isFinite else { return fallback }
+        return min(upper, max(lower, value))
+    }
+}
+
+public typealias AtlasDisplaySettings = AtlasDisplayPreferences
+
+public struct AtlasVisibleBounds: Codable, Equatable, Hashable, Sendable {
+    public var minX: Double
+    public var minY: Double
+    public var width: Double
+    public var height: Double
+
+    public init(minX: Double = 0, minY: Double = 0, width: Double = 1_920, height: Double = 1_080) {
+        self.minX = minX
+        self.minY = minY
+        self.width = width
+        self.height = height
+    }
+
+    public var maxX: Double { minX + width }
+    public var maxY: Double { minY + height }
+    public var normalized: Self {
+        Self(minX: minX.isFinite ? minX : 0, minY: minY.isFinite ? minY : 0, width: width.isFinite ? max(1, width) : 1, height: height.isFinite ? max(1, height) : 1)
+    }
+}
+
+public struct AtlasClampedDisplayGeometry: Codable, Equatable, Hashable, Sendable {
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let height: Double
+    public let protectedGap: Double
+    public let isBuiltIn: Bool
+
+    public init(x: Double, y: Double, width: Double, height: Double, protectedGap: Double, isBuiltIn: Bool) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.protectedGap = protectedGap
+        self.isBuiltIn = isBuiltIn
+    }
+}
+
 /// The durable settings view plus ephemeral preview state.  Preview is kept
 /// in the snapshot for SwiftUI convenience but is never written by the
 /// repository.
 public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
     public var selectedDestination: AtlasSettingsDestination
     public var general: AtlasGeneralPreferences
+    public var display: AtlasDisplayPreferences
     public var onboarding: AtlasOnboardingState
     public var integrations: [AtlasIntegrationState]
     public var preview: AtlasPreviewState
@@ -158,14 +340,35 @@ public struct AtlasSettingsSnapshot: Equatable, Hashable, Sendable {
     public init(
         selectedDestination: AtlasSettingsDestination = .general,
         general: AtlasGeneralPreferences = .default,
+        display: AtlasDisplayPreferences = .default,
         onboarding: AtlasOnboardingState = .initial,
         integrations: [AtlasIntegrationState] = AtlasIntegrationState.defaults,
         preview: AtlasPreviewState? = nil
     ) {
         self.selectedDestination = selectedDestination
         self.general = general
+        self.display = display
         self.onboarding = onboarding
         self.integrations = integrations
-        self.preview = preview ?? AtlasPreviewState(general: general)
+        self.preview = preview ?? AtlasPreviewState(general: general, display: display)
+    }
+
+    /// Source-compatible overload for callers written before Display became
+    /// durable. It intentionally supplies the safe Display defaults.
+    public init(
+        selectedDestination: AtlasSettingsDestination,
+        general: AtlasGeneralPreferences,
+        onboarding: AtlasOnboardingState,
+        integrations: [AtlasIntegrationState],
+        preview: AtlasPreviewState? = nil
+    ) {
+        self.init(
+            selectedDestination: selectedDestination,
+            general: general,
+            display: .default,
+            onboarding: onboarding,
+            integrations: integrations,
+            preview: preview
+        )
     }
 }

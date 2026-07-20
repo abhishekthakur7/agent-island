@@ -21,3 +21,8 @@ directly from `Package.swift`, and a local privacy check (no network egress,
 no Interaction Content in diagnostics) observed on real hardware. Until
 those rows are captured, they remain unverified — the same standard already
 applied to the AB-116/AB-117 spikes.
+
+AB-132 uses [AB-132-REPORT-TEMPLATE.md](AB-132-REPORT-TEMPLATE.md) for durable
+General/Display round trips, exact Host suppression, safe geometry, atomic
+display transitions, preview isolation, and honest Jump Back fallback. Native
+captures remain explicitly unverified until observed on the target Mac.

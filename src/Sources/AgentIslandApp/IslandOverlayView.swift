@@ -1,4 +1,5 @@
 import SwiftUI
+import SessionDomain
 import PresentationRuntime
 
 /// SwiftUI supplies only the visible Island silhouette. AppKit owns its
@@ -10,6 +11,10 @@ struct IslandOverlayView: View {
     let cards: [AgentSessionCardSnapshot]
     let ledgerRevision: Int64
     let keyboardEngaged: Bool
+    let clickBehavior: AtlasClickBehavior
+    let displayPreferences: AtlasDisplayPreferences
+    let onPrimaryClick: () -> Void
+    let lastClickOutcome: PresentationClickOutcome?
     let onExpand: () -> Void
     let onCollapse: () -> Void
     let onSettings: () -> Void
@@ -57,14 +62,14 @@ struct IslandOverlayView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .modifier(IslandSurface())
         } else {
-            Button(action: onExpand) {
-                Label("Show", systemImage: "chevron.down")
+            Button(action: onPrimaryClick) {
+                Label(clickBehavior == .jumpBack ? "Jump Back" : "Inspect / Expand", systemImage: "chevron.down")
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity, minHeight: 56)
             }
             .buttonStyle(.plain)
             .modifier(IslandSurface())
-            .accessibilityLabel("Show Agent Sessions")
+            .accessibilityLabel(clickBehavior == .jumpBack ? "Jump Back when revalidated" : "Inspect or expand Agent Sessions")
         }
     }
 
@@ -97,12 +102,15 @@ struct IslandOverlayView: View {
     }
 
     private var collapsedSummary: some View {
-        Button(action: onExpand) {
+        Button(action: onPrimaryClick) {
             HStack(spacing: 8) {
                 Image(systemName: attentionCount > 0 ? "exclamationmark.circle.fill" : "sparkles")
                     .foregroundStyle(attentionCount > 0 ? .orange : .cyan)
                 Text(attentionCount > 0 ? "\(attentionCount) need attention" : "\(cards.count) Agent Sessions")
                     .font(.subheadline.weight(.semibold))
+                if displayPreferences.collapsedLayout == .detailed, let card = cards.first {
+                    sourcedMetadata(for: card)
+                }
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.down")
                     .accessibilityHidden(true)
@@ -112,7 +120,22 @@ struct IslandOverlayView: View {
         }
         .buttonStyle(.plain)
         .modifier(IslandSurface())
-        .accessibilityLabel("\(attentionCount) Attention Requests; \(cards.count) Agent Sessions. Show Agent Sessions")
+        .accessibilityLabel(collapsedAccessibilityLabel)
+    }
+
+    private var collapsedAccessibilityLabel: String {
+        let action = clickBehavior == .jumpBack ? "Jump Back when revalidated" : "Inspect or expand"
+        return "\(attentionCount) Attention Requests; \(cards.count) Agent Sessions. \(action)"
+    }
+
+    @ViewBuilder private func sourcedMetadata(for card: AgentSessionCardSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            if displayPreferences.showSubagentRunMetadata, !card.subagentRuns.isEmpty { Text("\(card.subagentRuns.count) Subagent Runs") }
+            if displayPreferences.showActivityMetadata, let updated = card.sourceLastUpdated { Text(updated, style: .relative) }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
     }
 
     private var overlayControls: some View {
@@ -127,6 +150,12 @@ struct IslandOverlayView: View {
                 Text("Keyboard engaged • Escape collapses")
                     .font(.caption2)
                     .accessibilityLabel("Keyboard engagement active. Escape collapses the overlay.")
+            }
+            if let lastClickOutcome {
+                Text(lastClickOutcome.presentationLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(lastClickOutcome.presentationLabel)
             }
         }
     }

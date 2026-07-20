@@ -10,6 +10,12 @@ enum IslandOverlayPresentation: Equatable {
     case expanded
 }
 
+enum IslandDisplayAvailability: String, Codable, Equatable {
+    case available
+    case selectionUnavailable
+    case needsRevalidation
+}
+
 enum IslandOverlayEvent {
     case launch(displayAvailable: Bool)
     case automaticReveal
@@ -21,6 +27,7 @@ enum IslandOverlayEvent {
     case releaseKeyboard
     case displayLost
     case displayReconnected
+    case displayRevalidated(available: Bool)
     case setQuietSceneSuppressed(Bool)
     case sleep
     case wake(displayAvailable: Bool)
@@ -34,6 +41,8 @@ struct IslandOverlayState: Equatable {
     var selectedDisplayAvailable = false
     var quietSceneSuppressed = false
     var terminated = false
+    var displayAvailability: IslandDisplayAvailability = .selectionUnavailable
+    var transitionRevision: UInt64 = 0
 
     /// The visible silhouette is the only place this state permits both input
     /// and accessibility. `withdrawn` always means neither exists.
@@ -53,6 +62,8 @@ struct IslandOverlayStateMachine {
             state.keyboardEngaged = false
             state.interactionGuard = false
             state.presentation = available && !state.quietSceneSuppressed ? .collapsed : .withdrawn
+            state.displayAvailability = available ? .available : .selectionUnavailable
+            state.transitionRevision &+= 1
 
         case .automaticReveal:
             guard state.selectedDisplayAvailable, !state.quietSceneSuppressed else { return }
@@ -87,12 +98,24 @@ struct IslandOverlayStateMachine {
             state.interactionGuard = false
             state.selectedDisplayAvailable = false
             state.presentation = .withdrawn
+            state.displayAvailability = .selectionUnavailable
+            state.transitionRevision &+= 1
 
         case .displayReconnected:
             state.selectedDisplayAvailable = true
             state.keyboardEngaged = false
             state.interactionGuard = false
             state.presentation = state.quietSceneSuppressed ? .withdrawn : .collapsed
+            state.displayAvailability = .available
+            state.transitionRevision &+= 1
+
+        case let .displayRevalidated(available):
+            state.keyboardEngaged = false
+            state.interactionGuard = false
+            state.selectedDisplayAvailable = available
+            state.displayAvailability = available ? .available : .needsRevalidation
+            state.presentation = available && !state.quietSceneSuppressed ? .collapsed : .withdrawn
+            state.transitionRevision &+= 1
 
         case let .setQuietSceneSuppressed(suppressed):
             state.quietSceneSuppressed = suppressed
@@ -105,6 +128,8 @@ struct IslandOverlayStateMachine {
             state.interactionGuard = false
             state.presentation = .withdrawn
             state.terminated = true
+            state.displayAvailability = .selectionUnavailable
+            state.transitionRevision &+= 1
         }
     }
 }
@@ -139,22 +164,29 @@ struct IslandOverlayGeometry: Equatable {
     let isBuiltIn: Bool
     let protectedGap: CGFloat
 
-    static func make(for screen: NSScreen, presentation: IslandOverlayPresentation) -> IslandOverlayGeometry {
+    static func make(for screen: NSScreen, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default) -> IslandOverlayGeometry {
         let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
-        return make(usableFrame: screen.visibleFrame, isBuiltIn: CGDisplayIsBuiltin(CGDirectDisplayID(number)) != 0, presentation: presentation)
+        return make(usableFrame: screen.visibleFrame, isBuiltIn: CGDisplayIsBuiltin(CGDirectDisplayID(number)) != 0, presentation: presentation, settings: settings)
     }
 
-    static func make(usableFrame: CGRect, isBuiltIn: Bool, presentation: IslandOverlayPresentation) -> IslandOverlayGeometry {
+    static func make(usableFrame: CGRect, isBuiltIn: Bool, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default) -> IslandOverlayGeometry {
         let expanded = presentation == .expanded || presentation == .focused
-        let desired = CGSize(width: expanded ? 820 : 350, height: expanded ? 500 : 56)
+        let normalized = settings.normalized()
+        let scale = normalized.contentSize.scale
+        let desired = CGSize(
+            width: expanded ? normalized.maximumPanelWidth : min(normalized.maximumPanelWidth, 350 * scale),
+            height: expanded ? normalized.maximumPanelHeight : min(normalized.maximumPanelHeight, 56 * scale)
+        )
         let safe = usableFrame.insetBy(dx: 12, dy: 6)
-        let size = CGSize(width: min(desired.width, max(180, safe.width)), height: min(desired.height, max(56, safe.height)))
+        // Even unusually small visible frames win over readability minima:
+        // the Overlay must never cross the current safe bounds.
+        let size = CGSize(width: min(desired.width, max(1, safe.width)), height: min(desired.height, max(1, safe.height)))
         let frame = CGRect(x: safe.midX - size.width / 2, y: safe.maxY - size.height, width: size.width, height: size.height).integral
 
         guard isBuiltIn else {
             return IslandOverlayGeometry(frame: frame, hitRegions: [CGRect(origin: .zero, size: size)], isBuiltIn: false, protectedGap: 0)
         }
-        let gap = min(136, max(32, size.width - 160))
+        let gap = min(size.width, min(136, max(32, size.width - 160)))
         let wingWidth = (size.width - gap) / 2
         return IslandOverlayGeometry(
             frame: frame,

@@ -1,0 +1,43 @@
+[PASS] positiveObservation
+    - negotiate: compatible(snapshot: BCBD9135-4228-4996-8C7C-F271E1DE4A6F)
+    - sessionDeclared: committed(ledgerRevision: 1)
+    - activity.started: committed(ledgerRevision: 2)
+    - activity.waiting: committed(ledgerRevision: 3)
+[PASS] duplicateStableDelivery
+    - firstDelivery: committed(ledgerRevision: 1)
+    - duplicateDelivery: duplicateIgnored(ledgerRevision: 1)
+[PASS] invalidOwnership
+    - deliverMissingOwnerIdentity: rejected(SessionDomain.EnvelopeValidationError.missingOrAmbiguousOwnerIdentity)
+[PASS] incompatibleContract
+    - negotiate.incompatibleMajor: incompatibleContractMajor
+    - deliverAfterIncompatibleNegotiation: rejected(SessionDomain.EnvelopeValidationError.unknownNegotiationSnapshot)
+[PASS] malformedShape
+    - deliverMalformedActivity: rejected(SessionDomain.EnvelopeValidationError.malformedShape)
+[PASS] oversizedPayload
+    - deliverOversizedPayload: rejected(SessionDomain.EnvelopeValidationError.payloadTooLarge)
+[PASS] horizonWorkingSet
+    - workingSet: 30 source-proven Agent Sessions
+    - attention: one pending Attention Request
+    - completion: one completed Agent Session
+    - subagentRun: one source-proven child without task detail
+[PASS] transportLoss
+    - activity.started: committed(ledgerRevision: 1)
+    - observationBoundary.transportLost: committed(ledgerRevision: 2)
+[PASS] transportLoss.projectionInvariant execution=unresolved observation=unavailable
+[PASS] horizonWorkingSet.projectionInvariant sessions=30 attention=1 completed=1 children=1
+[PASS] duplicateStableDelivery.singleCardInvariant sessions=1
+[PASS] ab119.durableCommit
+[PASS] ab119.encryptedAtRest
+[PASS] ab119.wrongKeyRejected
+[PASS] ab119.restartReproducesSameIdentity
+[PASS] ab119.restartDegradesNonTerminalSession execution=unresolved observation=degraded
+[PASS] ab119.freshFactResolvesDegradedPlaceholder
+[PASS] ab119.missingKeyFailsClosed reason=storage.keychain_key_missing
+[PASS] ab119.corruptProjectionSnapshotDoesNotFailReopen
+[PASS] ab119.corruptProjectionSnapshotIsRecognizedNotSilentlyTrusted
+[PASS] ab130.diagnosticOutcomesAllowlisted
+[PASS] ab130.bundleRedacted
+[PASS] ab130.exportSeparateConfirmation
+[PASS] ab130.exportIntegrityManifest
+[PASS] ab130.maintenanceResidualHonesty
+SELF-CHECK PASSED

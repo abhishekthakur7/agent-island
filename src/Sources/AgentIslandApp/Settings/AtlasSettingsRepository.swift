@@ -28,6 +28,7 @@ public struct AtlasSettingsRepository {
         static let generalRevealCompletion = "general.revealOnCompletion"
         static let generalRevealAttention = "general.revealOnAttention"
         static let generalClickBehavior = "general.clickBehavior"
+        static let display = "display"
         static let onboarding = "onboarding"
         static let integrations = "integrations"
     }
@@ -80,6 +81,27 @@ public struct AtlasSettingsRepository {
         nonmutating set { saveGeneral(newValue) }
     }
 
+    public func loadDisplay() -> AtlasDisplayPreferences {
+        guard let data = defaults.data(forKey: key(Key.display)),
+              let decoded = try? JSONDecoder().decode(AtlasDisplayPreferences.self, from: data)
+        else { return .default }
+        let normalized = decoded.normalized()
+        if normalized != decoded { saveDisplay(normalized) }
+        return normalized
+    }
+
+    public func saveDisplay(_ display: AtlasDisplayPreferences) {
+        let normalized = display.normalized()
+        if let data = try? JSONEncoder().encode(normalized) {
+            defaults.set(data, forKey: key(Key.display))
+        }
+    }
+
+    public var display: AtlasDisplayPreferences {
+        get { loadDisplay() }
+        nonmutating set { saveDisplay(newValue) }
+    }
+
     public func loadOnboarding() -> AtlasOnboardingState {
         guard let data = defaults.data(forKey: key(Key.onboarding)) else { return .initial }
         do {
@@ -120,18 +142,21 @@ public struct AtlasSettingsRepository {
 
     public func loadSnapshot() -> AtlasSettingsSnapshot {
         let general = loadGeneral()
+        let display = loadDisplay()
         return AtlasSettingsSnapshot(
             selectedDestination: selectedDestination,
             general: general,
+            display: display,
             onboarding: loadOnboarding(),
             integrations: loadIntegrations(),
-            preview: AtlasPreviewState(general: general)
+            preview: AtlasPreviewState(general: general, display: display)
         )
     }
 
     public func save(_ snapshot: AtlasSettingsSnapshot) {
         selectedDestination = snapshot.selectedDestination
         saveGeneral(snapshot.general)
+        saveDisplay(snapshot.display)
         saveOnboarding(snapshot.onboarding)
         saveIntegrations(snapshot.integrations)
     }
@@ -147,6 +172,8 @@ public final class AtlasSettingsModel: ObservableObject {
     @Published public private(set) var snapshot: AtlasSettingsSnapshot
     @Published public private(set) var selectedDestination: AtlasSettingsDestination
     @Published public private(set) var general: AtlasGeneralPreferences
+    @Published public private(set) var launchAtLoginState: AtlasLaunchAtLoginState = .unknown
+    @Published public private(set) var display: AtlasDisplayPreferences
     @Published public private(set) var onboarding: AtlasOnboardingState
     @Published public private(set) var integrations: [AtlasIntegrationState]
     @Published public private(set) var preview: AtlasPreviewState
@@ -159,6 +186,7 @@ public final class AtlasSettingsModel: ObservableObject {
         self.snapshot = loaded
         self.selectedDestination = loaded.selectedDestination
         self.general = loaded.general
+        self.display = loaded.display
         self.onboarding = loaded.onboarding
         self.integrations = loaded.integrations
         self.previewRouter = AtlasPreviewRouter(initialState: loaded.preview)
@@ -187,6 +215,26 @@ public final class AtlasSettingsModel: ObservableObject {
         var value = general
         update(&value)
         setGeneral(value)
+    }
+
+    public func recordLaunchAtLoginState(_ state: AtlasLaunchAtLoginState) {
+        launchAtLoginState = state
+    }
+
+    public func setDisplay(_ value: AtlasDisplayPreferences) {
+        let normalized = value.normalized()
+        guard display != normalized else { return }
+        display = normalized
+        repository.saveDisplay(normalized)
+        previewRouter.send(.setDisplay(normalized))
+        preview = previewRouter.state
+        publishSnapshot()
+    }
+
+    public func updateDisplay(_ update: (inout AtlasDisplayPreferences) -> Void) {
+        var value = display
+        update(&value)
+        setDisplay(value)
     }
 
     public func onboarding(_ action: AtlasOnboardingAction) {
@@ -241,6 +289,7 @@ public final class AtlasSettingsModel: ObservableObject {
         snapshot = AtlasSettingsSnapshot(
             selectedDestination: selectedDestination,
             general: general,
+            display: display,
             onboarding: onboarding,
             integrations: integrations,
             preview: preview

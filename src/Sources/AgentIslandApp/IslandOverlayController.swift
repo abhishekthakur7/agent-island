@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import SessionDomain
 import PresentationRuntime
 
 @MainActor
@@ -8,9 +9,17 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var displays: [IslandDisplay] = []
     @Published var selectedDisplayID: String?
     @Published var hideInFullscreen = true
+    @Published var hideWhenNoActiveSession = true
+    @Published var suppressWhenExactHostForeground = true
     @Published var quietSceneActive = false
     @Published var hoverExpansionEnabled = true
+    @Published var revealOnCompletion = true
+    @Published var revealOnAttention = true
+    @Published var clickBehavior: AtlasClickBehavior = .inspectExpand
+    @Published var displayPreferences: AtlasDisplayPreferences = .default
     @Published private(set) var displayStatus = "Looking for a selected display…"
+    @Published private(set) var selectionAvailability: IslandDisplayAvailability = .selectionUnavailable
+    @Published private(set) var lastClickOutcome: PresentationClickOutcome?
 
     private let presentation: PresentationRuntime
     private var stateMachine = IslandOverlayStateMachine()
@@ -21,6 +30,12 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private var presentationCancellable: AnyCancellable?
     private var hoverWork: DispatchWorkItem?
     private var dismissalWork: DispatchWorkItem?
+    private var exactForegroundEvidence: (observation: ExactHostForegroundObservation, association: HostContextAssociation)?
+
+    /// The composition root may supply a Host-specific Jump Back coordinator.
+    /// Without one, enabled Jump Back remains visibly unavailable and cannot
+    /// accidentally activate a plausible app/window.
+    var jumpBackAction: (() -> JumpBackOutcome?)?
 
     init(presentation: PresentationRuntime) { self.presentation = presentation }
 
@@ -32,16 +47,23 @@ final class IslandOverlayController: NSObject, ObservableObject {
     func start() {
         installObservers()
         presentationCancellable = presentation.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.renderIfVisible() }
+            DispatchQueue.main.async { self?.reconcilePresentation() }
         }
         refreshDisplays(coldResume: true)
     }
 
     func selectDisplay(id: String?) {
+        hoverWork?.cancel()
+        dismissalWork?.cancel()
         releaseKeyboard()
+        // Withdraw the old selected display before changing identity. This is
+        // the single atomic transition point: no second live panel is ever
+        // created and no stale engagement/timer/frame survives the switch.
+        removeOverlayRegionsAndWindow()
         selectedDisplayID = id
+        displayPreferences.selectedDisplayID = id
         stateMachine.reduce(.displayLost)
-        if selectedScreen != nil { stateMachine.reduce(.displayReconnected) }
+        if selectedScreen != nil { stateMachine.reduce(.displayRevalidated(available: true)) }
         updateStatus()
         applyState()
     }
@@ -54,6 +76,16 @@ final class IslandOverlayController: NSObject, ObservableObject {
             return
         }
         applyState()
+    }
+
+    func primaryClick() {
+        switch clickBehavior {
+        case .inspectExpand:
+            lastClickOutcome = .inspectedOrExpanded
+            toggleOverlay()
+        case .jumpBack:
+            lastClickOutcome = PresentationClickPolicy.resolve(action: .jumpBack, jumpBackOutcome: jumpBackAction?())
+        }
     }
 
     func autoReveal() {
@@ -96,8 +128,30 @@ final class IslandOverlayController: NSObject, ObservableObject {
     }
 
     func reconcilePresentation() {
-        stateMachine.reduce(.setQuietSceneSuppressed((hideInFullscreen && isFullscreenActive) || quietSceneActive))
+        let exactForeground = exactForegroundEvidence.map { evidence in
+            presentation.cards.contains {
+                let identity = AgentSessionIdentity(
+                    productNamespace: ProductNamespace($0.productNamespace),
+                    nativeSessionID: NativeSessionID($0.nativeSessionID)
+                )
+                return evidence.observation.isExact(for: identity, in: evidence.association)
+            }
+        } ?? false
+        let suppressed = (hideInFullscreen && isFullscreenActive) || quietSceneActive || (hideWhenNoActiveSession && presentation.cards.isEmpty) || (suppressWhenExactHostForeground && exactForeground)
+        stateMachine.reduce(.setQuietSceneSuppressed(suppressed))
         applyState()
+    }
+
+    /// Host integrations may provide this only after revalidating one exact
+    /// owning Host Context. No title/path/app-only observation can enter this
+    /// setter, and clearing it immediately removes suppression.
+    func setExactHostForegroundEvidence(_ observation: ExactHostForegroundObservation?, association: HostContextAssociation? = nil) {
+        if let observation, let association {
+            exactForegroundEvidence = (observation, association)
+        } else {
+            exactForegroundEvidence = nil
+        }
+        reconcilePresentation()
     }
 
     func terminate() {
@@ -153,17 +207,22 @@ final class IslandOverlayController: NSObject, ObservableObject {
         let available = selectedScreen != nil
         if coldResume {
             stateMachine.reduce(.wake(displayAvailable: available))
+            if available { stateMachine.reduce(.displayRevalidated(available: true)) }
         } else if available, stateMachine.state.presentation == .withdrawn {
-            stateMachine.reduce(.displayReconnected)
+            stateMachine.reduce(.displayRevalidated(available: true))
         } else if !available {
+            hoverWork?.cancel()
+            dismissalWork?.cancel()
+            releaseKeyboard()
             stateMachine.reduce(.displayLost)
         }
-        stateMachine.reduce(.setQuietSceneSuppressed((hideInFullscreen && isFullscreenActive) || quietSceneActive))
+        stateMachine.reduce(.setQuietSceneSuppressed((hideInFullscreen && isFullscreenActive) || quietSceneActive || (hideWhenNoActiveSession && presentation.cards.isEmpty)))
         updateStatus()
         applyState()
     }
 
     private func updateStatus() {
+        selectionAvailability = stateMachine.state.displayAvailability
         if let display = displays.first(where: { $0.id == selectedDisplayID }) {
             displayStatus = "Overlay is assigned to \(display.name)."
         } else if selectedDisplayID != nil {
@@ -180,13 +239,17 @@ final class IslandOverlayController: NSObject, ObservableObject {
 
     private func renderIfVisible() {
         guard stateMachine.state.hasVisibleRegions, let screen = selectedScreen else { return }
-        let geometry = IslandOverlayGeometry.make(for: screen, presentation: stateMachine.state.presentation)
+        let geometry = IslandOverlayGeometry.make(for: screen, presentation: stateMachine.state.presentation, settings: displayPreferences)
         let root = IslandOverlayView(
             presentation: stateMachine.state.presentation,
             geometry: geometry,
             cards: presentation.cards,
             ledgerRevision: presentation.ledgerRevision,
             keyboardEngaged: stateMachine.state.keyboardEngaged,
+            clickBehavior: clickBehavior,
+            displayPreferences: displayPreferences,
+            onPrimaryClick: { [weak self] in self?.primaryClick() },
+            lastClickOutcome: lastClickOutcome,
             onExpand: { [weak self] in self?.toggleOverlay() },
             onCollapse: { [weak self] in self?.collapse() },
             onSettings: { [weak self] in self?.showSettings?() },

@@ -15,7 +15,7 @@ struct AtlasSettingsDetail: View {
             case .general: AtlasGeneralSection(model: model)
             case .integrations: AtlasIntegrationsSection(model: model)
             case .notifications: AtlasNotificationsSection(preview: model.preview, send: model.sendPreview)
-            case .display: AtlasDisplaySection(preview: model.preview, send: model.sendPreview, liveDisplayControls: liveDisplayControls)
+            case .display: AtlasDisplaySection(model: model, preview: model.preview, send: model.sendPreview, liveDisplayControls: liveDisplayControls)
             case .sound: AtlasSoundSection(model: notificationSettings)
             case .usage: AtlasPlaceholderSection(title: "Usage", icon: "chart.bar", message: "Usage Snapshots are display-only source evidence. Agent Island never estimates unavailable usage.")
             case .shortcuts: AtlasPlaceholderSection(title: "Shortcuts", icon: "command", message: "Global and focused shortcuts will expose collisions and can be disabled without changing Agent Product state.")
@@ -48,6 +48,11 @@ private struct AtlasGeneralSection: View {
                     Text("Launch at login").tag(AtlasLaunchBehavior.atLogin)
                 }
                 .accessibilityIdentifier("atlas.general.launchBehavior")
+                if model.launchAtLoginState == .unavailable {
+                    Label("Launch-at-login is unavailable in this app/OS context; intent remains saved.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 AtlasToggle("Expand on hover", detail: "Only visible Island bounds respond.", value: generalBinding(\.expandOnHover), id: "hoverExpansion")
                 AtlasToggle("Collapse on pointer exit", detail: "Interaction and keyboard engagement still keep the Island open.", value: generalBinding(\.collapseOnPointerExit), id: "pointerExitCollapse")
                 AtlasToggle("Suppress for exact foreground Host", detail: "Only a currently revalidated exact Host Context qualifies.", value: generalBinding(\.suppressWhenExactHostForeground), id: "exactHostSuppression")
@@ -197,6 +202,7 @@ private struct AtlasNotificationsSection: View {
 }
 
 private struct AtlasDisplaySection: View {
+    @ObservedObject var model: AtlasSettingsModel
     let preview: AtlasPreviewState
     let send: (AtlasPreviewAction) -> Void
     let liveDisplayControls: AnyView
@@ -206,8 +212,47 @@ private struct AtlasDisplaySection: View {
             AtlasCard(title: "Display assignment") {
                 liveDisplayControls
             }
+            AtlasCard(title: "Collapsed layout and content") {
+                Picker("Collapsed layout", selection: Binding(
+                    get: { model.display.collapsedLayout },
+                    set: { value in model.updateDisplay { $0.collapsedLayout = value } }
+                )) {
+                    Text("Clean").tag(AtlasCollapsedLayout.clean)
+                    Text("Detailed metadata").tag(AtlasCollapsedLayout.detailed)
+                }
+                .accessibilityIdentifier("atlas.display.collapsedLayout")
+                Picker("Content size", selection: Binding(
+                    get: { model.display.contentSize },
+                    set: { value in model.updateDisplay { $0.contentSize = value } }
+                )) {
+                    Text("Small").tag(AtlasDisplayContentSize.small)
+                    Text("Medium").tag(AtlasDisplayContentSize.medium)
+                    Text("Large").tag(AtlasDisplayContentSize.large)
+                }
+                .accessibilityIdentifier("atlas.display.contentSize")
+                Slider(value: Binding(
+                    get: { model.display.maximumPanelWidth },
+                    set: { value in model.updateDisplay { $0.maximumPanelWidth = value } }
+                ), in: 240...1_600, step: 10) { Text("Maximum panel width") }
+                Slider(value: Binding(
+                    get: { model.display.maximumPanelHeight },
+                    set: { value in model.updateDisplay { $0.maximumPanelHeight = value } }
+                ), in: 80...1_000, step: 10) { Text("Maximum panel height") }
+                Slider(value: Binding(
+                    get: { model.display.completionCardHeight },
+                    set: { value in model.updateDisplay { $0.completionCardHeight = value } }
+                ), in: 80...700, step: 10) { Text("Completion-card height") }
+                Toggle("Project metadata", isOn: displayBinding(\.showProjectMetadata))
+                Toggle("Worktree metadata", isOn: displayBinding(\.showWorktreeMetadata))
+                Toggle("Model metadata", isOn: displayBinding(\.showModelMetadata))
+                Toggle("Subagent Run metadata", isOn: displayBinding(\.showSubagentRunMetadata))
+                Toggle("Activity metadata", isOn: displayBinding(\.showActivityMetadata))
+                Text("Only source-proven metadata appears; missing values stay absent. Dimensions clamp to the selected display’s current safe visible bounds.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             AtlasCard(title: "Read-only Island preview") {
-                Text("The preview does not move, recreate, or resize the live Island Overlay.")
+                Text("The preview is local and read-only. It does not move, recreate, or resize the live Island Overlay.")
                     .foregroundStyle(.secondary)
                 ViewThatFits(in: .horizontal) {
                     HStack { displayPreviewButtons }
@@ -215,6 +260,11 @@ private struct AtlasDisplaySection: View {
                 }
                 .accessibilityIdentifier("atlas.display.preview.controls")
                 AtlasPreviewSurface(preview: preview)
+                if let unavailable = preview.unavailableDisplayLabel {
+                    Label("Selected display unavailable: \(unavailable)", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("atlas.display.preview.unavailable")
+                }
             }
         }
     }
@@ -223,6 +273,13 @@ private struct AtlasDisplaySection: View {
         Button("Pointer enters") { send(.hoverEntered) }
         Button("Pointer exits") { send(.hoverExited) }
         Button("Reset") { send(.reset) }
+    }
+
+    private func displayBinding<Value>(_ keyPath: WritableKeyPath<AtlasDisplayPreferences, Value>) -> Binding<Value> {
+        Binding(
+            get: { model.display[keyPath: keyPath] },
+            set: { value in model.updateDisplay { $0[keyPath: keyPath] = value } }
+        )
     }
 }
 
@@ -233,9 +290,15 @@ private struct AtlasPreviewSurface: View {
     var body: some View {
         HStack {
             Image(systemName: preview.isVisible ? "sparkles" : "circle.hexagongrid")
-            Text(preview.isExpanded ? "Expanded local preview" : "Compact local preview")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preview.isExpanded ? "Expanded local preview" : "Compact local preview")
+                Text(preview.display.collapsedLayout == .detailed ? "Detailed sourced metadata" : "Clean summary")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
-            Text(preview.isVisible ? "Visible" : "Idle").foregroundStyle(.secondary)
+            Text(preview.selectedDisplayAvailable ? (preview.isVisible ? "Visible" : "Idle") : "Unavailable")
+                .foregroundStyle(preview.selectedDisplayAvailable ? Color.secondary : Color.orange)
         }
         .padding()
         .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 14))

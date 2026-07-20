@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import ServiceManagement
 import PresentationRuntime
 
 /// AppKit owns the two deliberately distinct presentation hosts: a normally
@@ -16,13 +17,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AnyView(AgentIslandSettingsView(
             model: self.atlasSettings,
             notificationSettings: self.notificationSettings,
-            liveDisplayControls: AnyView(AtlasOverlayDisplayControls(overlay: self.overlay))
+            liveDisplayControls: AnyView(AtlasOverlayDisplayControls(model: self.atlasSettings, overlay: self.overlay))
         ))
     }
     private let horizon = HorizonController()
     private lazy var overlay = IslandOverlayController(presentation: presentation)
     private var statusItem: NSStatusItem?
     private var settingsCancellable: AnyCancellable?
+    private var displaySettingsCancellable: AnyCancellable?
 
     init(presentation: PresentationRuntime, fixtureController: FixtureController) {
         self.presentation = presentation
@@ -40,9 +42,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenu()
         overlay.showSettings = { [weak self] in self?.showSettings(nil) }
+        applyLaunchAtLogin(atlasSettings.general.launchBehavior)
         applyAtlasPresentationPreferences(atlasSettings.general)
+        applyAtlasDisplayPreferences(atlasSettings.display)
         settingsCancellable = atlasSettings.$general.sink { [weak self] general in
+            self?.applyLaunchAtLogin(general.launchBehavior)
             self?.applyAtlasPresentationPreferences(general)
+        }
+        displaySettingsCancellable = atlasSettings.$display.sink { [weak self] display in
+            self?.applyAtlasDisplayPreferences(display)
         }
         overlay.start()
     }
@@ -67,7 +75,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyAtlasPresentationPreferences(_ general: AtlasGeneralPreferences) {
         overlay.hideInFullscreen = general.hideInFullScreen
+        overlay.hideWhenNoActiveSession = general.hideWhenNoActiveSession
+        overlay.suppressWhenExactHostForeground = general.suppressWhenExactHostForeground
         overlay.hoverExpansionEnabled = general.expandOnHover
+        overlay.revealOnCompletion = general.revealOnCompletion
+        overlay.revealOnAttention = general.revealOnAttention
+        overlay.clickBehavior = general.clickBehavior
+        overlay.reconcilePresentation()
+    }
+
+    private func applyLaunchAtLogin(_ behavior: AtlasLaunchBehavior) {
+        do {
+            switch behavior {
+            case .manual:
+                if SMAppService.mainApp.status == .enabled {
+                    try SMAppService.mainApp.unregister()
+                }
+                atlasSettings.recordLaunchAtLoginState(.disabled)
+            case .atLogin:
+                try SMAppService.mainApp.register()
+                atlasSettings.recordLaunchAtLoginState(.enabled)
+            }
+        } catch {
+            // A command-line build, missing app bundle, or OS policy may not
+            // expose launch-at-login registration. Persisted intent remains
+            // intact, while the capability is reported honestly.
+            atlasSettings.recordLaunchAtLoginState(.unavailable)
+        }
+    }
+
+    private func applyAtlasDisplayPreferences(_ display: AtlasDisplayPreferences) {
+        overlay.displayPreferences = display
+        if let selected = display.selectedDisplayID, selected != overlay.selectedDisplayID {
+            overlay.selectDisplay(id: selected)
+        }
         overlay.reconcilePresentation()
     }
 
@@ -106,14 +147,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Display preview. This small AppKit-side bridge preserves the existing
 /// selected-display behavior without giving preview views an Overlay handle.
 private struct AtlasOverlayDisplayControls: View {
+    @ObservedObject var model: AtlasSettingsModel
     @ObservedObject var overlay: IslandOverlayController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Live Overlay assignment").font(.headline)
             Picker("Selected display", selection: Binding(
-                get: { overlay.selectedDisplayID },
-                set: { overlay.selectDisplay(id: $0) }
+                get: { model.display.selectedDisplayID ?? overlay.selectedDisplayID },
+                set: { selected in model.updateDisplay { $0.selectedDisplayID = selected } }
             )) {
                 ForEach(overlay.displays) { display in
                     Text(display.name).tag(Optional(display.id))
@@ -122,6 +164,11 @@ private struct AtlasOverlayDisplayControls: View {
             Text(overlay.displayStatus)
                 .font(.caption)
                 .foregroundStyle(overlay.selectedScreen == nil ? .orange : .secondary)
+            if overlay.selectionAvailability != .available {
+                Label("Selection unavailable; the Overlay is withdrawn until revalidated.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         }
         .accessibilityIdentifier("atlas.display.liveAssignment")
     }

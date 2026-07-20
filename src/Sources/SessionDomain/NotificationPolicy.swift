@@ -56,17 +56,26 @@ public struct ExactForegroundRelevance: Codable, Hashable, Sendable, Equatable {
     public let directInspection: Bool
     public let appOnly: Bool
     public let observedAt: Date?
+    /// Optional stronger evidence used by newer callers. When supplied, the
+    /// exact owning Host Context must also be live and locator-matching.
+    public let hostObservation: ExactHostForegroundObservation?
+    public let owningHostContext: HostContextAssociation?
 
-    public init(sessionIdentity: AgentSessionIdentity? = nil, revalidated: Bool = false, directInspection: Bool = false, appOnly: Bool = false, observedAt: Date? = nil) {
+    public init(sessionIdentity: AgentSessionIdentity? = nil, revalidated: Bool = false, directInspection: Bool = false, appOnly: Bool = false, observedAt: Date? = nil, hostObservation: ExactHostForegroundObservation? = nil, owningHostContext: HostContextAssociation? = nil) {
         self.sessionIdentity = sessionIdentity
         self.revalidated = revalidated
         self.directInspection = directInspection
         self.appOnly = appOnly
         self.observedAt = observedAt
+        self.hostObservation = hostObservation
+        self.owningHostContext = owningHostContext
     }
 
     public func isExact(for candidate: AlertCandidate) -> Bool {
         guard revalidated, (directInspection || !appOnly), sessionIdentity == candidate.owner.sessionIdentity else { return false }
+        if let hostObservation {
+            guard hostObservation.isExact(for: candidate.owner.sessionIdentity, in: owningHostContext) else { return false }
+        }
         return true
     }
 
