@@ -6,13 +6,14 @@ does not claim a recording, VoiceOver inspection, or external-display result.
 | Acceptance area | Deterministic fixture / command | Capture or inspection | Result | Notes |
 | --- | --- | --- | --- | --- |
 | Physical key persistence and input-source labels | `ShortcutModelsTests`, `NativeShortcutInputSourceResolver` | authored | authored | TIS labels are read-only; CJK/IME sources fall back to PhysicalKey labels. No typed-text matching. |
-| Explicit safe-action configuration and Guided routing | `ShortcutModelsTests`, `AtlasSettingsRepositoryTests` | authored | authored | Settings exposes only typed allow/deny, persistent-suggestion, and plan-review-accept choices; response forms requiring free text are excluded. A shortcut resolves one exact live request or reports a readable fallback; it never creates/consumes a lease or Action Attempt and never dispatches directly. |
+| Explicit safe-action configuration and Guided routing | `ShortcutModelsTests`, `AB133ShortcutCompositionTests`, `AtlasSettingsRepositoryTests` | authored | authored | Settings retains only typed allow/deny, persistent-suggestion, and plan-review-accept mappings. Until a live Guided source is composed, mappings persist as inert intent while native registration omits only safe actions and reports an explicit unavailable status; a future source installs the existing resolver/coordinator seam. A live route focuses one exact request and never creates/consumes a lease or Action Attempt or dispatches directly. |
 | Duplicate/reserved/registered collision rejection | `ShortcutModelsTests`, `ShortcutRegistrationCoordinatorTests` | authored | authored | Carbon/fake registration is attempted before commit; failed replacement rolls back the prior native binding and persisted mapping. |
 | Master disable and re-enable | `ShortcutRegistrationCoordinatorTests`, settings repository round-trip | authored | authored | Disable unregisters every active global binding while retaining mappings; re-enable is transactional and reports per-binding collision. |
 | CJK/IME marked composition | `ShortcutKeyEventMapper` + `ShortcutInvocationGate` fixture | authored | authored | Production mapper reads `NSTextInputContext.current?.client.hasMarkedText()`; ordinary composition characters are never consumed. |
 | Bounded focus and Escape | `KeyboardEngagementState`, Overlay model tests | pending | pending | Hidden/withdrawn rows are excluded; local edit cancels first. |
 | Held/repeated shortcut at-most-once | `ShortcutInvocationGate`, `ShortcutRegistrationCoordinatorTests` | authored | authored | Pressed/repeated global and local events dispatch once until key-up, then permit the next physical press. |
-| Safe-action unavailable/collision feedback | `ShortcutModelsTests`, `AtlasSettingsRepositoryTests` | authored | authored | Feedback uses human-readable collision, stale capability, ambiguity, and native-Host fallback language; registration health remains separate from invocation feedback. |
+| Safe-action unavailable/collision feedback | `ShortcutModelsTests`, `AB133ShortcutCompositionTests`, `AtlasSettingsRepositoryTests` | authored | authored | Feedback uses human-readable collision, stale capability, ambiguity, and native-Host fallback language; registration health remains separate from invocation feedback. The Overlay posts a non-modal AX announcement and renders it only while visible; unavailable safe actions do not engage the Overlay or Host. |
+| Invocation announcement dedupe and withdrawal | `ShortcutInvocationAnnouncementLedger`, `AB133ShortcutCompositionTests` | authored | authored | Repeated identical feedback announces once; withdrawal clears the dedupe boundary and removes the Overlay's announcement element with the rest of its regions. |
 | Attention announcement dedupe | `AccessibilityAnnouncementLedger` fixture | pending | pending | Higher priority may announce once while focus/draft survives. |
 | Reduce Motion / Transparency / Contrast / text scale | `AccessibilityAdaptation` fixture | pending | pending | Capture short cross-fade, opaque surface, stronger boundaries, reflow. |
 | Keyboard-only and VoiceOver Overlay/Settings | macOS manual run | pending | pending | Do not use Accessibility permission to simulate Host input. |
@@ -20,8 +21,8 @@ does not claim a recording, VoiceOver inspection, or external-display result.
 
 ## Verification
 
-- `cd src && swift build` — run result recorded by the implementing agent.
-- `Scripts/self-check.sh` — run result recorded by the implementing agent.
+- `cd src && swift build` — passed on 2026-07-20 (macOS 27 SDK; existing linker warnings only).
+- `Scripts/self-check.sh` — passed on 2026-07-20 (headless canonical-store scenarios).
 - `swift test` — XCTest is unavailable in the current command-line-only environment when applicable; authored tests remain in source.
 
 The native Carbon/TIS paths are source-authored and build-checked only; no

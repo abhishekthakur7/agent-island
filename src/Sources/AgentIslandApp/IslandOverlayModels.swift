@@ -164,12 +164,12 @@ struct IslandOverlayGeometry: Equatable {
     let isBuiltIn: Bool
     let protectedGap: CGFloat
 
-    static func make(for screen: NSScreen, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default) -> IslandOverlayGeometry {
+    static func make(for screen: NSScreen, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default, shortcutAnnouncement: String? = nil) -> IslandOverlayGeometry {
         let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
-        return make(usableFrame: screen.visibleFrame, isBuiltIn: CGDisplayIsBuiltin(CGDirectDisplayID(number)) != 0, presentation: presentation, settings: settings)
+        return make(usableFrame: screen.visibleFrame, isBuiltIn: CGDisplayIsBuiltin(CGDirectDisplayID(number)) != 0, presentation: presentation, settings: settings, shortcutAnnouncement: shortcutAnnouncement)
     }
 
-    static func make(usableFrame: CGRect, isBuiltIn: Bool, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default) -> IslandOverlayGeometry {
+    static func make(usableFrame: CGRect, isBuiltIn: Bool, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default, shortcutAnnouncement: String? = nil) -> IslandOverlayGeometry {
         let expanded = presentation == .expanded || presentation == .focused
         let normalized = settings.normalized()
         let scale = normalized.contentSize.scale
@@ -177,9 +177,12 @@ struct IslandOverlayGeometry: Equatable {
         // completion card while still respecting the user's maximum panel
         // height. The card height therefore changes real live geometry.
         let completionDrivenHeight = normalized.completionCardHeight + (120 * scale)
+        let announcementHeight = shortcutAnnouncement == nil ? 0 : 42 * scale
         let desired = CGSize(
             width: expanded ? normalized.maximumPanelWidth : min(normalized.maximumPanelWidth, 350 * scale),
-            height: expanded ? min(normalized.maximumPanelHeight, max(320 * scale, completionDrivenHeight)) : min(normalized.maximumPanelHeight, 56 * scale)
+            height: expanded
+                ? min(normalized.maximumPanelHeight, max(320 * scale, completionDrivenHeight))
+                : min(normalized.maximumPanelHeight, max(56 * scale, 56 * scale + announcementHeight))
         )
         let safe = usableFrame.insetBy(dx: 12, dy: 6)
         // Even unusually small visible frames win over readability minima:

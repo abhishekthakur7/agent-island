@@ -14,6 +14,7 @@ struct IslandOverlayView: View {
     let focusedSessionIndex: Int?
     let clickBehavior: AtlasClickBehavior
     let displayPreferences: AtlasDisplayPreferences
+    let shortcutInvocationAnnouncement: String?
     let onPrimaryClick: () -> Void
     let lastClickOutcome: PresentationClickOutcome?
     let onExpand: () -> Void
@@ -194,6 +195,15 @@ struct IslandOverlayView: View {
                 Text("Keyboard engaged • Escape collapses")
                     .font(.caption2)
                     .accessibilityLabel("Keyboard engagement active. Escape collapses the overlay.")
+            }
+            if let shortcutInvocationAnnouncement {
+                Text(shortcutInvocationAnnouncement)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Shortcut result: \(shortcutInvocationAnnouncement)")
             }
             if let lastClickOutcome {
                 Text(lastClickOutcome.presentationLabel)

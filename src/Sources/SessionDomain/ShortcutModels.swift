@@ -721,6 +721,15 @@ public final class ShortcutRegistrationCoordinator {
         gate.reset()
     }
 
+    /// Withdraw one native binding while preserving every other successfully
+    /// registered command. This is used when a capability-scoped source (such
+    /// as Guided workflow) disconnects after local navigation remains live.
+    public func unregister(command: ShortcutCommand) {
+        guard registeredBindings.removeValue(forKey: command) != nil else { return }
+        backend.unregister(command: command)
+        gate.reset()
+    }
+
     /// Carbon reports both pressed and released events. The shared gate makes
     /// held/repeated global events one-shot while still allowing the next
     /// physical press after key-up.
@@ -784,4 +793,23 @@ public struct AccessibilityAnnouncementLedger: Codable, Hashable, Sendable, Equa
     }
 
     public mutating func reset() { announcedPriorityByID.removeAll() }
+}
+
+/// Keeps shortcut invocation feedback one-shot while the same result remains
+/// visible in the Overlay. A new result can be announced immediately; clearing
+/// on withdrawal prevents a stale accessibility element from reappearing when
+/// a later Overlay surface is created.
+public struct ShortcutInvocationAnnouncementLedger: Codable, Hashable, Sendable, Equatable {
+    private var lastMessage: String?
+
+    public init() {}
+
+    public mutating func publish(_ message: String) -> String? {
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, normalized != lastMessage else { return nil }
+        lastMessage = normalized
+        return normalized
+    }
+
+    public mutating func clear() { lastMessage = nil }
 }

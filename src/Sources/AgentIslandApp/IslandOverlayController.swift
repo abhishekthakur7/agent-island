@@ -31,6 +31,10 @@ final class IslandOverlayController: NSObject, ObservableObject {
     /// unavailable. Settings receives this as an accessible, human-readable
     /// announcement rather than a misleading registration failure.
     @Published private(set) var shortcutInvocationFeedback: String?
+    /// The latest invocation result is rendered only inside the currently
+    /// visible Overlay and is also posted as a VoiceOver announcement. It is
+    /// withdrawn with the panel so hidden state never leaves a stale AX node.
+    @Published private(set) var shortcutInvocationAnnouncement: String?
 
     private let presentation: PresentationRuntime
     private let shortcutRegistrar: ShortcutRegistrationCoordinator
@@ -42,6 +46,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private var precedingKeyWindow: NSWindow?
     private var shortcutGate = ShortcutInvocationGate()
     private var shortcutRegistry = ShortcutRegistry()
+    private var shortcutAnnouncementLedger = ShortcutInvocationAnnouncementLedger()
     private var keyboardFocus = KeyboardEngagementState()
     private var localEditActive = false
     private var presentationCancellable: AnyCancellable?
@@ -66,6 +71,41 @@ final class IslandOverlayController: NSObject, ObservableObject {
         self.shortcutRegistrar = shortcutRegistrar ?? ShortcutRegistrationCoordinator(backend: CarbonShortcutRegistrationBackend())
         self.shortcutRegistrationStatus = self.shortcutRegistrar.status
         self.shortcutInvocationFeedback = nil
+        self.shortcutInvocationAnnouncement = nil
+    }
+
+    /// A live Guided source is not composed in the current application shell:
+    /// the canonical SessionStore projection carries Agent Sessions, while
+    /// ActionAttemptStore's Attention Request ingestion boundary is not yet
+    /// wired to an Adapter. Safe-action registration therefore stays disabled
+    /// until a real source/coordinator is installed, rather than claiming an
+    /// active shortcut that can only fail at invocation time.
+    static let safeActionSourceUnavailableReason = "Safe-action shortcuts are unavailable until a live Guided workflow source is connected."
+
+    nonisolated static func safeActionRegistrationUnavailable(
+        registry: ShortcutRegistry,
+        hasLiveGuidedSource: Bool
+    ) -> Bool {
+        !hasLiveGuidedSource && registry.activeBindings.keys.contains { $0.configuredSafeAction != nil }
+    }
+
+    /// Persisted safe-action intent remains editable, but without a live
+    /// Guided source it is deliberately omitted from the native registration
+    /// transaction. Local Overlay/session navigation bindings still register.
+    nonisolated static func nativeShortcutRegistry(
+        from registry: ShortcutRegistry,
+        hasLiveGuidedSource: Bool
+    ) -> ShortcutRegistry {
+        guard !hasLiveGuidedSource else { return registry }
+        var native = registry
+        for command in registry.bindings.keys where command.configuredSafeAction != nil {
+            native.removeBinding(for: command)
+        }
+        return native
+    }
+
+    private var hasGuidedShortcutRouting: Bool {
+        guidedShortcutRequestsProvider != nil && guidedShortcutFocusHandler != nil
     }
 
     /// Installs the narrow live Guided seam when composition has a coordinator
@@ -77,11 +117,25 @@ final class IslandOverlayController: NSObject, ObservableObject {
     ) {
         guidedShortcutRequestsProvider = requests
         guidedShortcutFocusHandler = focus
+        // A future composition root may connect the live source after launch.
+        // Re-attempt the persisted registry only at that explicit boundary.
+        shortcutInvocationFeedback = nil
+        clearShortcutInvocationAnnouncement()
+        _ = applyShortcutPreferences(shortcutRegistry, preserveUnavailableFeedback: false)
     }
 
     func clearGuidedShortcutRouting() {
         guidedShortcutRequestsProvider = nil
         guidedShortcutFocusHandler = nil
+        // Remove only safe-action bindings from Carbon while retaining local
+        // navigation bindings and all persisted mapping intent.
+        let registeredSafeCommands = shortcutRegistrar.registeredBindings.keys.filter { $0.configuredSafeAction != nil }
+        for command in registeredSafeCommands {
+            shortcutRegistrar.unregister(command: command)
+        }
+        if shortcutRegistry.activeBindings.keys.contains(where: { $0.configuredSafeAction != nil }) {
+            shortcutRegistrationStatus = .unavailable(Self.safeActionSourceUnavailableReason)
+        }
     }
 
     var selectedScreen: NSScreen? {
@@ -231,21 +285,47 @@ final class IslandOverlayController: NSObject, ObservableObject {
     /// durable intent while exposing the exact unavailable/collision status.
     func bootstrapShortcutPreferences(_ preferences: AtlasShortcutPreferences) {
         shortcutRegistry = preferences.registry
-        let result = shortcutRegistrar.apply(preferences.registry) { [weak self] command in
-            self?.handleGlobalShortcut(command)
-        }
-        shortcutRegistrationStatus = result.status
+        _ = applyShortcutPreferences(preferences.registry, preserveUnavailableFeedback: true)
     }
 
     /// Settings calls this before committing a rebind/master toggle. Native
     /// registration succeeds first; only then does the caller persist/swap its
     /// registry. Focused commands never reach Carbon.
     func tryApplyShortcutPreferences(_ preferences: AtlasShortcutPreferences) -> ShortcutRegistrationApplyResult {
-        let result = shortcutRegistrar.apply(preferences.registry) { [weak self] command in
+        let result = applyShortcutPreferences(preferences.registry, preserveUnavailableFeedback: true)
+        if case .accepted = result { shortcutRegistry = preferences.registry }
+        return result
+    }
+
+    @discardableResult
+    private func applyShortcutPreferences(
+        _ registry: ShortcutRegistry,
+        preserveUnavailableFeedback: Bool
+    ) -> ShortcutRegistrationApplyResult {
+        let safeActionsUnavailable = Self.safeActionRegistrationUnavailable(registry: registry, hasLiveGuidedSource: hasGuidedShortcutRouting)
+        let nativeRegistry = Self.nativeShortcutRegistry(from: registry, hasLiveGuidedSource: hasGuidedShortcutRouting)
+        let result = shortcutRegistrar.apply(nativeRegistry) { [weak self] command in
             self?.handleGlobalShortcut(command)
         }
+        guard safeActionsUnavailable else {
+            shortcutRegistrationStatus = result.status
+            return result
+        }
+
+        if case .accepted = result {
+            let unavailable = ShortcutRegistrationStatus.unavailable(Self.safeActionSourceUnavailableReason)
+            shortcutRegistrationStatus = unavailable
+            if !preserveUnavailableFeedback {
+                shortcutInvocationFeedback = nil
+                clearShortcutInvocationAnnouncement()
+            }
+            // Accepted means the editable registry is durably retained. The
+            // unavailable status is capability-local: only safe actions were
+            // omitted; local native registrations remain active/disabled.
+            return .accepted(unavailable)
+        }
+
         shortcutRegistrationStatus = result.status
-        if case .accepted = result { shortcutRegistry = preferences.registry }
         return result
     }
 
@@ -385,7 +465,8 @@ final class IslandOverlayController: NSObject, ObservableObject {
         focusedSessionIndex = next
     }
 
-    private func dispatchLocalShortcut(_ command: ShortcutCommand) {
+    @discardableResult
+    private func dispatchLocalShortcut(_ command: ShortcutCommand) -> Bool {
         switch command {
         case .toggleOverlay: toggleOverlay()
         case .nextSession: navigateSession(offset: 1)
@@ -396,39 +477,67 @@ final class IslandOverlayController: NSObject, ObservableObject {
         case .collapse: collapse()
         case .inspect: primaryClick()
         case .safeAction:
-            routeSafeAction(command)
+            return routeSafeAction(command)
         }
+        return true
     }
 
     /// Resolves one exact live Guided request and asks the injected
     /// coordinator only to focus/present it. A safe shortcut never constructs
     /// a lease or Action Attempt and never calls a Product client directly.
-    private func routeSafeAction(_ command: ShortcutCommand) {
-        guard case .safeAction = command else { return }
+    @discardableResult
+    private func routeSafeAction(_ command: ShortcutCommand) -> Bool {
+        guard case .safeAction = command else { return false }
         guard guidedShortcutRequestsProvider != nil, guidedShortcutFocusHandler != nil else {
             publishShortcutInvocationFeedback(.guidedWorkflowUnavailable)
-            return
+            return false
         }
 
         switch ShortcutGuidedRouteResolver.resolve(command: command, requests: guidedShortcutRequestsProvider?() ?? []) {
         case let .unavailable(reason):
             publishShortcutInvocationFeedback(reason)
+            return false
         case let .eligible(route):
             guard let outcome = guidedShortcutFocusHandler?(route) else {
                 publishShortcutInvocationFeedback(.guidedWorkflowUnavailable)
-                return
+                return false
             }
             switch outcome {
             case .opened:
                 shortcutInvocationFeedback = "Guided workflow focused the matching Attention Request. Review and confirm before sending; no Product action was sent."
+                publishShortcutInvocationAnnouncement(shortcutInvocationFeedback)
+                return true
             case let .unavailable(reason):
                 publishShortcutInvocationFeedback(reason)
+                return false
             }
         }
     }
 
     private func publishShortcutInvocationFeedback(_ reason: ShortcutGuidedRouteFailure) {
-        shortcutInvocationFeedback = reason.humanReadableDescription
+        let text = reason.humanReadableDescription
+        shortcutInvocationFeedback = text
+        publishShortcutInvocationAnnouncement(text)
+    }
+
+    private func publishShortcutInvocationAnnouncement(_ message: String?) {
+        guard let message, let announcement = shortcutAnnouncementLedger.publish(message) else { return }
+        shortcutInvocationAnnouncement = announcement
+        // This is an announcement only. It never makes Agent Island key,
+        // activates the app, or simulates input in the native Host.
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [.announcement: announcement]
+        )
+        if stateMachine.state.hasVisibleRegions { renderIfVisible() }
+    }
+
+    private func clearShortcutInvocationAnnouncement(render: Bool = true) {
+        shortcutAnnouncementLedger.clear()
+        guard shortcutInvocationAnnouncement != nil else { return }
+        shortcutInvocationAnnouncement = nil
+        if render && stateMachine.state.hasVisibleRegions { renderIfVisible() }
     }
 
     /// Global callbacks are deliberate engagement requests, not ambient
@@ -439,7 +548,9 @@ final class IslandOverlayController: NSObject, ObservableObject {
         guard selectedScreen != nil else {
             removeOverlayRegionsAndWindow()
             if command.configuredSafeAction != nil {
-                shortcutInvocationFeedback = "No selected display is available; the Guided workflow remains withdrawn. Continue in the native Host."
+                let message = "No selected display is available; the Guided workflow remains withdrawn. Continue in the native Host."
+                shortcutInvocationFeedback = message
+                publishShortcutInvocationAnnouncement(message)
             } else {
                 shortcutRegistrationStatus = .unavailable("No selected display is available; the Overlay remains withdrawn.")
             }
@@ -461,8 +572,11 @@ final class IslandOverlayController: NSObject, ObservableObject {
             stateMachine.reduce(.hoverEntered)
             applyState()
         }
-        dispatchLocalShortcut(command)
-        if !stateMachine.state.keyboardEngaged { engageKeyboard() }
+        let openedGuidedReview = dispatchLocalShortcut(command)
+        // Unavailable safe actions announce and remain on the person's Host;
+        // only local navigation or an exact Guided review focus may engage the
+        // Overlay keyboard deliberately.
+        if openedGuidedReview, !stateMachine.state.keyboardEngaged { engageKeyboard() }
     }
 
     private func refreshDisplays(coldResume: Bool) {
@@ -520,7 +634,12 @@ final class IslandOverlayController: NSObject, ObservableObject {
                 canShowAll: presentation.cards.count > 1
             ))
         }
-        let geometry = IslandOverlayGeometry.make(for: screen, presentation: stateMachine.state.presentation, settings: displayPreferences)
+        let geometry = IslandOverlayGeometry.make(
+            for: screen,
+            presentation: stateMachine.state.presentation,
+            settings: displayPreferences,
+            shortcutAnnouncement: shortcutInvocationAnnouncement
+        )
         let root = IslandOverlayView(
             presentation: stateMachine.state.presentation,
             geometry: geometry,
@@ -530,6 +649,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
             focusedSessionIndex: focusedSessionIndex,
             clickBehavior: clickBehavior,
             displayPreferences: displayPreferences,
+            shortcutInvocationAnnouncement: shortcutInvocationAnnouncement,
             onPrimaryClick: { [weak self] in self?.primaryClick() },
             lastClickOutcome: lastClickOutcome,
             onExpand: { [weak self] in self?.toggleOverlay() },
@@ -561,6 +681,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
     private func removeOverlayRegionsAndWindow() {
         // Order matters: make invisible regions non-interactive/non-AX before
         // ordering out the panel, including on display loss and termination.
+        clearShortcutInvocationAnnouncement(render: false)
         keyboardFocus.end()
         shortcutGate.reset()
         focusedSessionIndex = nil
