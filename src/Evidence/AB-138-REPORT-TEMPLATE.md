@@ -1,35 +1,55 @@
 # AB-138 Cursor Hooks observation evidence
 
-## Verified public contract
+## Contract provenance
 
-On 2026-07-20, `https://docs.cursor.com/agent/hooks` redirected to the Cursor
-documentation landing page / 404 rather than a hook specification. Cursor's
-published sitemap contained a `hooks-partners` announcement but no end-user
-Hooks configuration, supported Cursor version, event schema, stdin/stdout
-protocol, timeout, ownership-marker location, or live Host locator contract.
+Verified 2026-07-20 from `https://cursor.com/docs/hooks.md` (the canonical
+HTML route is `https://cursor.com/docs/agent/hooks`). Cursor documents user
+configuration at `~/.cursor/hooks.json`, project configuration at
+`<project>/.cursor/hooks.json`, configuration `version: 1`, JSON stdin/stdout
+command hooks, and `failClosed` defaulting to `false`.
 
-Accordingly this revision records Cursor Hooks as **Unavailable**. It does not
-write a configuration file, create a helper artifact, retain a hook envelope,
-or emit a Normalized Event Fact. This is a forward-only observation boundary,
-not a claim of a working Cursor integration.
+This adapter installs only marked v1 command entries for documented Agent
+hooks: `sessionStart`, `sessionEnd`, tool/activity hooks, `subagentStart`,
+`subagentStop`, shell/MCP/read/edit/prompt hooks, `preCompact`, `stop`,
+`afterAgentResponse`, and `afterAgentThought`. It omits `failClosed`, so
+Cursor's documented fail-open default applies. No prompt hook is installed.
 
-## Guarantees tested
+## Boundaries and known limitations
 
-- Discovery is read-only and marks the Integration Installation unsupported;
-  enable, disable, repair, remove, and verify return unavailable without a
-  manifest or mutation.
-- The bounded helper is fail-open: malformed, oversized, timeout, transport,
-  version, duplicate/gap/collision, and ambiguous-stop observations only have
-  redacted diagnostics and cannot close or merge anything.
-- Raw IDs, paths, email, transcript locations, commands, output, and content
-  are not parsed or exported. A future supported implementation must use only
-  received `conversation_id` for Agent Session identity and received
-  `generation_id` for Turn identity, in protected local representation.
-- There are no action leases, questions, plans, cancellation, terminal input,
-  dispatches, or live Cursor Jump Back locator. Attention says to respond in
-  Cursor; Jump Back is app-only.
+- A received `conversation_id` is the only Agent Session identity and a
+  received `generation_id` is the only Turn identity. Similar presentation
+  metadata never identifies either. Identity remains protected locally.
+- Cursor documents no stable event ID or source sequence. Duplicate handling
+  is therefore owner-scoped weak evidence: collisions, gaps, and ordering are
+  Degraded/Unavailable and receipt order is not Product order.
+- `subagentStart` becomes nested only with its documented `subagent_id` and
+  matching `parent_conversation_id`. Documented `subagentStop` lacks those
+  identifiers, so it is unresolved and closes nothing.
+- Only lifecycle/activity/compaction/terminal/session-end facts project.
+  Email, transcript paths, subagent transcript paths, workspaces/paths,
+  models, files, commands/output, prompts/responses/thoughts and unknown
+  fields are discarded.
+- The helper accepts one bounded authenticated local IPC envelope with a
+  two-second deadline and no stdout/stderr, spool, or replay. Malformed,
+  oversized, timeout, unavailable, and transport failures return silently to
+  Cursor (fail-open).
+- There are no approvals, questions, plans, free-text, cancellation, terminal
+  input, action lease, route, or dispatch. Attention says to respond in
+  Cursor. Jump Back is honestly app-only because no live Cursor Host locator
+  is documented.
 
-## Evidence fixture
+## Installation evidence
 
-`Fixtures/CursorHooksAdapter/unsupported-contract.json` is deliberately a
-negative fixture; it contains no Cursor payload or native identifier.
+Installation is explicit and selected-scope only. Read-only discovery and a
+fresh plan precede apply; apply rechecks fingerprint/version/policy/symlink
+state, records an Ownership Manifest of exact entries, and rereads on verify.
+The lossless JSON/JSONC editor preserves unrelated ordering, comments,
+whitespace/newlines, bytes, and permissions. Marker collisions, malformed or
+unsupported inputs, policy blocks, symlinks, external entries, and drift do
+not mutate. Disable/remove touch only manifest-proven entries; repair makes a
+new plan.
+
+Fixtures cover two same-looking conversations, multiple generations,
+lifecycle/activity/compaction/session end, source-proven child start, plus
+failure/timeout/version/malformed/oversize/duplicate-gap/orphan/ambiguous-stop
+and JSONC installation preservation negatives.

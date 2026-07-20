@@ -801,7 +801,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
         do {
             for selector in plan.entries {
                 guard let event = ClaudeHookName(documentedName: selector.key.replacingOccurrences(of: "claude-code-hooks-", with: "")) else { throw ClaudeJSONHookEditor.EditorError.notManifestProven }
-                let entry = ClaudeJSONHookEditor.Entry(selector: selector, event: event, helperPath: helperPath.path)
+                let entry = ClaudeJSONHookEditor.Entry(selector: selector, event: event.rawValue, helperPath: helperPath.path)
                 let receipt = try ClaudeJSONHookEditor.add(entry: entry, at: URL(fileURLWithPath: plan.sourcePath), expected: expected, policy: policy, now: now)
                 receipts.append((receipt, event)); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: plan.sourcePath)).fingerprint
             }
@@ -844,7 +844,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
     private func rollbackJSON(_ receipts: [(receipt: ExactEntryReceipt, event: ClaudeHookName)], sourcePath: String, now: Date) {
         var current = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: sourcePath)).fingerprint
         for item in receipts.reversed() {
-            guard let removed = try? ClaudeJSONHookEditor.remove(receipt: item.receipt, event: item.event, at: URL(fileURLWithPath: sourcePath), expected: current, now: now) else { continue }
+            guard let removed = try? ClaudeJSONHookEditor.remove(receipt: item.receipt, event: item.event.rawValue, at: URL(fileURLWithPath: sourcePath), expected: current, now: now) else { continue }
             current = removed.sourceFingerprint
         }
     }
@@ -871,7 +871,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             let eventName = receipt.selector.key.replacingOccurrences(of: "claude-code-hooks-", with: "")
             guard let event = ClaudeHookName(documentedName: eventName) else { residual.append(receipt.selector); continue }
             do {
-                _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: event, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now)
+                _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: event.rawValue, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now)
                 removed.append(receipt.selector); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: manifest.sourcePath)).fingerprint
             } catch { residual.append(receipt.selector) }
         }

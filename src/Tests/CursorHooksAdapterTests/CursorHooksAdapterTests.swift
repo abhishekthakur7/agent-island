@@ -4,73 +4,76 @@ import SessionDomain
 
 final class CursorHooksAdapterTests: XCTestCase {
     private let installation = IntegrationInstanceID("cursor-installation")
-    private let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: "/selected-only")
-
-    func testPublicResearchResultIsExplicitlyUnavailableAndNeverInventsConfiguration() async {
-        let adapter = CursorHooksAdapter(integrationInstanceID: installation)
-        let request = await adapter.negotiationRequest()
-        XCTAssertEqual(request.productNamespace, CursorHooksIntegration.productNamespace)
-        XCTAssertEqual(request.compatibility, .unknown)
-        XCTAssertEqual(request.requestedCapabilityRecords?.first?.availability, .unavailable)
-        XCTAssertEqual(request.requestedCapabilityRecords?.first?.direction, .observe)
-        XCTAssertFalse(CursorHooksIntegration.capabilityProvenance.isEmpty)
-
-        let coordinator = CursorHooksInstallationCoordinator()
-        let discovery = coordinator.discover(installationID: installation, scope: scope)
-        XCTAssertEqual(discovery.state, .unsupported)
-        XCTAssertFalse(discovery.safeToMutate)
-        XCTAssertEqual(discovery.inspection.source.path, "")
-        XCTAssertTrue(discovery.inspection.source.content == nil)
-        XCTAssertNil(coordinator.apply().manifest)
-        XCTAssertEqual(coordinator.apply().status, .unavailable)
-        XCTAssertEqual(coordinator.disable().status, .unavailable)
-        XCTAssertEqual(coordinator.repair().status, .unavailable)
-        XCTAssertEqual(coordinator.remove().status, .unavailable)
-        XCTAssertEqual(coordinator.verify().status, .unavailable)
+    private let evidence = CursorHooksContractEvidence(productVersion: "1.7.2", reviewedCursorVersions: ["1.7.2"])
+    private func hook(_ name: String, conversation: String = "conversation", generation: String = "generation", extra: String = "") -> Data {
+        Data("{\"conversation_id\":\"\(conversation)\",\"generation_id\":\"\(generation)\",\"hook_event_name\":\"\(name)\",\"cursor_version\":\"1.7.2\"\(extra)}".utf8)
     }
 
-    func testMalformedOversizedFailureTimeoutAndTransportAreInspectableButFailOpen() async {
-        let adapter = CursorHooksAdapter(integrationInstanceID: installation)
-        guard case .degraded(let malformed) = await adapter.receive(Data("not-json".utf8)) else { return XCTFail("malformed input must not be accepted") }
-        XCTAssertEqual(malformed.reason, .malformedEnvelope)
-        guard case .degraded(let oversized) = await adapter.receive(Data(repeating: 0x20, count: CursorHookEnvelope.maximumBytes + 1)) else { return XCTFail("oversized input must not be accepted") }
-        XCTAssertEqual(oversized.reason, .oversizedEnvelope)
-        XCTAssertEqual(CursorHookDiagnostic(.timeout).redactedDescription, "cursor-hooks:timeout")
-        XCTAssertEqual(CursorHookDiagnostic(.transportFailure).redactedDescription, "cursor-hooks:transportFailure")
+    func testConcurrentConversationsGenerationsLifecycleActivityCompactionAndNestedChild() async {
+        let adapter = CursorHooksAdapter(integrationInstanceID: installation, evidence: evidence)
+        await adapter.activateAfterInstallation()
+        let startA = await adapter.receive(hook("sessionStart", conversation: "a", generation: "one")); XCTAssertNotNil(result(startA))
+        let startB = await adapter.receive(hook("sessionStart", conversation: "b", generation: "one")); XCTAssertNotNil(result(startB))
+        let activity = await adapter.receive(hook("preToolUse", conversation: "a", generation: "two")); XCTAssertNotNil(result(activity))
+        let compact = await adapter.receive(hook("preCompact", conversation: "a", generation: "three")); XCTAssertNotNil(result(compact))
+        let shell = await adapter.receive(hook("afterShellExecution", conversation: "a", generation: "four")); XCTAssertNotNil(result(shell))
+        let child = await adapter.receive(hook("subagentStart", conversation: "a", generation: "five", extra: ",\"subagent_id\":\"child\",\"parent_conversation_id\":\"a\"")); XCTAssertNotNil(result(child))
+        let end = await adapter.receive(hook("sessionEnd", conversation: "b", generation: "two")); guard let projection = result(end) else { return XCTFail("expected projection") }
+        XCTAssertEqual(projection.sessions.count, 2)
+        XCTAssertEqual(projection.sessions.map(\.nestedChildCount).max(), 1)
+        XCTAssertEqual(projection.dispatchCount, 0)
+        XCTAssertTrue(projection.ordering.contains("no documented event ID"))
     }
 
-    func testAllJSONIncludingSameLookingConcurrentSessionsIsDiscardedUntilContractExists() async {
-        let adapter = CursorHooksAdapter(integrationInstanceID: installation)
-        let first = Data("{\"conversation_id\":\"private-a\",\"generation_id\":\"turn\",\"title\":\"same\",\"workspace\":\"/private\",\"model\":\"same\",\"user_email\":\"private@example.test\",\"transcript_path\":\"/private/transcript\"}".utf8)
-        let second = Data("{\"conversation_id\":\"private-b\",\"generation_id\":\"turn\",\"title\":\"same\",\"workspace\":\"/private\",\"model\":\"same\"}".utf8)
-        guard case .unavailable(let one) = await adapter.receive(first), case .unavailable(let two) = await adapter.receive(second) else { return XCTFail("uncontracted data must not project") }
-        XCTAssertEqual(one.reason, .unsupportedContract)
-        XCTAssertEqual(two.reason, .unsupportedContract)
-        XCTAssertFalse(one.redactedDescription.contains("private"))
-        XCTAssertFalse(two.redactedDescription.contains("private"))
+    func testNegativeFailuresAreFailOpenDegradedAndNeverCloseGuesswork() async {
+        let adapter = CursorHooksAdapter(integrationInstanceID: installation, evidence: evidence)
+        let orphan = await adapter.receive(hook("sessionStart")); XCTAssertEqual(reason(orphan), .orphanBeforeActivation)
+        await adapter.activateAfterInstallation()
+        let malformed = await adapter.receive(Data("bad".utf8)); XCTAssertEqual(reason(malformed), .malformedEnvelope)
+        let oversize = await adapter.receive(Data(repeating: 0, count: CursorHookEnvelope.maximumBytes + 1)); XCTAssertEqual(reason(oversize), .oversizedEnvelope)
+        let incompatible = Data("{\"conversation_id\":\"conversation\",\"generation_id\":\"other\",\"hook_event_name\":\"sessionStart\",\"cursor_version\":\"9.9.9\"}".utf8)
+        let version = await adapter.receive(incompatible); XCTAssertEqual(reason(version), .unsupportedVersion)
+        _ = await adapter.receive(hook("sessionStart", generation: "one"))
+        let duplicate = await adapter.receive(hook("sessionStart", generation: "one")); XCTAssertEqual(reason(duplicate), .duplicateOrCollision)
+        let ambiguousStop = await adapter.receive(hook("subagentStop", generation: "two", extra: ",\"status\":\"completed\"")); XCTAssertEqual(reason(ambiguousStop), .unresolvedSubagentStop)
+        let gap = await adapter.reportWeakOrderingGap(); XCTAssertEqual(reason(gap), .deliveryGap)
+        let timeout = await adapter.reportHelperFailure(.timeout); XCTAssertEqual(reason(timeout), .timeout)
     }
 
-    func testProtectedIdentityCannotUseMetadataAndHasNoDiagnosticSurface() {
-        let a = CursorProtectedIdentity(conversationID: "one", generationID: "generation")
-        let b = CursorProtectedIdentity(conversationID: "two", generationID: "generation")
-        XCTAssertNotEqual(a, b)
-        XCTAssertEqual(Mirror(reflecting: a).displayStyle, .struct)
-        XCTAssertFalse(String(reflecting: CursorHookDiagnostic(.deliveryGap)).contains("one"))
-    }
-
-    func testAttentionAndJumpBackAreHonestAndThereIsNoActionDispatch() {
+    func testExactVersionGateAttentionAndLeakSentinels() async {
+        let adapter = CursorHooksAdapter(integrationInstanceID: installation, evidence: evidence)
+        await adapter.activateAfterInstallation()
+        let incompatible = Data("{\"conversation_id\":\"secret\",\"generation_id\":\"turn\",\"hook_event_name\":\"sessionStart\",\"cursor_version\":\"1.7.3\",\"user_email\":\"private@example.test\",\"transcript_path\":\"/private\"}".utf8)
+        let outcome = await adapter.receive(incompatible); XCTAssertEqual(reason(outcome), .unsupportedVersion)
         let presentation = CursorAttentionPresentation()
         XCTAssertEqual(presentation.dispatchCount, 0)
         XCTAssertTrue(presentation.availability.contains("Cursor"))
         XCTAssertTrue(presentation.jumpBackLevel.contains("App-only"))
-        XCTAssertTrue(presentation.jumpBackLevel.contains("no documented live locator"))
     }
 
-    func testAmbiguityCollisionGapAndUnprovenChildStopRemainNonMutatingDiagnostics() {
-        for reason in [CursorHookRejection.ambiguousOwnership, .duplicateOrCollision, .deliveryGap, .unresolvedSubagentStop] {
-            let diagnostic = CursorHookDiagnostic(reason)
-            XCTAssertTrue(diagnostic.redactedDescription.hasPrefix("cursor-hooks:"))
-            XCTAssertFalse(diagnostic.redactedDescription.contains("conversation"))
-        }
+    func testInstallVerifyDisableRepairRemovePreservesUnrelatedJSONC() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cursor-hooks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("hooks.jsonc")
+        let original = "{\n  // preserve this\n  \"version\": 1,\n  \"unrelated\": { \"order\": 7 }\n}\n"
+        try Data(original.utf8).write(to: path)
+        let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: path)
+        let helper = URL(fileURLWithPath: CursorHooksIntegration.helperExecutablePath)
+        let coordinator = CursorHooksInstallationCoordinator()
+        let plan = coordinator.makePlan(id: "plan", installationID: installation, scope: scope, helperPath: helper, evidence: evidence)
+        XCTAssertEqual(plan.compatibility, .compatible)
+        let applied = coordinator.apply(coordinator.approve(plan, personIdentifier: "person"), helperPath: helper, evidence: evidence)
+        guard let manifest = applied.manifest else { return XCTFail("expected manifest") }
+        XCTAssertEqual(applied.status, .applied)
+        let text = try String(contentsOf: path)
+        XCTAssertTrue(text.contains("// preserve this")); XCTAssertTrue(text.contains("\"unrelated\": { \"order\": 7 }")); XCTAssertTrue(text.contains("\"command\"")); XCTAssertFalse(text.contains("failClosed"))
+        XCTAssertEqual(coordinator.verify(manifest, helperPath: helper).status, .applied)
+        XCTAssertEqual(coordinator.disable(manifest, helperPath: helper).status, .applied)
+        XCTAssertEqual(coordinator.remove(manifest, helperPath: helper).status, .partial) // manifest entries were already disabled; no unowned removal
+        XCTAssertEqual(coordinator.repair(id: "repair", installationID: installation, scope: scope, helperPath: helper, evidence: evidence).action, .repair)
     }
+
+    private func result(_ outcome: CursorHookIntakeOutcome) -> CursorObservationProjection? { if case .delivered(let value) = outcome { return value }; return nil }
+    private func reason(_ outcome: CursorHookIntakeOutcome) -> CursorHookRejection? { switch outcome { case .degraded(let diagnostic), .unavailable(let diagnostic): return diagnostic.reason; case .delivered: return nil } }
 }

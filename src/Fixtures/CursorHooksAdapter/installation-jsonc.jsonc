@@ -1,0 +1,5 @@
+{
+  // byte-preserved unrelated JSONC fixture
+  "version": 1,
+  "unrelated": { "order": 7 }
+}

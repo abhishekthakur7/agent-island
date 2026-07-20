@@ -1,0 +1,7 @@
+[
+  {"case":"orphan-before-activation","hook_event_name":"sessionStart"},
+  {"case":"malformed-or-oversize","expected":"degraded"},
+  {"case":"incompatible-cursor-version","cursor_version":"unreviewed"},
+  {"case":"weak-duplicate-collision-gap","expected":"unresolved"},
+  {"case":"ambiguous-subagent-stop","hook_event_name":"subagentStop","expected":"unresolved-no-close"}
+]

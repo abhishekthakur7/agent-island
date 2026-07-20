@@ -1,17 +1,36 @@
 import Foundation
 import CursorHooksAdapter
+import ClaudeCodeAdapter
+import SessionDomain
 
-/// A fail-open placeholder for a future documented Cursor Hook command.
-/// It intentionally writes nothing and always exits successfully so a
-/// Product session cannot be blocked by an unsupported observation adapter.
+/// One bounded, authenticated, one-way observation envelope.  Cursor command
+/// hooks are fail-open by default; every local failure intentionally exits 0
+/// with no stdout/stderr and never spools or replays a payload.
 @main
 struct CursorHookHelperMain {
-    static func main() {
+    static func main() async {
+        let env = ProcessInfo.processInfo.environment
+        guard env["AGENT_ISLAND_CURSOR_OBSERVATION_ONLY"] == "1",
+              let installation = env["AGENT_ISLAND_INSTALLATION_ID"],
+              let helper = env["AGENT_ISLAND_HELPER_ID"] else { return }
         var body = Data()
         while let chunk = try? FileHandle.standardInput.read(upToCount: 8_193), !chunk.isEmpty {
             body.append(chunk)
             if body.count > CursorHookEnvelope.maximumBytes { return }
         }
-        _ = CursorHookEnvelope.validate(body, contract: .init())
+        // Decode locally only to reject malformed/oversize input before it
+        // crosses IPC.  It is neither logged nor retained by this process.
+        guard CursorHookEnvelope.isValid(body) else { return }
+        #if canImport(Security) && canImport(Network)
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
+        let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("cursor-hooks.sock"), appOwnedRoot: root)
+        let installationID = IntegrationInstanceID(installation)
+        guard let secret = KeychainClaudeHookCredentialStore().secret(for: installationID, helperID: helper), !secret.isEmpty else { return }
+        let authenticator = ClaudeIPCAuthenticator(secret: secret)
+        guard authenticator.isUsable else { return }
+        let message = ClaudeHookIPCMessage(installationID: installationID, helperID: helper, nonce: UUID().uuidString, payload: body, issuedAt: Date(), authenticator: authenticator)
+        guard let frame = try? ClaudeHookIPCFrame.encode(message) else { return }
+        _ = try? await ClaudeUnixDomainHookIPCTransport(endpoint: endpoint).send(frame: frame, timeout: 2)
+        #endif
     }
 }

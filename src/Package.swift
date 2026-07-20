@@ -87,10 +87,10 @@ let package = Package(
         // It has no dependency on Hooks or Claude action routing.
         .target(name: "CodexAppServerAdapter", dependencies: ["SessionDomain", "AdapterPort", "SessionStore"]),
 
-        // Cursor does not currently publish a supported Hooks contract. This
-        // boundary preserves that fact as an explicitly unavailable,
-        // non-mutating Integration Installation rather than guessing one.
-        .target(name: "CursorHooksAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
+        // Cursor's documented v1 command hooks are observation-only here.
+        // The shared lossless JSON/JSONC editor and one-way IPC primitives are
+        // reused without importing an action-routing target.
+        .target(name: "CursorHooksAdapter", dependencies: ["SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
 
         // Composition bridge; the adapter itself remains unable to reach the
         // canonical store or keep callback data durably.
@@ -105,7 +105,7 @@ let package = Package(
         // reach Claude's synchronous action/callback branch.
         .executableTarget(name: "CodexHookHelper", dependencies: ["CodexCLIAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
 
-        .executableTarget(name: "CursorHookHelper", dependencies: ["CursorHooksAdapter"]),
+        .executableTarget(name: "CursorHookHelper", dependencies: ["CursorHooksAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or

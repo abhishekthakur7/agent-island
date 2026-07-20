@@ -1,0 +1,8 @@
+[
+  {"conversation_id":"fixture-conversation-a","generation_id":"generation-1","hook_event_name":"sessionStart","cursor_version":"1.7.2"},
+  {"conversation_id":"fixture-conversation-b","generation_id":"generation-1","hook_event_name":"sessionStart","cursor_version":"1.7.2"},
+  {"conversation_id":"fixture-conversation-a","generation_id":"generation-2","hook_event_name":"preToolUse","cursor_version":"1.7.2"},
+  {"conversation_id":"fixture-conversation-a","generation_id":"generation-3","hook_event_name":"preCompact","cursor_version":"1.7.2"},
+  {"conversation_id":"fixture-conversation-a","generation_id":"generation-4","hook_event_name":"subagentStart","cursor_version":"1.7.2","subagent_id":"child-1","parent_conversation_id":"fixture-conversation-a"},
+  {"conversation_id":"fixture-conversation-b","generation_id":"generation-2","hook_event_name":"sessionEnd","cursor_version":"1.7.2"}
+]

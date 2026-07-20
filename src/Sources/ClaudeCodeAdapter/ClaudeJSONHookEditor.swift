@@ -37,10 +37,12 @@ public enum ClaudeJSONHookEditor {
 
     public struct Entry: Sendable, Equatable {
         public let selector: ExactEntrySelector
-        public let event: ClaudeHookName
+        /// Exact documented event spelling; the lossless editor itself is
+        /// product-neutral and does not broaden any Product contract.
+        public let event: String
         public let helperPath: String
 
-        public init(selector: ExactEntrySelector, event: ClaudeHookName, helperPath: String) {
+        public init(selector: ExactEntrySelector, event: String, helperPath: String) {
             self.selector = selector; self.event = event; self.helperPath = helperPath
         }
     }
@@ -49,7 +51,18 @@ public enum ClaudeJSONHookEditor {
         let marker = "\(markerPrefix):\(event.rawValue)"
         let command = shellQuote(helperPath.path) + " # " + marker
         let rendered = "{\"type\":\"command\",\"command\":\"\(jsonEscape(command))\"}"
-        return Entry(selector: ExactEntrySelector(key: "claude-code-hooks-\(event.rawValue)", renderedLine: rendered, marker: marker), event: event, helperPath: helperPath.path)
+        return Entry(selector: ExactEntrySelector(key: "claude-code-hooks-\(event.rawValue)", renderedLine: rendered, marker: marker), event: event.rawValue, helperPath: helperPath.path)
+    }
+
+    public static func entry(eventName: String, markerPrefix: String, helperPath: URL) -> Entry {
+        entry(eventName: eventName, markerPrefix: markerPrefix, command: shellQuote(helperPath.path))
+    }
+
+    public static func entry(eventName: String, markerPrefix: String, command: String) -> Entry {
+        let marker = "\(markerPrefix):\(eventName)"
+        let markedCommand = command + " # " + marker
+        let rendered = "{\"command\":\"\(jsonEscape(markedCommand))\"}"
+        return Entry(selector: ExactEntrySelector(key: "documented-hooks-\(eventName)", renderedLine: rendered, marker: marker), event: eventName, helperPath: command)
     }
 
     /// Shared strict JSON gate for untrusted hook envelopes. Foundation's
@@ -91,9 +104,9 @@ public enum ClaudeJSONHookEditor {
         if let hooks = parsed.rootObjectMember("hooks"), let eventArray = try parsed.eventArray(for: entry.event, hooks: hooks) {
             next = parsed.inserting(entry.selector.renderedLine, into: eventArray)
         } else if let hooks = parsed.rootObjectMember("hooks") {
-            next = parsed.insertingProperty("\"\(entry.event.rawValue)\": [\(entry.selector.renderedLine)]", into: hooks)
+            next = parsed.insertingProperty("\"\(entry.event)\": [\(entry.selector.renderedLine)]", into: hooks)
         } else {
-            next = parsed.insertingProperty("\"hooks\": {\"\(entry.event.rawValue)\": [\(entry.selector.renderedLine)]}", into: parsed.root)
+            next = parsed.insertingProperty("\"hooks\": {\"\(entry.event)\": [\(entry.selector.renderedLine)]}", into: parsed.root)
         }
         try write(next, to: path, preserving: source)
         let verified = ExactEntryEditor.snapshot(at: path)
@@ -102,7 +115,7 @@ public enum ClaudeJSONHookEditor {
         return ExactEntryReceipt(selector: entry.selector, path: path.path, sourceFingerprint: verified.fingerprint, createdAt: now)
     }
 
-    public static func remove(receipt: ExactEntryReceipt, event: ClaudeHookName, at path: URL, expected: ExactEntrySourceFingerprint? = nil, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) throws -> ExactEntryReceipt {
+    public static func remove(receipt: ExactEntryReceipt, event: String, at path: URL, expected: ExactEntrySourceFingerprint? = nil, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) throws -> ExactEntryReceipt {
         guard policy.allowsMutation else { throw EditorError.policyDenied }
         let source = ExactEntryEditor.snapshot(at: path)
         guard source.symlinkTarget == nil else { throw EditorError.symlink }
@@ -201,16 +214,16 @@ private struct ParsedSource: @unchecked Sendable {
 
     func hasRootMember(_ key: String) -> Bool { root.kind == .object && root.members.contains(where: { $0.key == key }) }
 
-    func eventArray(for event: ClaudeHookName, hooks: JSONNode) throws -> JSONNode? {
-        guard let member = hooks.members.first(where: { $0.key == event.rawValue }) else { return nil }
+    func eventArray(for event: String, hooks: JSONNode) throws -> JSONNode? {
+        guard let member = hooks.members.first(where: { $0.key == event }) else { return nil }
         guard member.value.kind == .array else { throw ClaudeJSONHookEditor.EditorError.unsupported }
         return member.value
     }
 
-    func hookEntries(for event: ClaudeHookName) -> [JSONNode] {
+    func hookEntries(for event: String) -> [JSONNode] {
         guard let hooks = root.members.first(where: { $0.key == "hooks" })?.value,
               hooks.kind == .object,
-              let array = hooks.members.first(where: { $0.key == event.rawValue })?.value,
+              let array = hooks.members.first(where: { $0.key == event })?.value,
               array.kind == .array else { return [] }
         return array.elements
     }
