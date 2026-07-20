@@ -16,9 +16,11 @@ let package = Package(
         .library(name: "ClaudeCodeAdapter", targets: ["ClaudeCodeAdapter"]),
         .library(name: "CodexCLIAdapter", targets: ["CodexCLIAdapter"]),
         .library(name: "CodexAppServerAdapter", targets: ["CodexAppServerAdapter"]),
+        .library(name: "CursorHooksAdapter", targets: ["CursorHooksAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
+        .executable(name: "CursorHookHelper", targets: ["CursorHookHelper"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -85,6 +87,11 @@ let package = Package(
         // It has no dependency on Hooks or Claude action routing.
         .target(name: "CodexAppServerAdapter", dependencies: ["SessionDomain", "AdapterPort", "SessionStore"]),
 
+        // Cursor does not currently publish a supported Hooks contract. This
+        // boundary preserves that fact as an explicitly unavailable,
+        // non-mutating Integration Installation rather than guessing one.
+        .target(name: "CursorHooksAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
+
         // Composition bridge; the adapter itself remains unable to reach the
         // canonical store or keep callback data durably.
         .target(name: "ClaudeActionRouting", dependencies: ["ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
@@ -97,6 +104,8 @@ let package = Package(
         // Codex has a separate executable so its observation launcher cannot
         // reach Claude's synchronous action/callback branch.
         .executableTarget(name: "CodexHookHelper", dependencies: ["CodexCLIAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
+
+        .executableTarget(name: "CursorHookHelper", dependencies: ["CursorHooksAdapter"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
@@ -143,6 +152,7 @@ let package = Package(
         ),
         .testTarget(name: "CodexCLIAdapterTests", dependencies: ["CodexCLIAdapter", "SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
         .testTarget(name: "CodexAppServerAdapterTests", dependencies: ["CodexAppServerAdapter", "SessionDomain", "AdapterPort", "SessionStore"]),
+        .testTarget(name: "CursorHooksAdapterTests", dependencies: ["CursorHooksAdapter", "SessionDomain", "AdapterPort"]),
         .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
     ]
 )
