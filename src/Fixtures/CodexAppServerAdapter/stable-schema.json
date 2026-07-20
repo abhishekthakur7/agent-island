@@ -4,9 +4,13 @@
   "codexVersion": "codex-cli 0.144.6",
   "generatorCommand": "codex app-server generate-json-schema --out <directory>",
   "generatorMaturity": "experimental-command; invoked without --experimental or --enable",
-  "digest": "5ff91672223f52bdaa35d882db98e7b6a6fccb6add36c96107e64f5fc03fed97",
+  "digest": "dac1766a4569654dbda02f879f5e977085863f9714273eae1295095a055ca50f",
+  "digestEncoding": "SHA-256 of every generated JSON schema file, sorted by relative path, each canonicalized with `jq -S -c`; raw generator bytes are nondeterministic and are not compatibility evidence",
   "transport": "child-process-stdio",
-  "stableMethods": ["initialize", "thread/list", "thread/resume", "thread/fork", "thread/archive", "turn/start", "turn/steer", "turn/interrupt"],
-  "stableNotifications": ["thread/started", "thread/status/changed", "turn/started", "turn/completed", "turn/diff/updated", "turn/plan/updated", "item/started", "item/completed"],
-  "excluded": ["experimental", "websocket", "private-files", "terminal-scraping"]
+  "stableMethods": ["initialize", "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork", "thread/archive", "turn/start", "turn/steer", "turn/interrupt"],
+  "stableNotifications": ["thread/started", "thread/status/changed", "thread/tokenUsage/updated", "turn/started", "turn/completed", "turn/diff/updated", "turn/plan/updated", "item/started", "item/completed", "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta", "item/fileChange/patchUpdated"],
+  "normalization": {"thread/started": "thread.id + thread.status + thread.updatedAt; emits declaration and started activity", "turn/started|turn/completed": "threadId + turn.id + turn.status + startedAt/completedAt", "item/started|item/completed": "threadId + turnId + item.id + native timestamp; protected activity only", "plan/diff/output/message": "protected display activity; never completion", "sourceCursor": "unavailable; reconciliation is non-exhaustive"},
+  "serverRequests": ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"],
+  "unavailable": ["thread/start pre-owner route", "permissions approval response (requires GrantedPermissionProfile)", "experimental structured questions without experimental opt-in", "subagent run identity", "source cursor/exhaustive reconciliation"],
+  "excluded": ["experimental opt-in", "websocket", "hooks", "private-files", "terminal-scraping"]
 }

@@ -1,1 +1,1 @@
-{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","eventId":"event-1","sequence":3}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","completedAt":1721433600,"items":[]}}}

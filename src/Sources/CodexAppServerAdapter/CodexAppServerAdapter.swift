@@ -3,319 +3,241 @@ import AdapterPort
 import SessionDomain
 import SessionStore
 
-/// AB-137's product boundary. This is not the Codex Hooks integration: it is
-/// usable only for a child process Agent Island starts, or a child it explicitly
-/// resumes through this same local stdio actor.
+/// A deliberately narrow boundary for a Codex child which this application
+/// starts, or explicitly resumes. It is not Hooks, a terminal attachment, a
+/// private-file reader, WebSocket, or an experimental-flag transport.
 public enum CodexAppServerContract {
     public static let productNamespace = ProductNamespace("codex-app-server")
     public static let integrationMode = "codex.appServer.childProcessStdio"
     public static let adapterKind = "codex-app-server-stdio"
-    /// Generated locally with `codex app-server generate-json-schema --out`;
-    /// the command is labelled experimental by Codex, so this evidence is
-    /// version-pinned and never treated as a general compatibility promise.
     public static let interfaceVersion = "codex-cli-0.144.6-app-server-v2"
-    public static let schemaDigest = "5ff91672223f52bdaa35d882db98e7b6a6fccb6add36c96107e64f5fc03fed97"
-    public static let initializeMethod = "initialize"
-    public static let initializedMethod = "initialized"
+    /// SHA-256 of parsed JSON canonicalized by `jq -S -c`, not the generator's
+    /// nondeterministic raw object ordering.
+    public static let schemaDigest = "dac1766a4569654dbda02f879f5e977085863f9714273eae1295095a055ca50f"
     public static let observationCapability = "codex.appServer.threadObservation"
     public static let approvalCapability = "codex.appServer.approvalResponse"
     public static let turnInputCapability = "codex.appServer.turnInput"
     public static let turnControlCapability = "codex.appServer.turnControl"
-    public static let threadControlCapability = "codex.appServer.threadControl"
-    public static let schemaResource = "Fixtures/CodexAppServerAdapter/stable-schema.json"
+    /// Deliberately excludes schema-proven `thread/start`: no native Thread
+    /// owner exists before its response, so this lease-bound integration does
+    /// not advertise that pre-owner route.
+    public static let threadControlCapability = "codex.appServer.threadResumeForkArchive"
 }
 
-public struct CodexExecutableEvidence: Codable, Hashable, Sendable {
-    public let path: String
-    public let version: String
-    public init(path: String, version: String) { self.path = path; self.version = version }
-    public var isUsable: Bool { !path.isEmpty && !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-}
+public struct CodexExecutableEvidence: Codable, Hashable, Sendable { public let path: String; public let version: String; public init(path: String, version: String) { self.path = path; self.version = version }; public var isUsable: Bool { !path.isEmpty && !version.isEmpty } }
+public struct CodexSchemaEvidence: Codable, Hashable, Sendable { public let executable: CodexExecutableEvidence; public let digest: String; public init(executable: CodexExecutableEvidence, digest: String) { self.executable = executable; self.digest = digest } }
+public protocol CodexExecutableDiscovering: Sendable { func discoverCodexExecutable() async -> CodexExecutableEvidence? }
+public protocol CodexSchemaProbing: Sendable { func generateSchema(for executable: CodexExecutableEvidence) async -> CodexSchemaEvidence? }
+public struct UnavailableCodexExecutableDiscovery: CodexExecutableDiscovering { public init() {}; public func discoverCodexExecutable() async -> CodexExecutableEvidence? { nil } }
 
-public protocol CodexExecutableDiscovering: Sendable {
-    func discoverCodexExecutable() async -> CodexExecutableEvidence?
-}
-
-/// Explicit test/fail-closed discovery. Unlike local discovery, this cannot
-/// turn fixtures or an ambient executable into a live connection.
-public struct UnavailableCodexExecutableDiscovery: CodexExecutableDiscovering {
-    public init() {}
-    public func discoverCodexExecutable() async -> CodexExecutableEvidence? { nil }
-}
-
-/// Read-only executable discovery for the documented local child process. It
-/// does not inspect Codex configuration, databases, transcripts, terminals,
-/// or running processes. The result is merely probe evidence; schema and
-/// handshake validation still decide whether a connection may become ready.
 public struct LocalCodexExecutableDiscovery: CodexExecutableDiscovering {
     public init() {}
     public func discoverCodexExecutable() async -> CodexExecutableEvidence? {
-        let environmentPaths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        let candidates = ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"] + environmentPaths.map { "\($0)/codex" }
-        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            let process = Process(); let output = Pipe(); process.executableURL = URL(fileURLWithPath: path); process.arguments = ["--version"]; process.standardOutput = output; process.standardError = Pipe()
-            do {
-                try process.run(); process.waitUntilExit()
-                guard process.terminationStatus == 0 else { continue }
-                let version = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !version.isEmpty { return .init(path: path, version: version) }
-            } catch { continue }
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let candidates = ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"] + path.split(separator: ":").map { "\($0)/codex" }
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+            guard let version = Self.run(candidate, ["--version"]), !version.isEmpty else { continue }
+            return .init(path: candidate, version: version)
         }
         return nil
     }
-}
-
-public enum CodexAppServerState: String, Codable, Hashable, Sendable {
-    case idle, probing, schemaValidated, launching, initializing, ready, disconnected, failed
-}
-
-public enum CodexAppServerFailure: String, Codable, Hashable, Sendable, Error {
-    case executableUnavailable, schemaUnavailable, schemaMismatch, spawnFailed, malformedJSONRPC, oversizedFrame, oversizedBuffer, excessiveNesting, wrongHandshake, duplicateHandshake, prematureMessage, handshakeTimeout, eof, unsupportedMethod, pendingLimit, disconnected
-}
-
-public struct CodexAppServerLimits: Hashable, Sendable {
-    public let maxFrameBytes: Int
-    public let maxBufferBytes: Int
-    public let maxNesting: Int
-    public let maxPendingRequests: Int
-    public init(maxFrameBytes: Int = 64 * 1024, maxBufferBytes: Int = 128 * 1024, maxNesting: Int = 32, maxPendingRequests: Int = 32) {
-        self.maxFrameBytes = maxFrameBytes; self.maxBufferBytes = maxBufferBytes; self.maxNesting = maxNesting; self.maxPendingRequests = maxPendingRequests
+    fileprivate static func run(_ executable: String, _ arguments: [String]) -> String? {
+        guard let data = runData(executable, arguments) else { return nil }
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    fileprivate static func runData(_ executable: String, _ arguments: [String]) -> Data? {
+        let process = Process(); let output = Pipe(); let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable); process.arguments = arguments; process.standardOutput = output; process.standardError = errors
+        do { try process.run(); process.waitUntilExit() } catch { return nil }
+        guard process.terminationStatus == 0 else { return nil }
+        return output.fileHandleForReading.readDataToEndOfFile()
     }
 }
 
+/// Generates into a private temporary directory and asks the platform's
+/// SHA-256 tool for the digest. No caller-provided digest can enable a route.
+public struct LocalCodexSchemaProbe: CodexSchemaProbing {
+    public init() {}
+    public func generateSchema(for executable: CodexExecutableEvidence) async -> CodexSchemaEvidence? {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("agent-island-ab137-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) } catch { return nil }
+        guard LocalCodexExecutableDiscovery.run(executable.path, ["app-server", "generate-json-schema", "--out", directory.path]) != nil else { return nil }
+        let script = "cd '$1' && find . -type f -name '*.json' -print | LC_ALL=C sort | while IFS= read -r f; do printf '%s\\n' \"$f\"; /usr/bin/jq -S -c . \"$f\"; done | /usr/bin/shasum -a 256"
+        guard let digest = LocalCodexExecutableDiscovery.run("/bin/sh", ["-c", script, "ab137", directory.path])?.split(separator: " ").first else { return nil }
+        return .init(executable: executable, digest: String(digest))
+    }
+}
+
+public enum CodexAppServerState: String, Codable, Hashable, Sendable { case idle, probing, schemaValidated, launching, initializing, ready, disconnected, failed }
+public enum CodexAppServerFailure: String, Codable, Hashable, Sendable, Error { case executableUnavailable, schemaUnavailable, schemaMismatch, spawnFailed, malformedJSONRPC, oversizedFrame, oversizedBuffer, excessiveNesting, wrongHandshake, duplicateHandshake, prematureMessage, handshakeTimeout, eof, unsupportedMethod, pendingLimit, disconnected }
+public struct CodexAppServerLimits: Hashable, Sendable { public let maxFrameBytes, maxBufferBytes, maxNesting, maxPendingRequests, maxStderrBytes: Int; public init(maxFrameBytes: Int = 64 * 1024, maxBufferBytes: Int = 128 * 1024, maxNesting: Int = 32, maxPendingRequests: Int = 32, maxStderrBytes: Int = 8 * 1024) { self.maxFrameBytes = maxFrameBytes; self.maxBufferBytes = maxBufferBytes; self.maxNesting = maxNesting; self.maxPendingRequests = maxPendingRequests; self.maxStderrBytes = maxStderrBytes } }
+
+/// Reviewed derivative of the v0.144.6 generated bundle. These are the only
+/// normalizer and control shapes; content-bearing deltas are observed only as
+/// protected activity and no experimental method is included.
 public struct CodexSchemaManifest: Codable, Hashable, Sendable {
-    public let interfaceVersion: String
-    public let digest: String
-    public let stableMethods: Set<String>
-    public let stableNotificationMethods: Set<String>
-    public init(interfaceVersion: String = CodexAppServerContract.interfaceVersion, digest: String = CodexAppServerContract.schemaDigest, stableMethods: Set<String> = ["initialize", "thread/list", "thread/resume", "thread/fork", "thread/archive", "turn/start", "turn/steer", "turn/interrupt"], stableNotificationMethods: Set<String> = ["thread/started", "thread/status/changed", "turn/started", "turn/completed", "turn/diff/updated", "turn/plan/updated", "item/started", "item/completed", "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta", "item/fileChange/patchUpdated"]) {
-        self.interfaceVersion = interfaceVersion; self.digest = digest; self.stableMethods = stableMethods; self.stableNotificationMethods = stableNotificationMethods
-    }
+    public let interfaceVersion, digest: String; public let stableMethods, stableNotificationMethods: Set<String>
+    public init(interfaceVersion: String = CodexAppServerContract.interfaceVersion, digest: String = CodexAppServerContract.schemaDigest, stableMethods: Set<String> = ["initialize", "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork", "thread/archive", "turn/start", "turn/steer", "turn/interrupt"], stableNotificationMethods: Set<String> = ["thread/started", "thread/status/changed", "thread/tokenUsage/updated", "turn/started", "turn/completed", "turn/plan/updated", "turn/diff/updated", "item/started", "item/completed", "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta", "item/fileChange/patchUpdated"]) { self.interfaceVersion = interfaceVersion; self.digest = digest; self.stableMethods = stableMethods; self.stableNotificationMethods = stableNotificationMethods }
+}
+public enum CodexSchemaValidation { public static func validate(manifest: CodexSchemaManifest, evidence: CodexSchemaEvidence?) -> Bool { guard let evidence else { return false }; return manifest.interfaceVersion == CodexAppServerContract.interfaceVersion && manifest.digest == CodexAppServerContract.schemaDigest && evidence.digest == CodexAppServerContract.schemaDigest } }
+
+public protocol CodexAppServerTransport: Sendable { func write(_ bytes: Data) async throws; func close() async }
+public enum CodexChildOwnership: String, Codable, Hashable, Sendable { case startedByAgentIsland, explicitlyResumedByAgentIsland }
+public struct CodexConnectionProvenance: Codable, Hashable, Sendable { public let executable: CodexExecutableEvidence; public let schemaDigest: String; public let epoch: Int64; public let ownership: CodexChildOwnership; public let transport: String; public let initializationResult: String; public init(executable: CodexExecutableEvidence, schemaDigest: String, epoch: Int64, ownership: CodexChildOwnership, transport: String = "child-process-stdio", initializationResult: String) { self.executable = executable; self.schemaDigest = schemaDigest; self.epoch = epoch; self.ownership = ownership; self.transport = transport; self.initializationResult = initializationResult } }
+public struct CodexAppServerHealth: Codable, Hashable, Sendable { public let state: CodexAppServerState; public let epoch: Int64; public let provenance: CodexConnectionProvenance?; public let failure: CodexAppServerFailure?; public let unresolvedGap: Bool; public init(state: CodexAppServerState, epoch: Int64, provenance: CodexConnectionProvenance?, failure: CodexAppServerFailure?, unresolvedGap: Bool) { self.state = state; self.epoch = epoch; self.provenance = provenance; self.failure = failure; self.unresolvedGap = unresolvedGap } }
+public enum CodexAppServerActionResult: Sendable, Equatable { case rejected(ActionAttempt?); case dispatched(ActionAttempt) }
+public enum CodexClientCommand: String, Sendable, CaseIterable { case threadStart = "thread/start", threadResume = "thread/resume", threadFork = "thread/fork", threadArchive = "thread/archive", threadRead = "thread/read", turnStart = "turn/start", turnSteer = "turn/steer", turnInterrupt = "turn/interrupt" }
+public enum CodexThreadStartAvailability: Sendable, Equatable { case unavailablePreThreadOwner }
+/// The reviewed stable subset of the generated `UserInput` union. Content is
+/// sent only in the explicit typed turn request and never used as identity.
+public struct CodexTextInput: Sendable, Hashable { public let text: String; public init(_ text: String) { self.text = text }; fileprivate var json: [String: Any] { ["type": "text", "text": text] } }
+
+/// Production child. The process is launched only as `app-server --stdio`;
+/// stderr is bounded/redacted and never passed to the observation boundary.
+public final class CodexChildProcess: @unchecked Sendable, CodexAppServerTransport {
+    private let process: Process; private let stdin: Pipe; private let stdout: Pipe; private let stderr: Pipe; private let limit: Int; private var stderrBytes = Data()
+    public init(executable: CodexExecutableEvidence, maxStderrBytes: Int) throws { process = Process(); stdin = Pipe(); stdout = Pipe(); stderr = Pipe(); limit = maxStderrBytes; process.executableURL = URL(fileURLWithPath: executable.path); process.arguments = ["app-server", "--stdio"]; process.standardInput = stdin; process.standardOutput = stdout; process.standardError = stderr; try process.run() }
+    public func attach(stdout sink: @escaping @Sendable (Data) -> Void, eof: @escaping @Sendable () -> Void) { stdout.fileHandleForReading.readabilityHandler = { handle in let data = handle.availableData; if data.isEmpty { eof() } else { sink(data) } }; stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in guard let self else { return }; let data = handle.availableData; guard !data.isEmpty else { return }; if self.stderrBytes.count < self.limit { self.stderrBytes.append(data.prefix(self.limit - self.stderrBytes.count)) } }; process.terminationHandler = { _ in eof() } }
+    public func write(_ bytes: Data) async throws { try stdin.fileHandleForWriting.write(contentsOf: bytes) }
+    public func close() async { stdout.fileHandleForReading.readabilityHandler = nil; stderr.fileHandleForReading.readabilityHandler = nil; if process.isRunning { process.terminate() }; try? stdin.fileHandleForWriting.close() }
+    public var redactedStderrByteCount: Int { stderrBytes.count }
 }
 
-/// The generated-manifest validator is deliberately exact: a fixture is only
-/// documentation evidence. Live enablement also requires a matching executable
-/// and schema digest from the launched child.
-public enum CodexSchemaValidation {
-    public static func validate(manifest: CodexSchemaManifest, liveDigest: String?) -> Bool {
-        manifest.interfaceVersion == CodexAppServerContract.interfaceVersion &&
-        manifest.digest == CodexAppServerContract.schemaDigest &&
-        liveDigest == CodexAppServerContract.schemaDigest
-    }
-}
-
-public protocol CodexAppServerTransport: Sendable {
-    func write(_ bytes: Data) async throws
-    func close() async
-}
-
-public enum CodexChildOwnership: String, Codable, Hashable, Sendable {
-    case startedByAgentIsland, explicitlyResumedByAgentIsland
-}
-
-public struct CodexConnectionProvenance: Codable, Hashable, Sendable {
-    public let executable: CodexExecutableEvidence
-    public let schemaDigest: String
-    public let epoch: Int64
-    public let transport: String
-    public let initializationResult: String
-    public init(executable: CodexExecutableEvidence, schemaDigest: String, epoch: Int64, transport: String = "child-process-stdio", initializationResult: String) {
-        self.executable = executable; self.schemaDigest = schemaDigest; self.epoch = epoch; self.transport = transport; self.initializationResult = initializationResult
-    }
-}
-
-public struct CodexAppServerHealth: Codable, Hashable, Sendable {
-    public let state: CodexAppServerState
-    public let epoch: Int64
-    public let provenance: CodexConnectionProvenance?
-    public let failure: CodexAppServerFailure?
-    public let unresolvedGap: Bool
-    public init(state: CodexAppServerState, epoch: Int64, provenance: CodexConnectionProvenance?, failure: CodexAppServerFailure?, unresolvedGap: Bool) {
-        self.state = state; self.epoch = epoch; self.provenance = provenance; self.failure = failure; self.unresolvedGap = unresolvedGap
-    }
-}
-
-public enum CodexAppServerActionResult: Sendable, Equatable {
-    case rejected(ActionAttempt?)
-    case dispatched(ActionAttempt)
-}
-
-/// Single actor that owns one bounded stdio incarnation. Calls to `receive` are
-/// injected by a process supervisor; stdout is framed JSON-RPC only and stderr
-/// never enters this actor (a supervisor may retain a separately redacted code).
 public actor CodexAppServerAdapter {
-    private let intake: any AdapterIntakePort
-    private let attempts: ActionAttemptStore
-    private let discovery: any CodexExecutableDiscovering
-    private let integrationInstanceID: IntegrationInstanceID
-    private let limits: CodexAppServerLimits
-    private let clock: @Sendable () -> Date
-    private var state: CodexAppServerState = .idle
-    private var epoch: Int64 = 0
-    private var executable: CodexExecutableEvidence?
-    private var snapshot: NegotiationSnapshot?
-    private var schemaValidated = false
-    private var transport: (any CodexAppServerTransport)?
-    private var buffer = Data()
-    private var pending: Set<String> = []
-    private var initializeID: String?
-    private var initializedSent = false
-    private var provenance: CodexConnectionProvenance?
-    private var failure: CodexAppServerFailure?
-    private var unresolvedGap = false
-    private var routes: [String: ApprovalRoute] = [:]
-
-    private struct ApprovalRoute: Sendable {
-        let requestID: GuidedAttentionRequestID
-        let owner: GuidedAttentionOwner
-        let nativeRequestID: String
-        let opaqueApprovalID: String?
-        let fingerprint: String
-        let deadline: Date
-        let capability: CapabilityRecord
-    }
-
-    public init(intake: any AdapterIntakePort, attempts: ActionAttemptStore, integrationInstanceID: IntegrationInstanceID = .init("codex-app-server"), discovery: any CodexExecutableDiscovering = LocalCodexExecutableDiscovery(), limits: CodexAppServerLimits = .init(), clock: @escaping @Sendable () -> Date = Date.init) {
-        self.intake = intake; self.attempts = attempts; self.integrationInstanceID = integrationInstanceID; self.discovery = discovery; self.limits = limits; self.clock = clock
-    }
-
+    private let intake: any AdapterIntakePort; private let attempts: ActionAttemptStore; private let discovery: any CodexExecutableDiscovering; private let schemaProbe: any CodexSchemaProbing; private let integrationInstanceID: IntegrationInstanceID; private let limits: CodexAppServerLimits; private let clock: @Sendable () -> Date
+    private struct PendingRequest: Sendable { let kind: String; let threadID: String?; let attemptID: String? }
+    private struct ApprovalRoute: Sendable { let requestID: GuidedAttentionRequestID; let owner: GuidedAttentionOwner; let nativeID, fingerprint: String; let deadline: Date; let capability: CapabilityRecord }
+    private var state: CodexAppServerState = .idle; private var epoch: Int64 = 0; private var executable: CodexExecutableEvidence?; private var snapshot: NegotiationSnapshot?; private var transport: (any CodexAppServerTransport)?; private var buffer = Data(); private var pending: [String: PendingRequest] = [:]; private var routes: [String: ApprovalRoute] = [:]; private var ownedThreads = Set<String>(); private var initializeID: String?; private var initializedSent = false; private var provenance: CodexConnectionProvenance?; private var failure: CodexAppServerFailure?; private var unresolvedGap = false; private var ownership: CodexChildOwnership?
+    public init(intake: any AdapterIntakePort, attempts: ActionAttemptStore, integrationInstanceID: IntegrationInstanceID = .init("codex-app-server"), discovery: any CodexExecutableDiscovering = LocalCodexExecutableDiscovery(), schemaProbe: any CodexSchemaProbing = LocalCodexSchemaProbe(), limits: CodexAppServerLimits = .init(), clock: @escaping @Sendable () -> Date = Date.init) { self.intake = intake; self.attempts = attempts; self.integrationInstanceID = integrationInstanceID; self.discovery = discovery; self.schemaProbe = schemaProbe; self.limits = limits; self.clock = clock }
     public func health() -> CodexAppServerHealth { .init(state: state, epoch: epoch, provenance: provenance, failure: failure, unresolvedGap: unresolvedGap) }
+    /// Opaque connection-scoped route IDs for currently pending source
+    /// approvals. They contain no Interaction Content and expire on loss.
+    public func approvalRouteIDs() -> [String] { routes.keys.sorted() }
 
-    /// Explicitly starts/resumes only an application-owned child. An arbitrary
-    /// terminal process has no API path into this adapter.
-    public func connect(ownership: CodexChildOwnership, transport: any CodexAppServerTransport, liveSchemaDigest: String?) async -> Result<Int64, CodexAppServerFailure> {
-        guard state == .idle || state == .disconnected || state == .failed else { return .failure(.prematureMessage) }
-        state = .probing; failure = nil; unresolvedGap = false
-        guard let executable = await discovery.discoverCodexExecutable(), executable.isUsable else { failState(.executableUnavailable); return .failure(.executableUnavailable) }
-        self.executable = executable
-        guard CodexSchemaValidation.validate(manifest: .init(), liveDigest: liveSchemaDigest) else { let cause: CodexAppServerFailure = liveSchemaDigest == nil ? .schemaUnavailable : .schemaMismatch; failState(cause); return .failure(cause) }
-        let request = NegotiationRequest(
-            integrationInstanceID: integrationInstanceID,
-            adapterKind: CodexAppServerContract.adapterKind,
-            adapterBuildVersion: "ab-137",
-            productNamespace: CodexAppServerContract.productNamespace,
-            integrationMode: CodexAppServerContract.integrationMode,
-            offeredContractVersion: .init(major: SessionDomainValidator.supportedContractMajor, minor: 0),
-            requestedCapabilities: [CodexAppServerContract.observationCapability, CodexAppServerContract.approvalCapability],
-            catalogRevision: CodexAppServerContract.schemaDigest,
-            productVersion: executable.version,
-            interfaceVersion: CodexAppServerContract.interfaceVersion,
-            requestedCapabilityRecords: [
-                .init(id: CodexAppServerContract.observationCapability, direction: .observe, availability: .available, scope: .session),
-                .init(id: CodexAppServerContract.approvalCapability, direction: .act, availability: .available, scope: .request)
-            ]
-        )
-        guard case .compatible(let accepted) = await intake.negotiate(request), accepted.productNamespace == CodexAppServerContract.productNamespace, accepted.integrationInstanceID == integrationInstanceID, accepted.grants(CodexAppServerContract.observationCapability, direction: .observe) else { failState(.schemaMismatch); return .failure(.schemaMismatch) }
-        snapshot = accepted
-        schemaValidated = true; state = .schemaValidated
-        epoch &+= 1; self.transport = transport; state = .launching
-        state = .initializing; let id = "initialize:\(epoch)"; initializeID = id; pending = [id]
-        guard await writeRPC(["jsonrpc": "2.0", "id": id, "method": CodexAppServerContract.initializeMethod, "params": ["client": "agent-island", "transport": "stdio"]]) else { failState(.spawnFailed); return .failure(.spawnFailed) }
-        return .success(epoch)
+    /// Production coordinator entry point. It reproves executable/version and
+    /// generated schema before launching the only permitted child command.
+    public func connect(ownership: CodexChildOwnership) async -> Result<Int64, CodexAppServerFailure> {
+        guard let executable = await discovery.discoverCodexExecutable() else { await failState(.executableUnavailable); return .failure(.executableUnavailable) }
+        guard let evidence = await schemaProbe.generateSchema(for: executable) else { await failState(.schemaUnavailable); return .failure(.schemaUnavailable) }
+        guard CodexSchemaValidation.validate(manifest: .init(), evidence: evidence) else { await failState(.schemaMismatch); return .failure(.schemaMismatch) }
+        do { let child = try CodexChildProcess(executable: executable, maxStderrBytes: limits.maxStderrBytes); child.attach(stdout: { [weak self] bytes in Task { await self?.receive(stdout: bytes) } }, eof: { [weak self] in Task { await self?.stdoutEOF() } }); let result = await begin(ownership: ownership, transport: child, executable: executable, evidence: evidence); if case .failure = result { await child.close() }; return result } catch { await failState(.spawnFailed); return .failure(.spawnFailed) }
     }
-
-    public func handshakeTimedOut() async { guard state == .initializing else { return }; failState(.handshakeTimeout) }
-
-    public func receive(stdout bytes: Data) async {
-        guard state == .initializing || state == .ready else { failState(.prematureMessage); return }
-        buffer.append(bytes)
-        guard buffer.count <= limits.maxBufferBytes else { failState(.oversizedBuffer); return }
-        while let newline = buffer.firstIndex(of: 0x0A) {
-            let frame = buffer.prefix(upTo: newline); buffer.removeSubrange(...newline)
-            guard frame.count <= limits.maxFrameBytes else { failState(.oversizedFrame); return }
-            guard let value = try? JSONSerialization.jsonObject(with: Data(frame)) as? [String: Any], nesting(of: value) <= limits.maxNesting else { failState(.malformedJSONRPC); return }
-            await receiveRPC(value)
-            if state == .failed { return }
-        }
+    /// Injectable test seam. Evidence still comes from the probe; callers can
+    /// not assert a live digest with a string.
+    public func connectForTesting(ownership: CodexChildOwnership, transport: any CodexAppServerTransport) async -> Result<Int64, CodexAppServerFailure> { guard let executable = await discovery.discoverCodexExecutable() else { await failState(.executableUnavailable); return .failure(.executableUnavailable) }; guard let evidence = await schemaProbe.generateSchema(for: executable) else { await failState(.schemaUnavailable); return .failure(.schemaUnavailable) }; return await begin(ownership: ownership, transport: transport, executable: executable, evidence: evidence) }
+    private func begin(ownership: CodexChildOwnership, transport: any CodexAppServerTransport, executable discoveredExecutable: CodexExecutableEvidence, evidence: CodexSchemaEvidence) async -> Result<Int64, CodexAppServerFailure> {
+        guard state == .idle || state == .disconnected || state == .failed else { return .failure(.prematureMessage) }; state = .probing; failure = nil; unresolvedGap = false
+        guard evidence.executable == discoveredExecutable, CodexSchemaValidation.validate(manifest: .init(), evidence: evidence) else { await failState(.schemaMismatch); return .failure(.schemaMismatch) }
+        executable = evidence.executable; self.ownership = ownership
+        let request = NegotiationRequest(integrationInstanceID: integrationInstanceID, adapterKind: CodexAppServerContract.adapterKind, adapterBuildVersion: "ab-137-repair", productNamespace: CodexAppServerContract.productNamespace, integrationMode: CodexAppServerContract.integrationMode, offeredContractVersion: .init(major: SessionDomainValidator.supportedContractMajor, minor: 0), requestedCapabilities: [CodexAppServerContract.observationCapability, CodexAppServerContract.approvalCapability, CodexAppServerContract.turnInputCapability, CodexAppServerContract.turnControlCapability, CodexAppServerContract.threadControlCapability], catalogRevision: evidence.digest, productVersion: evidence.executable.version, interfaceVersion: CodexAppServerContract.interfaceVersion, requestedCapabilityRecords: [.init(id: CodexAppServerContract.observationCapability, direction: .observe, availability: .available, scope: .session), .init(id: CodexAppServerContract.approvalCapability, direction: .act, availability: .available, scope: .request), .init(id: CodexAppServerContract.turnInputCapability, direction: .act, availability: .available, scope: .request), .init(id: CodexAppServerContract.turnControlCapability, direction: .act, availability: .available, scope: .request), .init(id: CodexAppServerContract.threadControlCapability, direction: .act, availability: .available, scope: .session)])
+        guard case .compatible(let accepted) = await intake.negotiate(request), accepted.grants(CodexAppServerContract.observationCapability, direction: .observe) else { await failState(.schemaMismatch); return .failure(.schemaMismatch) }
+        snapshot = accepted; epoch &+= 1; self.transport = transport; ownedThreads.removeAll(); state = .initializing; let id = "initialize:\(epoch)"; initializeID = id; pending = [id: .init(kind: "initialize", threadID: nil, attemptID: nil)]
+        guard await writeRPC(["jsonrpc": "2.0", "id": id, "method": "initialize", "params": ["clientInfo": ["name": "Agent Island", "version": "ab-137"], "capabilities": ["experimentalApi": false]]]) else { await failState(.spawnFailed); return .failure(.spawnFailed) }; return .success(epoch)
     }
-
-    public func stdoutEOF() async { failState(.eof) }
-
+    public func handshakeTimedOut() async { guard state == .initializing else { return }; await failState(.handshakeTimeout) }
+    public func receive(stdout bytes: Data) async { guard state == .initializing || state == .ready else { await failState(.prematureMessage); return }; buffer.append(bytes); guard buffer.count <= limits.maxBufferBytes else { await failState(.oversizedBuffer); return }; while let newline = buffer.firstIndex(of: 10) { let frame = buffer.prefix(upTo: newline); buffer.removeSubrange(...newline); guard frame.count <= limits.maxFrameBytes else { await failState(.oversizedFrame); return }; guard let value = try? JSONSerialization.jsonObject(with: Data(frame)) as? [String: Any], nesting(of: value) <= limits.maxNesting else { await failState(.malformedJSONRPC); return }; await receiveRPC(value); if state == .failed { return } } }
+    public func stdoutEOF() async { if state != .disconnected { await failState(.eof) } }
     private func receiveRPC(_ value: [String: Any]) async {
-        guard value["jsonrpc"] as? String == "2.0" else { failState(.malformedJSONRPC); return }
+        guard value["jsonrpc"] as? String == "2.0" else { await failState(.malformedJSONRPC); return }
         if let id = value["id"] as? String, value["result"] != nil || value["error"] != nil {
-            guard state == .initializing, id == initializeID, pending.contains(id), !initializedSent, value["error"] == nil else { failState(.wrongHandshake); return }
-            pending.remove(id); initializedSent = true
-            guard await writeRPC(["jsonrpc": "2.0", "method": CodexAppServerContract.initializedMethod, "params": [:]]) else { failState(.disconnected); return }
-            guard let executable else { failState(.executableUnavailable); return }
-            provenance = .init(executable: executable, schemaDigest: CodexAppServerContract.schemaDigest, epoch: epoch, initializationResult: "valid")
-            state = .ready
+            if state == .initializing { guard id == initializeID, pending[id]?.kind == "initialize", !initializedSent, value["error"] == nil else { await failState(.wrongHandshake); return }; pending.removeValue(forKey: id); initializedSent = true; guard await writeRPC(["jsonrpc": "2.0", "method": "initialized", "params": [:]]), let executable, let ownership else { await failState(.disconnected); return }; provenance = .init(executable: executable, schemaDigest: CodexAppServerContract.schemaDigest, epoch: epoch, ownership: ownership, initializationResult: "valid"); state = .ready; return }
+            guard let request = pending.removeValue(forKey: id) else { unresolvedGap = true; return }
+            if value["error"] != nil { if let attemptID = request.attemptID { _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .rejected, at: clock()) }; return }
+            if request.kind == CodexClientCommand.threadResume.rawValue || request.kind == CodexClientCommand.threadFork.rawValue {
+                guard let result = value["result"] as? [String: Any], let thread = result["thread"] as? [String: Any], let nativeID = thread["id"] as? String, !nativeID.isEmpty, request.kind != CodexClientCommand.threadResume.rawValue || nativeID == request.threadID else { unresolvedGap = true; return }
+                ownedThreads.insert(nativeID)
+            }
+            if request.kind == CodexClientCommand.threadRead.rawValue {
+                guard let result = value["result"] as? [String: Any], let thread = result["thread"] as? [String: Any], let nativeID = thread["id"] as? String, nativeID == request.threadID, let snapshot else { unresolvedGap = true; return }
+                let envelope = RawEventEnvelope(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CodexAppServerContract.productNamespace.rawValue, nativeSessionID: nativeID, eventIdentity: .stable(canonical(["thread/read", "\(epoch)", nativeID, id])), family: .reconciliation, sourceVariant: "codex.appServer.thread/read", classification: .operationalMetadata, payloadByteSize: 0, ownership: nil, reconciliationScope: .nonExhaustive, integrationMode: CodexAppServerContract.integrationMode, capabilityID: CodexAppServerContract.observationCapability, capabilityDirection: .observe, capabilityRevision: 1)
+                await deliver(envelope)
+            }
+            if let attemptID = request.attemptID { _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .acceptedByProduct, at: clock(), evidence: request.kind) }
             return
         }
-        guard let method = value["method"] as? String else { failState(.malformedJSONRPC); return }
-        guard state == .ready else { failState(.prematureMessage); return }
-        if let id = value["id"] as? String, ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"].contains(method) {
-            await openApproval(jsonRequestID: id, method: method, params: value["params"] as? [String: Any] ?? [:])
-            return
-        }
-        guard CodexSchemaManifest().stableNotificationMethods.contains(method) else { failState(.unsupportedMethod); return }
+        guard state == .ready, let method = value["method"] as? String else { await failState(.prematureMessage); return }
+        if let id = value["id"] as? String, ["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].contains(method) { await openApproval(id: id, method: method, params: value["params"] as? [String: Any] ?? [:]); return }
+        if method == "item/permissions/requestApproval" { unresolvedGap = true; return } // response requires a typed GrantedPermissionProfile, not allow/deny.
+        guard CodexSchemaManifest().stableNotificationMethods.contains(method) else { unresolvedGap = true; return }
         await normalize(method: method, params: value["params"] as? [String: Any] ?? [:])
     }
-
     private func normalize(method: String, params: [String: Any]) async {
-        guard let thread = params["threadId"] as? String, !thread.isEmpty else { unresolvedGap = true; return }
-        let turn = params["turnId"] as? String
-        guard let sourceID = params["eventId"] as? String, !sourceID.isEmpty else { unresolvedGap = true; return }
-        let family: EventFamily = method.hasPrefix("item/") ? .turnDeclared : (method == "thread/started" ? .sessionActivity : .turnDeclared)
-        let activity: SessionActivityKind? = method.hasSuffix("/completed") ? .completed : (method.hasSuffix("/started") ? .working : .working)
-        let cursor = (params["sequence"] as? NSNumber).map { SourceCursor(scope: "codex-app-server:\(epoch):\(thread)", value: $0.int64Value) }
         guard let snapshot else { unresolvedGap = true; return }
-        let envelope = RawEventEnvelope(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CodexAppServerContract.productNamespace.rawValue, nativeSessionID: thread, eventIdentity: .stable(sourceID), family: family, sourceVariant: "codex.appServer.\(method)", activityKind: activity, classification: .operationalMetadata, payloadByteSize: 0, sourceCursor: cursor, ownership: .init(nativeTurnID: turn), integrationMode: CodexAppServerContract.integrationMode, capabilityID: CodexAppServerContract.observationCapability, capabilityDirection: .observe, capabilityRevision: 1)
-        _ = await intake.deliver(envelope)
-    }
-
-    private func openApproval(jsonRequestID: String, method: String, params: [String: Any]) async {
-        guard let thread = params["threadId"] as? String, let turn = params["turnId"] as? String, let item = params["itemId"] as? String,
-              let startedAtMilliseconds = (params["startedAtMs"] as? NSNumber)?.doubleValue else { unresolvedGap = true; return }
-        let opaque = params["approvalId"] as? String
-        let kind = method
-        // The v0.144.6 schema does not supply a deadline. A request without a
-        // documented deadline deliberately receives no live Action Lease.
-        guard let deadlineSeconds = (params["deadline"] as? NSNumber)?.doubleValue else { unresolvedGap = true; return }
-        let tuple = "\(epoch):\(jsonRequestID):\(thread):\(turn):\(item):\(opaque ?? "none"):\(kind)"
-        guard let snapshot, snapshot.grants(CodexAppServerContract.approvalCapability, direction: .act) else { unresolvedGap = true; return }
-        let owner = GuidedAttentionOwner(productNamespace: CodexAppServerContract.productNamespace, nativeSessionID: .init(thread), nativeAttentionRequestID: tuple, nativeTurnID: turn, integrationInstanceID: integrationInstanceID, negotiationSnapshotID: snapshot.id)
-        let requestID = GuidedAttentionRequestID(productNamespace: owner.productNamespace, nativeSessionID: owner.nativeSessionID, nativeAttentionRequestID: tuple)
-        let capability = CapabilityRecord(id: CodexAppServerContract.approvalCapability, direction: .act, availability: .available, scope: .request, maturity: .stable, freshness: .current)
-        let fingerprint = "\(tuple):\(startedAtMilliseconds):\(deadlineSeconds)"
-        let evidence = GuidedAttentionEvidence(owner: owner, eventIdentity: .stable("approval:\(tuple)"), sourceVariant: "codex.appServer.approval.request", capability: capability, semanticShape: .allowDeny, constraints: .init(nativeFingerprint: fingerprint), sourceObservedAt: clock())
-        switch await attempts.ingest(evidence) { case .accepted, .duplicate: routes[tuple] = .init(requestID: requestID, owner: owner, nativeRequestID: jsonRequestID, opaqueApprovalID: opaque, fingerprint: fingerprint, deadline: Date(timeIntervalSince1970: deadlineSeconds), capability: capability); default: unresolvedGap = true }
-    }
-
-    /// Approval is the only routed action in this first stable schema. Other
-    /// action capabilities remain unavailable until their exact response fields
-    /// are proven in a generated schema and live initialization evidence.
-    public func respondApproval(tuple: String, allow: Bool, attemptID: String, confirmed: Bool = true) async -> CodexAppServerActionResult {
-        guard state == .ready, let route = routes[tuple], transport != nil, clock() <= route.deadline, confirmed else {
-            return .rejected(nil)
+        let thread: String? = (params["thread"] as? [String: Any])?["id"] as? String ?? params["threadId"] as? String
+        guard let thread, !thread.isEmpty else { unresolvedGap = true; return }
+        let turnObject = params["turn"] as? [String: Any]; let turn = turnObject?["id"] as? String ?? params["turnId"] as? String
+        let item = params["item"] as? [String: Any]; let itemID = item?["id"] as? String
+        let stateValue = (params["status"] as? String) ?? (turnObject?["status"] as? String) ?? (item?["status"] as? String) ?? ""
+        let revision = (params["thread"] as? [String: Any])?["updatedAt"] ?? turnObject?["completedAt"] ?? params["startedAtMs"] ?? params["completedAtMs"] ?? "none"
+        let identity = EventIdentity.stable(canonical([method, thread, turn ?? "", itemID ?? "", stateValue, "\(revision)"]))
+        let protected = method.contains("diff") || method.contains("delta") || method == "turn/plan/updated" || method.hasPrefix("item/")
+        func envelope(_ family: EventFamily, _ activity: SessionActivityKind?, _ classification: PayloadClassification) -> RawEventEnvelope { RawEventEnvelope(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CodexAppServerContract.productNamespace.rawValue, nativeSessionID: thread, eventIdentity: identity, family: family, sourceVariant: "codex.appServer.\(method)", activityKind: activity, classification: classification, payloadByteSize: protected ? serializedSize(params) : 0, ownership: .init(nativeTurnID: turn), integrationMode: CodexAppServerContract.integrationMode, capabilityID: CodexAppServerContract.observationCapability, capabilityDirection: .observe, capabilityRevision: 1) }
+        switch method {
+        case "thread/started": await deliver(envelope(.sessionDeclared, nil, .operationalMetadata)); await deliver(envelope(.sessionActivity, .started, .operationalMetadata))
+        case "thread/status/changed": await deliver(envelope(.sessionActivity, activity(status: stateValue), .operationalMetadata))
+        case "turn/started": await deliver(envelope(.turnDeclared, nil, .operationalMetadata)); await deliver(envelope(.sessionActivity, .started, .operationalMetadata))
+        case "turn/completed": await deliver(envelope(.turnDeclared, nil, .operationalMetadata)); await deliver(envelope(.sessionActivity, activity(status: stateValue), .operationalMetadata))
+        case "item/started", "item/completed": await deliver(envelope(.sessionActivity, .working, .interactionContent))
+        case "turn/plan/updated", "turn/diff/updated", "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta", "item/fileChange/patchUpdated": await deliver(envelope(.sessionActivity, .working, .interactionContent))
+        case "thread/tokenUsage/updated": await deliver(envelope(.sessionActivity, .working, .operationalMetadata))
+        default: unresolvedGap = true
         }
-        let action: GuidedAction = allow ? .allow : .deny
-        let binding = ActionLeaseBinding(requestID: route.requestID, owner: route.owner, capabilityID: route.capability.id, capabilityRevision: route.capability.revision, negotiationSnapshotID: route.owner.negotiationSnapshotID, semanticFingerprint: "approval:\(allow)", nativeFingerprint: route.fingerprint)
-        let context = ActionLeaseValidationContext(binding: binding, capability: route.capability, currentNativeFingerprint: route.fingerprint, now: clock())
-        let leaseID = "codex-app-server:\(epoch):\(attemptID)"
-        guard case .issued = await attempts.issueLease(id: leaseID, requestID: route.requestID, action: action, semanticFingerprint: binding.semanticFingerprint, nativeFingerprint: binding.nativeFingerprint, capability: route.capability, issuedAt: clock(), deadline: route.deadline, confirmation: true),
-              case .reserved = await attempts.reserveAttempt(id: attemptID, requestID: route.requestID, owner: route.owner, action: action, leaseID: leaseID, context: context, confirmation: true, reservedAt: clock()),
-              case .dispatch = await attempts.prepareDispatch(attemptID: attemptID, context: context, now: clock(), confirmation: true) else { return .rejected(await attempts.attempt(for: attemptID)) }
-        // A server-initiated approval is answered with the same JSON-RPC id,
-        // not by an invented `approval/respond` client method. The v0.144.6
-        // schema exposes no deadline, so this path remains normally disabled;
-        // it exists only for a future schema that proves that field.
-        let payload: [String: Any] = ["jsonrpc": "2.0", "id": route.nativeRequestID, "result": ["decision": allow ? "accept" : "decline"]]
-        guard await writeRPC(payload) else { _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .indeterminate, at: clock()); await disconnect(); return .dispatched((await attempts.attempt(for: attemptID))!) }
-        _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .acceptedByProduct, at: clock())
-        routes.removeValue(forKey: tuple)
-        return .dispatched((await attempts.attempt(for: attemptID))!)
     }
-
-    public func disconnect() async {
-        await transport?.close(); transport = nil; buffer.removeAll(); pending.removeAll(); initializeID = nil; initializedSent = false; routes.removeAll(); unresolvedGap = true
-        await attempts.invalidateForReconnect(); state = .disconnected
+    private func deliver(_ envelope: RawEventEnvelope) async { if case .committed = await intake.deliver(envelope) {} else { unresolvedGap = true } }
+    private func openApproval(id: String, method: String, params: [String: Any]) async {
+        guard let thread = params["threadId"] as? String, let turn = params["turnId"] as? String, let item = params["itemId"] as? String, let started = params["startedAtMs"] as? NSNumber, let snapshot, snapshot.grants(CodexAppServerContract.approvalCapability, direction: .act) else { unresolvedGap = true; return }
+        let opaque = params["approvalId"] as? String ?? ""; let fingerprint = canonical(["approval", "\(epoch)", method, id, thread, turn, item, opaque, "\(started)"])
+        let capability = CapabilityRecord(id: CodexAppServerContract.approvalCapability, direction: .act, availability: .available, scope: .request, provenance: .init(snapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, productNamespace: CodexAppServerContract.productNamespace, integrationMode: CodexAppServerContract.integrationMode))
+        let owner = GuidedAttentionOwner(productNamespace: CodexAppServerContract.productNamespace, nativeSessionID: .init(thread), nativeAttentionRequestID: fingerprint, nativeTurnID: turn, integrationInstanceID: integrationInstanceID, negotiationSnapshotID: snapshot.id); let requestID = GuidedAttentionRequestID(productNamespace: owner.productNamespace, nativeSessionID: owner.nativeSessionID, nativeAttentionRequestID: fingerprint)
+        let evidence = GuidedAttentionEvidence(owner: owner, eventIdentity: .stable(fingerprint), sourceVariant: "codex.appServer.\(method)", capability: capability, semanticShape: .allowDeny, constraints: .init(nativeFingerprint: fingerprint), sourceObservedAt: clock())
+        switch await attempts.ingest(evidence) { case .accepted, .duplicate: routes[fingerprint] = .init(requestID: requestID, owner: owner, nativeID: id, fingerprint: fingerprint, deadline: clock().addingTimeInterval(30), capability: capability); default: unresolvedGap = true }
     }
-
-    private func failState(_ cause: CodexAppServerFailure) { failure = cause; state = .failed; routes.removeAll(); Task { await attempts.invalidateForReconnect() } }
-    private func writeRPC(_ payload: [String: Any]) async -> Bool {
-        guard let transport, pending.count <= limits.maxPendingRequests, JSONSerialization.isValidJSONObject(payload), let data = try? JSONSerialization.data(withJSONObject: payload) else { return false }
-        do { try await transport.write(data + Data([0x0A])); return true } catch { return false }
+    public func respondApproval(route: String, allow: Bool, attemptID: String, confirmed: Bool = true) async -> CodexAppServerActionResult {
+        guard state == .ready, let route = routes[route], clock() <= route.deadline, confirmed else { return .rejected(nil) }; let action: GuidedAction = allow ? .allow : .deny; let semantic = "approval:\(allow)"; let leaseID = "approval:\(epoch):\(attemptID)"; let binding = ActionLeaseBinding(requestID: route.requestID, owner: route.owner, capabilityID: route.capability.id, capabilityRevision: route.capability.revision, negotiationSnapshotID: route.owner.negotiationSnapshotID, semanticFingerprint: semantic, nativeFingerprint: route.fingerprint); let context = ActionLeaseValidationContext(binding: binding, capability: route.capability, currentNativeFingerprint: route.fingerprint, now: clock())
+        guard case .issued = await attempts.issueLease(id: leaseID, requestID: route.requestID, action: action, semanticFingerprint: semantic, nativeFingerprint: route.fingerprint, capability: route.capability, issuedAt: clock(), deadline: route.deadline, confirmation: confirmed), case .reserved = await attempts.reserveAttempt(id: attemptID, requestID: route.requestID, owner: route.owner, action: action, leaseID: leaseID, context: context, confirmation: confirmed, reservedAt: clock()), case .dispatch = await attempts.prepareDispatch(attemptID: attemptID, context: context, now: clock(), confirmation: confirmed) else { return .rejected(await attempts.attempt(for: attemptID)) }
+        guard await writeRPC(["jsonrpc": "2.0", "id": route.nativeID, "result": ["decision": allow ? "accept" : "decline"]]) else { _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .indeterminate, at: clock()); await disconnect(); return .dispatched((await attempts.attempt(for: attemptID))!) }; _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .acceptedByProduct, at: clock()); routes.removeValue(forKey: route.fingerprint); return .dispatched((await attempts.attempt(for: attemptID))!)
     }
-    private func nesting(of value: Any, depth: Int = 0) -> Int { if depth > limits.maxNesting { return depth }; if let dict = value as? [String: Any] { return dict.values.map { nesting(of: $0, depth: depth + 1) }.max() ?? depth }; if let list = value as? [Any] { return list.map { nesting(of: $0, depth: depth + 1) }.max() ?? depth }; return depth }
+    private func dispatch(_ command: CodexClientCommand, threadID: String, turnID: String? = nil, params: [String: Any], action: GuidedAction, attemptID: String, confirmed: Bool) async -> String? {
+        guard state == .ready, !threadID.isEmpty, !attemptID.isEmpty, ownsCapability(command), pending.count < limits.maxPendingRequests, command == .threadResume || ownedThreads.contains(threadID), let snapshot else { return nil }
+        let capabilityID = command.rawValue.hasPrefix("turn/start") || command.rawValue.hasPrefix("turn/steer") ? CodexAppServerContract.turnInputCapability : command.rawValue.hasPrefix("turn/") ? CodexAppServerContract.turnControlCapability : CodexAppServerContract.threadControlCapability
+        let capability = CapabilityRecord(id: capabilityID, direction: .act, availability: .available, scope: .request, provenance: .init(snapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, productNamespace: CodexAppServerContract.productNamespace, integrationMode: CodexAppServerContract.integrationMode))
+        let nativeRequest = "control:\(epoch):\(command.rawValue):\(threadID):\(turnID ?? "")"
+        let owner = GuidedAttentionOwner(productNamespace: CodexAppServerContract.productNamespace, nativeSessionID: .init(threadID), nativeAttentionRequestID: nativeRequest, nativeTurnID: turnID, integrationInstanceID: integrationInstanceID, negotiationSnapshotID: snapshot.id)
+        let requestID = GuidedAttentionRequestID(productNamespace: owner.productNamespace, nativeSessionID: owner.nativeSessionID, nativeAttentionRequestID: nativeRequest)
+        let shape: GuidedSemanticShape = switch action { case .turnInput: .init(kind: .turnInput, supportsFreeText: true); case .interruption: .init(kind: .interruption, supportsFreeText: true); default: .init(kind: .productExtension, extensionNamespace: "codex.appServer.control") }
+        let fingerprint = canonical(["control", "\(epoch)", CodexAppServerContract.schemaDigest, command.rawValue, threadID, turnID ?? ""])
+        let evidence = GuidedAttentionEvidence(owner: owner, eventIdentity: .stable(fingerprint), sourceVariant: "codex.appServer.\(command.rawValue)", capability: capability, semanticShape: shape, constraints: .init(requiresConfirmation: true, nativeFingerprint: fingerprint), sourceObservedAt: clock())
+        switch await attempts.ingest(evidence) { case .accepted, .duplicate: break; case .rejected: return nil }
+        let leaseID = "codex-app-server:\(epoch):\(attemptID)"; let deadline = clock().addingTimeInterval(30)
+        guard case .issued = await attempts.issueLease(id: leaseID, requestID: requestID, action: action, semanticFingerprint: "\(command.rawValue):\(action.semanticKind)", nativeFingerprint: fingerprint, capability: capability, issuedAt: clock(), deadline: deadline, confirmation: confirmed) else { return nil }
+        let binding = ActionLeaseBinding(requestID: requestID, owner: owner, capabilityID: capability.id, capabilityRevision: capability.revision, negotiationSnapshotID: snapshot.id, semanticFingerprint: "\(command.rawValue):\(action.semanticKind)", nativeFingerprint: fingerprint)
+        let context = ActionLeaseValidationContext(binding: binding, capability: capability, currentNativeFingerprint: fingerprint, now: clock())
+        guard case .reserved = await attempts.reserveAttempt(id: attemptID, requestID: requestID, owner: owner, action: action, leaseID: leaseID, context: context, confirmation: confirmed, reservedAt: clock()), case .dispatch = await attempts.prepareDispatch(attemptID: attemptID, context: context, now: clock(), confirmation: confirmed) else { return nil }
+        let id = "client:\(epoch):\(attemptID)"; pending[id] = .init(kind: command.rawValue, threadID: threadID, attemptID: attemptID)
+        guard await writeRPC(["jsonrpc": "2.0", "id": id, "method": command.rawValue, "params": params]) else { pending.removeValue(forKey: id); _ = await attempts.recordProductOutcome(attemptID: attemptID, outcome: .indeterminate, at: clock()); await disconnect(); return nil }
+        return id
+    }
+    public func startTurn(threadID: String, input: [CodexTextInput], attemptID: String, confirmed: Bool = true) async -> String? { let text = input.map(\.text).joined(separator: "\n"); return await dispatch(.turnStart, threadID: threadID, params: ["threadId": threadID, "input": input.map(\.json)], action: .turnInput(text), attemptID: attemptID, confirmed: confirmed) }
+    /// `thread/start` is schema-proven but intentionally unavailable here: the
+    /// Action Attempt/Lease contract needs an exact native Thread owner before
+    /// write, and this response is the first source of that identity. The
+    /// coordinator therefore never advertises it as a thread-control route.
+    public func threadStartAvailability() -> CodexThreadStartAvailability { .unavailablePreThreadOwner }
+    public func steerTurn(threadID: String, expectedTurnID: String, input: [CodexTextInput], attemptID: String, confirmed: Bool = true) async -> String? { let text = input.map(\.text).joined(separator: "\n"); return await dispatch(.turnSteer, threadID: threadID, turnID: expectedTurnID, params: ["threadId": threadID, "expectedTurnId": expectedTurnID, "input": input.map(\.json)], action: .turnInput(text), attemptID: attemptID, confirmed: confirmed) }
+    public func interruptTurn(threadID: String, turnID: String, attemptID: String, confirmed: Bool = true) async -> String? { await dispatch(.turnInterrupt, threadID: threadID, turnID: turnID, params: ["threadId": threadID, "turnId": turnID], action: .interruption, attemptID: attemptID, confirmed: confirmed) }
+    public func resumeThread(threadID: String, attemptID: String, confirmed: Bool = true) async -> String? { await dispatch(.threadResume, threadID: threadID, params: ["threadId": threadID], action: .productExtension(.init(namespace: "codex.appServer.control", name: "thread.resume")), attemptID: attemptID, confirmed: confirmed) }
+    public func forkThread(threadID: String, attemptID: String, confirmed: Bool = true) async -> String? { await dispatch(.threadFork, threadID: threadID, params: ["threadId": threadID], action: .productExtension(.init(namespace: "codex.appServer.control", name: "thread.fork")), attemptID: attemptID, confirmed: confirmed) }
+    public func archiveThread(threadID: String, attemptID: String, confirmed: Bool = true) async -> String? { await dispatch(.threadArchive, threadID: threadID, params: ["threadId": threadID], action: .productExtension(.init(namespace: "codex.appServer.control", name: "thread.archive")), attemptID: attemptID, confirmed: confirmed) }
+    /// Exact documented read reconciliation for a Thread this child has
+    /// already resumed/forked. It is non-exhaustive: absence proves nothing.
+    public func reconcileThread(threadID: String) async -> String? { guard state == .ready, ownedThreads.contains(threadID), pending.count < limits.maxPendingRequests else { return nil }; let id = "read:\(epoch):\(threadID)"; pending[id] = .init(kind: CodexClientCommand.threadRead.rawValue, threadID: threadID, attemptID: nil); guard await writeRPC(["jsonrpc": "2.0", "id": id, "method": CodexClientCommand.threadRead.rawValue, "params": ["threadId": threadID]]) else { pending.removeValue(forKey: id); await failState(.disconnected); return nil }; return id }
+    public func disconnect() async { await transport?.close(); transport = nil; buffer.removeAll(); pending.removeAll(); ownedThreads.removeAll(); initializeID = nil; initializedSent = false; unresolvedGap = true; await attempts.invalidateForReconnect(); state = .disconnected }
+    private func ownsCapability(_ command: CodexClientCommand) -> Bool { guard let snapshot else { return false }; let id = command.rawValue.hasPrefix("turn/start") || command.rawValue.hasPrefix("turn/steer") ? CodexAppServerContract.turnInputCapability : command.rawValue.hasPrefix("turn/") ? CodexAppServerContract.turnControlCapability : CodexAppServerContract.threadControlCapability; return snapshot.grants(id, direction: .act) }
+    private func failState(_ cause: CodexAppServerFailure) async { failure = cause; state = .failed; pending.removeAll(); await attempts.invalidateForReconnect() }
+    private func writeRPC(_ payload: [String: Any]) async -> Bool { guard let transport, JSONSerialization.isValidJSONObject(payload), let data = try? JSONSerialization.data(withJSONObject: payload) else { return false }; do { try await transport.write(data + Data([10])); return true } catch { return false } }
+    private func nesting(of value: Any, depth: Int = 0) -> Int { if depth > limits.maxNesting { return depth }; if let dict = value as? [String: Any] { return dict.values.map { nesting(of: $0, depth: depth + 1) }.max() ?? depth }; if let array = value as? [Any] { return array.map { nesting(of: $0, depth: depth + 1) }.max() ?? depth }; return depth }
+    private func canonical(_ parts: [String]) -> String { parts.map { "\($0.utf8.count):\($0)" }.joined(separator: "|") }
+    private func serializedSize(_ value: [String: Any]) -> Int { (try? JSONSerialization.data(withJSONObject: value).count) ?? 0 }
+    private func activity(status: String) -> SessionActivityKind { switch status.lowercased() { case "completed", "success": .completed; case "failed", "error": .failed; case "interrupted", "cancelled": .stopped; case "waiting": .waiting; default: .working } }
 }

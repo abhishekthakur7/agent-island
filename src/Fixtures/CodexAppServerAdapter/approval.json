@@ -1,1 +1,1 @@
-{"jsonrpc":"2.0","method":"approval/request","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","eventId":"event-approval","sequence":4,"requestId":"rpc-1","approvalId":"opaque-1","kind":"command","deadline":4102444800}}
+{"jsonrpc":"2.0","id":"approval-rpc-1","method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","startedAtMs":1,"approvalId":null}}

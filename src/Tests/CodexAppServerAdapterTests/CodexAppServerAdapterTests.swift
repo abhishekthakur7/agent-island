@@ -6,128 +6,131 @@ import AdapterPort
 import SessionStore
 
 final class CodexAppServerAdapterTests: XCTestCase {
-    private func frame(_ object: [String: Any]) throws -> Data {
-        try JSONSerialization.data(withJSONObject: object) + Data([0x0A])
+    private func frame(_ object: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: object) + Data([10]) }
+    private func adapter(_ port: Port = Port(), attempts: ActionAttemptStore = ActionAttemptStore()) -> CodexAppServerAdapter { CodexAppServerAdapter(intake: port, attempts: attempts, discovery: Discovery(), schemaProbe: Schema()) }
+    private func ready(_ adapter: CodexAppServerAdapter, _ transport: Transport) async throws {
+        guard case .success = await adapter.connectForTesting(ownership: .startedByAgentIsland, transport: transport) else { throw NSError(domain: "AB137", code: 1) }
+        try await adapter.receive(stdout: frame(["jsonrpc": "2.0", "id": "initialize:1", "result": [:]]))
+        let health = await adapter.health(); XCTAssertEqual(health.state, .ready)
     }
 
-    private func ready(_ adapter: CodexAppServerAdapter, transport: Transport) async throws {
-        guard case .success = await adapter.connect(ownership: .startedByAgentIsland, transport: transport, liveSchemaDigest: CodexAppServerContract.schemaDigest) else { throw NSError(domain: "AB137", code: 1) }
-        try await adapter.receive(stdout: frame(["jsonrpc": "2.0", "id": "initialize:1", "result": [:]]))
-        let health = await adapter.health()
-        XCTAssertEqual(health.state, .ready)
-    }
-    func testSchemaRequiresLiveDigestAndNeverUsesHooksAuthority() {
-        XCTAssertFalse(CodexSchemaValidation.validate(manifest: .init(), liveDigest: nil))
-        XCTAssertTrue(CodexSchemaValidation.validate(manifest: .init(), liveDigest: CodexAppServerContract.schemaDigest))
+    func testSchemaIsGeneratedEvidenceNotCallerInputAndHooksStaySeparate() async {
+        XCTAssertFalse(CodexSchemaValidation.validate(manifest: .init(), evidence: nil))
+        XCTAssertTrue(CodexSchemaValidation.validate(manifest: .init(), evidence: .init(executable: .init(path: "/fixture/codex", version: "codex-cli 0.144.6"), digest: CodexAppServerContract.schemaDigest)))
         XCTAssertNotEqual(CodexAppServerContract.productNamespace.rawValue, "codex-cli")
         XCTAssertEqual(CodexAppServerContract.integrationMode, "codex.appServer.childProcessStdio")
+        let failing = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(), schemaProbe: DriftSchema())
+        guard case .failure(.schemaMismatch) = await failing.connectForTesting(ownership: .startedByAgentIsland, transport: Transport()) else { return XCTFail() }
     }
 
-    func testHandshakeIsExactlyOnceAndWrongResponseFails() async {
-        let transport = Transport()
-        let adapter = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery())
-        guard case .success(let epoch) = await adapter.connect(ownership: .startedByAgentIsland, transport: transport, liveSchemaDigest: CodexAppServerContract.schemaDigest) else { return XCTFail() }
-        XCTAssertEqual(epoch, 1)
-        try? await adapter.receive(stdout: frame(["jsonrpc": "2.0", "id": "initialize:1", "result": [:]]))
-        let readyHealth = await adapter.health()
-        XCTAssertEqual(readyHealth.state, .ready)
-        try? await adapter.receive(stdout: frame(["jsonrpc": "2.0", "id": "initialize:1", "result": [:]]))
-        let failedHealth = await adapter.health()
-        let writes = await transport.writes
-        XCTAssertEqual(failedHealth.failure, .wrongHandshake)
-        XCTAssertEqual(writes, 2, "initialize plus exactly one initialized notification")
+    func testHandshakeIsExactlyOnceAndReadyResponsesAreNotHandshakeFailures() async throws {
+        let transport = Transport(); let value = adapter()
+        try await ready(value, transport)
+        let resumeID = await value.resumeThread(threadID: "thread-1", attemptID: "resume")
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": resumeID!, "result": ["thread": ["id": "thread-1"]]]))
+        let id = await value.archiveThread(threadID: "thread-1", attemptID: "archive")
+        XCTAssertNotNil(id)
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": id!, "result": [:]]))
+        let readyHealth = await value.health(); XCTAssertEqual(readyHealth.state, .ready)
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": "initialize:1", "result": [:]]))
+        let failedHealth = await value.health(); XCTAssertEqual(failedHealth.failure, .wrongHandshake)
     }
 
-    func testBoundedFrameAndDisconnectRetireRoutes() async {
-        let transport = Transport()
-        let adapter = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(), limits: .init(maxFrameBytes: 8, maxBufferBytes: 32, maxNesting: 2, maxPendingRequests: 2))
-        _ = await adapter.connect(ownership: .startedByAgentIsland, transport: transport, liveSchemaDigest: CodexAppServerContract.schemaDigest)
-        await adapter.receive(stdout: Data(repeating: 65, count: 9) + Data([10]))
-        let failedHealth = await adapter.health()
-        XCTAssertEqual(failedHealth.failure, .oversizedFrame)
-        await adapter.disconnect()
-        let disconnectedHealth = await adapter.health()
-        XCTAssertEqual(disconnectedHealth.state, .disconnected)
+    func testActualThreadTurnAndItemShapesPreserveOwnershipWithoutSyntheticEventID() async throws {
+        let port = Port(); let transport = Transport(); let value = adapter(port)
+        try await ready(value, transport)
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "method": "thread/started", "params": ["thread": ["id": "thread-1", "status": "active", "updatedAt": 7]]]))
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "method": "turn/started", "params": ["threadId": "thread-1", "turn": ["id": "turn-1", "status": "inProgress", "startedAt": 8]]]))
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "method": "item/completed", "params": ["threadId": "thread-1", "turnId": "turn-1", "completedAtMs": 9, "item": ["id": "item-1", "type": "agentMessage", "text": "protected"]]]))
+        let envelopes = await port.envelopes
+        XCTAssertEqual(envelopes.count, 4)
+        XCTAssertEqual(envelopes[0].family, .sessionDeclared)
+        XCTAssertEqual(envelopes[1].activityKind, .started)
+        XCTAssertEqual(envelopes[2].ownership?.nativeTurnID, "turn-1")
+        XCTAssertEqual(envelopes[3].family, .sessionActivity)
+        XCTAssertEqual(envelopes[3].classification, .interactionContent)
     }
 
-    func testPrematureAndMalformedFramesFailClosed() async throws {
-        let early = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery())
-        await early.receive(stdout: try frame(["jsonrpc": "2.0", "method": "thread/started", "params": [:]]))
-        let earlyHealth = await early.health()
-        XCTAssertEqual(earlyHealth.failure, .prematureMessage)
-
-        let transport = Transport(); let malformed = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery())
-        _ = await malformed.connect(ownership: .startedByAgentIsland, transport: transport, liveSchemaDigest: CodexAppServerContract.schemaDigest)
-        await malformed.receive(stdout: Data("not-json\n".utf8))
-        let malformedHealth = await malformed.health()
-        XCTAssertEqual(malformedHealth.failure, .malformedJSONRPC)
-    }
-
-    func testReconnectUsesNewEpochAndRequiresIndependentHandshake() async throws {
-        let transport = Transport(); let adapter = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery())
-        try await ready(adapter, transport: transport)
-        await adapter.disconnect()
-        guard case .success(let second) = await adapter.connect(ownership: .explicitlyResumedByAgentIsland, transport: transport, liveSchemaDigest: CodexAppServerContract.schemaDigest) else { return XCTFail() }
-        XCTAssertEqual(second, 2)
-        let initializingHealth = await adapter.health()
-        XCTAssertEqual(initializingHealth.state, .initializing)
-        try await adapter.receive(stdout: frame(["jsonrpc": "2.0", "id": "initialize:2", "result": [:]]))
-        let readyHealth = await adapter.health()
-        XCTAssertEqual(readyHealth.state, .ready)
-    }
-
-    func testSchemaDoesNotOfferInventedApprovalOrExperimentalControls() {
-        let manifest = CodexSchemaManifest()
-        XCTAssertFalse(manifest.stableMethods.contains("approval/respond"))
-        XCTAssertFalse(manifest.stableMethods.contains("turn/input"))
-        XCTAssertFalse(manifest.stableNotificationMethods.contains("item/plan/delta"))
-        XCTAssertFalse(manifest.stableMethods.contains("experimentalFeature/enablement/set"))
-    }
-
-    func testNotificationWithoutExactNativeEventIdentityIsUnresolvedNotCompletion() async throws {
-        let transport = Transport(); let port = Port(); let adapter = CodexAppServerAdapter(intake: port, attempts: ActionAttemptStore(), discovery: Discovery())
-        try await ready(adapter, transport: transport)
-        try await adapter.receive(stdout: frame(["jsonrpc": "2.0", "method": "turn/completed", "params": ["threadId": "thread", "turnId": "turn"]]))
-        let health = await adapter.health()
+    func testPlanAndOutputAreProtectedActivityNotCompletionAndUnknownNotificationOnlyDegrades() async throws {
+        let port = Port(); let transport = Transport(); let value = adapter(port)
+        try await ready(value, transport)
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "method": "turn/plan/updated", "params": ["threadId": "thread", "turnId": "turn", "plan": [["step": "secret"]]]]))
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "method": "future/unknown", "params": [:]]))
+        let envelopes = await port.envelopes; let health = await value.health()
+        XCTAssertEqual(envelopes.first?.classification, .interactionContent)
         XCTAssertTrue(health.unresolvedGap)
-        let deliveries = await port.deliveries
-        XCTAssertEqual(deliveries, 0, "missing source identity cannot manufacture completion")
+        XCTAssertEqual(health.state, .ready)
     }
 
-    func testApprovalWithoutDocumentedDeadlineStaysUnavailableAndEmitsNoResponse() async throws {
-        let transport = Transport(); let adapter = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery())
-        try await ready(adapter, transport: transport)
-        try await adapter.receive(stdout: frame(["jsonrpc": "2.0", "id": "server-request", "method": "item/commandExecution/requestApproval", "params": ["threadId": "thread", "turnId": "turn", "itemId": "item", "startedAtMs": 1]]))
-        let health = await adapter.health()
-        XCTAssertTrue(health.unresolvedGap)
-        guard case .rejected = await adapter.respondApproval(tuple: "missing", allow: true, attemptID: "attempt") else { return XCTFail("unproven approval must not dispatch") }
+    func testControlsRequireDirectThreadAndAreBoundedAndReconnectInvalidates() async throws {
+        let transport = Transport(); let value = adapter()
+        try await ready(value, transport)
+        let missingOwner = await value.interruptTurn(threadID: "", turnID: "turn", attemptID: "missing")
+        let unowned = await value.interruptTurn(threadID: "thread", turnID: "turn", attemptID: "unowned")
+        let resumeID = await value.resumeThread(threadID: "thread", attemptID: "resume")
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": resumeID!, "result": ["thread": ["id": "thread"]]]))
+        let accepted = await value.interruptTurn(threadID: "thread", turnID: "turn", attemptID: "interrupt")
+        XCTAssertNil(missingOwner)
+        XCTAssertNil(unowned)
+        XCTAssertNotNil(resumeID)
+        XCTAssertNotNil(accepted)
+        await value.disconnect()
+        let afterDisconnect = await value.archiveThread(threadID: "thread", attemptID: "after"); let disconnected = await value.health()
+        XCTAssertNil(afterDisconnect)
+        XCTAssertEqual(disconnected.state, .disconnected)
+    }
+
+    func testControlAttemptIsSingleWriteAndResponseIsOnlyAcceptance() async throws {
+        let attempts = ActionAttemptStore(); let transport = Transport()
+        let value = CodexAppServerAdapter(intake: Port(), attempts: attempts, discovery: Discovery(), schemaProbe: Schema())
+        try await ready(value, transport)
+        let resume = await value.resumeThread(threadID: "thread", attemptID: "resume")
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": resume!, "result": ["thread": ["id": "thread"]]]))
+        let interrupt = await value.interruptTurn(threadID: "thread", turnID: "turn", attemptID: "interrupt")
+        XCTAssertNotNil(interrupt)
+        let duplicate = await value.interruptTurn(threadID: "thread", turnID: "turn", attemptID: "interrupt")
+        XCTAssertNil(duplicate)
+        let pending = await attempts.attempt(for: "interrupt")
+        XCTAssertEqual(pending?.outcome, .dispatching)
+        XCTAssertEqual(pending?.dispatchCount, 1)
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": interrupt!, "result": [:]]))
+        let accepted = await attempts.attempt(for: "interrupt")
+        XCTAssertEqual(accepted?.outcome, .acceptedByProduct)
         let writes = await transport.writes
-        XCTAssertEqual(writes, 2, "only initialize and initialized are allowed")
+        XCTAssertEqual(writes, 4)
     }
 
-    func testDiscoveryAndSchemaFailuresDoNotCreateLiveConnection() async {
-        let unavailable = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: UnavailableCodexExecutableDiscovery())
-        guard case .failure(.executableUnavailable) = await unavailable.connect(ownership: .startedByAgentIsland, transport: Transport(), liveSchemaDigest: CodexAppServerContract.schemaDigest) else { return XCTFail() }
-        let mismatch = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery())
-        guard case .failure(.schemaMismatch) = await mismatch.connect(ownership: .startedByAgentIsland, transport: Transport(), liveSchemaDigest: "wrong") else { return XCTFail() }
+    func testSourceApprovalUsesSameJSONRPCIDAndOneUseLease() async throws {
+        let attempts = ActionAttemptStore(); let transport = Transport()
+        let value = CodexAppServerAdapter(intake: Port(), attempts: attempts, discovery: Discovery(), schemaProbe: Schema())
+        try await ready(value, transport)
+        try await value.receive(stdout: frame(["jsonrpc": "2.0", "id": "approval-rpc", "method": "item/commandExecution/requestApproval", "params": ["threadId": "thread", "turnId": "turn", "itemId": "item", "startedAtMs": 1]]))
+        let routes = await value.approvalRouteIDs()
+        let route = try XCTUnwrap(routes.first)
+        guard case .dispatched(let dispatched) = await value.respondApproval(route: route, allow: true, attemptID: "approval") else { return XCTFail() }
+        XCTAssertEqual(dispatched.outcome, .acceptedByProduct)
+        guard case .rejected = await value.respondApproval(route: route, allow: true, attemptID: "approval") else { return XCTFail("route is one use") }
+        let writes = await transport.writes
+        XCTAssertEqual(writes, 3)
+    }
+
+    func testBoundsAndPrematureFramesFailClosed() async throws {
+        let value = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(), schemaProbe: Schema(), limits: .init(maxFrameBytes: 8, maxBufferBytes: 32, maxNesting: 2, maxPendingRequests: 2))
+        _ = await value.connectForTesting(ownership: .startedByAgentIsland, transport: Transport())
+        await value.receive(stdout: Data(repeating: 65, count: 9) + Data([10]))
+        let failed = await value.health(); XCTAssertEqual(failed.failure, .oversizedFrame)
+        let early = adapter(); await early.receive(stdout: try frame(["jsonrpc": "2.0", "method": "thread/started", "params": [:]]))
+        let premature = await early.health(); XCTAssertEqual(premature.failure, .prematureMessage)
     }
 }
 
-private actor Discovery: CodexExecutableDiscovering {
-    func discoverCodexExecutable() async -> CodexExecutableEvidence? { .init(path: "/fixture/codex", version: "1.0.0") }
-}
-
-private actor Transport: CodexAppServerTransport {
-    var writes = 0
-    func write(_ bytes: Data) async throws { writes += 1 }
-    func close() async {}
-}
-
+private actor Discovery: CodexExecutableDiscovering { func discoverCodexExecutable() async -> CodexExecutableEvidence? { .init(path: "/fixture/codex", version: "codex-cli 0.144.6") } }
+private actor Schema: CodexSchemaProbing { func generateSchema(for executable: CodexExecutableEvidence) async -> CodexSchemaEvidence? { .init(executable: executable, digest: CodexAppServerContract.schemaDigest) } }
+private actor DriftSchema: CodexSchemaProbing { func generateSchema(for executable: CodexExecutableEvidence) async -> CodexSchemaEvidence? { .init(executable: executable, digest: "drift") } }
+private actor Transport: CodexAppServerTransport { var writes = 0; func write(_ bytes: Data) async throws { writes += 1 }; func close() async {} }
 private actor Port: AdapterIntakePort {
-    var deliveries = 0
-    func negotiate(_ request: NegotiationRequest) async -> NegotiationOutcome {
-        SessionDomainNegotiator.negotiate(request, id: .init("fixture-snapshot"), negotiatedAt: .init(timeIntervalSince1970: 1))
-    }
-    func deliver(_ envelope: RawEventEnvelope) async -> IntakeOutcome { deliveries += 1; return .committed(ledgerRevision: Int64(deliveries)) }
+    var envelopes: [RawEventEnvelope] = []
+    func negotiate(_ request: NegotiationRequest) async -> NegotiationOutcome { SessionDomainNegotiator.negotiate(request, id: .init("fixture-snapshot"), negotiatedAt: .init(timeIntervalSince1970: 1)) }
+    func deliver(_ envelope: RawEventEnvelope) async -> IntakeOutcome { envelopes.append(envelope); return .committed(ledgerRevision: Int64(envelopes.count)) }
     func reportObservationBoundary(_ report: ObservationBoundaryReport) async -> IntakeOutcome { .rejected(.unknownNegotiationSnapshot) }
 }
