@@ -214,7 +214,7 @@ public enum UserDataExportWriter {
         let normalized = selection.normalized
         guard normalized.schema == UserDataExportSelection.schemaVersion, normalized.dateScope.isValid, !normalized.sessions.isEmpty else { throw UserDataExportError.invalidSelection }
         let selected = filteredRecords(normalized, from: verifiedRecords)
-        let digest = selectionDigest(normalized, records: selected)
+        let digest = try selectionDigest(normalized, records: selected)
         return UserDataExportPreview(selection: normalized, selectedSessionCount: normalized.sessions.count, verifiedRecordCount: selected.count, previewDigest: digest)
     }
 
@@ -269,19 +269,50 @@ public enum UserDataExportWriter {
         }
     }
 
-    private static func selectionDigest(_ selection: UserDataExportSelection, records: [VerifiedUserDataRecord]) -> String {
-        // A confirmation is compared with a freshly rebuilt preview. Encoding
-        // a Set through a generic encoder makes that digest depend on process
-        // hash iteration order, so construct its small, order-defined input
-        // explicitly instead.
-        let date: (Date?) -> String = { value in
-            value.map { String(format: "%.6f", $0.timeIntervalSince1970) } ?? "-"
+    private static func selectionDigest(_ selection: UserDataExportSelection, records: [VerifiedUserDataRecord]) throws -> String {
+        // Product-native IDs are opaque and may contain delimiter/control
+        // characters. Confirmation therefore hashes a canonical structured
+        // payload, never a delimiter-concatenated string. Every collection is
+        // ordered before encoding so Set hash iteration cannot affect it.
+        struct Identity: Codable {
+            let productNamespace: String
+            let nativeSessionID: String
         }
-        let sessions = selection.sessions.map { "\($0.productNamespace.rawValue):\($0.nativeSessionID.rawValue)" }.joined(separator: "|")
-        let classes = selection.dataClasses.map(\.rawValue).sorted().joined(separator: "|")
-        let selectionBytes = Data("\(selection.schema)\u{001F}\(selection.format.rawValue)\u{001F}\(selection.includeInteractionContent)\u{001F}\(date(selection.dateScope.from))\u{001F}\(date(selection.dateScope.through))\u{001F}\(sessions)\u{001F}\(classes)".utf8)
-        let recordIDs = records.map { "\($0.identity.productNamespace.rawValue):\($0.identity.nativeSessionID.rawValue):\($0.facts.count)" }.joined(separator: "|")
-        return ExactEntryDigest.value(selectionBytes + Data(recordIDs.utf8))
+        struct Record: Codable {
+            let identity: Identity
+            let factCount: Int
+        }
+        struct Payload: Codable {
+            let schema: Int
+            let format: String
+            let includeInteractionContent: Bool
+            let dateScopeFrom: Date?
+            let dateScopeThrough: Date?
+            let sessions: [Identity]
+            let dataClasses: [String]
+            let records: [Record]
+        }
+        let identity: (AgentSessionIdentity) -> Identity = {
+            Identity(productNamespace: $0.productNamespace.rawValue, nativeSessionID: $0.nativeSessionID.rawValue)
+        }
+        let sortedRecords = records.sorted {
+            let lhs = ($0.identity.productNamespace.rawValue, $0.identity.nativeSessionID.rawValue, $0.facts.count)
+            let rhs = ($1.identity.productNamespace.rawValue, $1.identity.nativeSessionID.rawValue, $1.facts.count)
+            return lhs < rhs
+        }.map { Record(identity: identity($0.identity), factCount: $0.facts.count) }
+        let payload = Payload(
+            schema: selection.schema,
+            format: selection.format.rawValue,
+            includeInteractionContent: selection.includeInteractionContent,
+            dateScopeFrom: selection.dateScope.from,
+            dateScopeThrough: selection.dateScope.through,
+            sessions: selection.sessions.map(identity),
+            dataClasses: selection.dataClasses.map(\.rawValue).sorted(),
+            records: sortedRecords
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return ExactEntryDigest.value(try encoder.encode(payload))
     }
 
     private static func filteredRecords(_ selection: UserDataExportSelection, from records: [VerifiedUserDataRecord]) -> [VerifiedUserDataRecord] {

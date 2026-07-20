@@ -172,11 +172,11 @@ public final class ClaudeUnixDomainHookIPCTransport: ClaudeHookIPCTransport, @un
         }
         guard let kind = try? FileManager.default.attributesOfItem(atPath: endpoint.path)[.type] as? FileAttributeType, kind == .typeSocket else { throw ClaudeHookHelperError.endpointUnavailable }
         let connection = NWConnection(to: .unix(path: endpoint.path), using: .tcp)
-        let completion = ClaudeIPCCompletion(connection: connection)
+        let completion = ClaudeIPCCompletionGate(onFinish: { connection.cancel() })
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 completion.install(continuation)
-                completion.timeout(after: timeout)
+                completion.armTimeout(after: timeout)
                 connection.stateUpdateHandler = { state in
                     switch state {
                     case .ready:
@@ -199,37 +199,48 @@ public final class ClaudeUnixDomainHookIPCTransport: ClaudeHookIPCTransport, @un
 
 /// Network callbacks may report ready, send completion, failure, cancellation,
 /// and timeout concurrently. This one-shot gate is the only continuation owner.
-private final class ClaudeIPCCompletion: @unchecked Sendable {
+final class ClaudeIPCCompletionGate: @unchecked Sendable {
     private let lock = NSLock()
-    private let connection: NWConnection
+    private let onFinish: @Sendable () -> Void
     private var continuation: CheckedContinuation<Void, Error>?
     private var timeoutTask: Task<Void, Never>?
+    private var terminalResult: Result<Void, Error>?
 
-    init(connection: NWConnection) { self.connection = connection }
+    init(onFinish: @escaping @Sendable () -> Void = {}) { self.onFinish = onFinish }
 
     func install(_ continuation: CheckedContinuation<Void, Error>) {
-        lock.lock(); defer { lock.unlock() }
-        self.continuation = continuation
+        lock.lock()
+        let result = terminalResult
+        if result == nil { self.continuation = continuation }
+        lock.unlock()
+        if let result {
+            continuation.resume(with: result)
+        }
     }
 
-    func timeout(after seconds: TimeInterval) {
-        timeoutTask = Task { [weak self] in
+    func armTimeout(after seconds: TimeInterval) {
+        lock.lock()
+        guard terminalResult == nil, continuation != nil, timeoutTask == nil else { lock.unlock(); return }
+        let task = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             self?.finish(.failure(ClaudeHookHelperError.transportTimeout))
         }
+        timeoutTask = task
+        lock.unlock()
     }
 
     func finish(_ result: Result<Void, Error>) {
         lock.lock()
+        guard terminalResult == nil else { lock.unlock(); return }
+        terminalResult = result
         let continuation = self.continuation
         self.continuation = nil
         let timeoutTask = self.timeoutTask
         self.timeoutTask = nil
         lock.unlock()
-        guard let continuation else { return }
         timeoutTask?.cancel()
-        connection.cancel()
-        continuation.resume(with: result)
+        onFinish()
+        continuation?.resume(with: result)
     }
 }
 #endif
@@ -259,7 +270,10 @@ public struct ClaudeHookHelperRuntime: Sendable {
         guard authenticator.isUsable else { throw ClaudeHookHelperError.emptyAuthenticator }
         guard stdin.count <= SessionDomainValidator.maxPayloadBytes else { throw ClaudeHookHelperError.oversizedStdin }
         guard (try? ClaudeHookEnvelope.decode(stdin)) != nil else { throw ClaudeHookHelperError.malformedJSON }
-        guard case .success = endpoint.validate() else { throw ClaudeHookHelperError.endpointUntrusted }
+        switch endpoint.validate() {
+        case .success: break
+        case .failure(let error): throw error
+        }
         let nonce = UUID().uuidString
         let message = ClaudeHookIPCMessage(installationID: installationID, helperID: helperID, nonce: nonce, payload: stdin, issuedAt: now, authenticator: authenticator)
         let frame = try ClaudeHookIPCFrame.encode(message)

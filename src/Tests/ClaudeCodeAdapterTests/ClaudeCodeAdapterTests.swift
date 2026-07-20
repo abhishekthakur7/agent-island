@@ -127,6 +127,73 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertEqual(String(data: ExactEntryEditor.snapshot(at: config).content ?? Data(), encoding: .utf8), original)
     }
 
+    func testJSONRemovalHandlesCommentedArrayPositionsOrFailsWithoutMutation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-json-removal-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.jsonc")
+        let entry = ClaudeJSONHookEditor.entry(helperPath: root.appendingPathComponent("helper"))
+        let rendered = entry.selector.renderedLine
+        let fixtures: [(String, String, Bool)] = [
+            ("[\r\n  /* before */\r\n  \(rendered) /* after */,\r\n]", "[\r\n  /* before */\r\n   /* after */\r\n]", true),
+            ("[\(rendered), /* keep */ {\"upstream\":1}]", "[ /* keep */ {\"upstream\":1}]", true),
+            ("[{\"before\":1} /* keep */, \(rendered), /* keep */ {\"after\":2}]", "[{\"before\":1} /* keep */,  /* keep */ {\"after\":2}]", true),
+            ("[{\"before\":1}, /* before owned */ \(rendered) /* tail */]", "[{\"before\":1} /* before owned */  /* tail */]", true),
+            ("[\(rendered) /* adjacent to comma */, {\"upstream\":1}]", "[ /* adjacent to comma */ {\"upstream\":1}]", true)
+        ]
+        for (array, expected, supported) in fixtures {
+            let source = "{\r\n  \"hooks\": {\r\n    \"SessionStart\": \(array)\r\n  }\r\n}\r\n"
+            try Data(source.utf8).write(to: config)
+            let snapshot = ExactEntryEditor.snapshot(at: config)
+            let receipt = ExactEntryReceipt(selector: entry.selector, path: config.path, sourceFingerprint: snapshot.fingerprint)
+            if supported {
+                _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: .sessionStart, at: config, expected: snapshot.fingerprint)
+                let actual = try XCTUnwrap(String(data: ExactEntryEditor.snapshot(at: config).content ?? Data(), encoding: .utf8))
+                XCTAssertEqual(actual, "{\r\n  \"hooks\": {\r\n    \"SessionStart\": \(expected)\r\n  }\r\n}\r\n")
+            }
+        }
+        let ambiguous = "{\"hooks\":{\"SessionStart\":[\(rendered),\(rendered)]}}"
+        try Data(ambiguous.utf8).write(to: config)
+        let snapshot = ExactEntryEditor.snapshot(at: config)
+        let receipt = ExactEntryReceipt(selector: entry.selector, path: config.path, sourceFingerprint: snapshot.fingerprint)
+        XCTAssertThrowsError(try ClaudeJSONHookEditor.remove(receipt: receipt, event: .sessionStart, at: config, expected: snapshot.fingerprint)) { error in
+            XCTAssertEqual(error as? ClaudeJSONHookEditor.EditorError, .ambiguous)
+        }
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, snapshot.content)
+    }
+
+    func testJSONExactEntryRoundTripPreservesMode() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-json-mode-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.jsonc")
+        let original = "{\r\n  \"hooks\": {\r\n    \"SessionStart\": [\r\n      {\"type\":\"command\",\"command\":\"upstream\"}, // trailing\r\n    ]\r\n  }\r\n}\r\n"
+        try Data(original.utf8).write(to: config)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o640)], ofItemAtPath: config.path)
+        let entry = ClaudeJSONHookEditor.entry(helperPath: root.appendingPathComponent("helper"))
+        let receipt = try ClaudeJSONHookEditor.add(entry: entry, at: config, expected: ExactEntryEditor.snapshot(at: config).fingerprint)
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: config).fingerprint.permissionBits, 0o640)
+        _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: .sessionStart, at: config, expected: ExactEntryEditor.snapshot(at: config).fingerprint)
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data(original.utf8))
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: config).fingerprint.permissionBits, 0o640)
+    }
+
+    func testJSONInstallationCreatesPrivateExecutableHelper() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-helper-mode-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.json")
+        try Data("{\"hooks\":{}}".utf8).write(to: config)
+        let helper = root.appendingPathComponent("helper")
+        let coordinator = ClaudeCodeInstallationCoordinator()
+        let negotiated = snapshot()
+        let plan = coordinator.makePlan(id: "private-helper", installationID: IntegrationInstanceID("installation"), scope: IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config), helperPath: helper, snapshot: negotiated)
+        let approval = try coordinator.approve(plan, personIdentifier: "person")
+        let result = coordinator.apply(approval, currentSnapshot: negotiated, helperPath: helper)
+        XCTAssertEqual(result.status, .applied)
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: helper).fingerprint.permissionBits, 0o700)
+    }
+
     func testJSONEditorRejectsAmbiguousAndInvalidSourcesWithoutMutation() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-json-invalid-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -182,6 +249,45 @@ final class ClaudeCodeAdapterTests: XCTestCase {
             XCTAssertEqual(error as? ClaudeHookHelperError, .credentialMissing)
         }
     }
+
+    func testHelperForwardPropagatesEndpointAvailabilityFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-missing-endpoint-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runtime = ClaudeHookHelperRuntime(installationID: IntegrationInstanceID("i"), helperID: "h", authenticator: ClaudeIPCAuthenticator(secret: "s"), endpoint: ClaudeLocalEndpoint(path: root.appendingPathComponent("missing"), appOwnedRoot: root))
+        do {
+            _ = try await runtime.forward(stdin: Data("{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s\",\"event_id\":\"e\"}".utf8), transport: ClaudeInMemoryHookIPCTransport())
+            XCTFail("missing endpoint must fail")
+        } catch {
+            XCTAssertEqual(error as? ClaudeHookHelperError, .endpointUnavailable)
+        }
+    }
+
+    #if canImport(Network)
+    func testIPCCompletionGateIsOneShotAcrossEarlyFinishAndCompletion() async throws {
+        let early = ClaudeIPCCompletionGate()
+        early.finish(.failure(ClaudeHookHelperError.transportFailure))
+        early.armTimeout(after: 0)
+        do {
+            try await awaitGate(early)
+            XCTFail("early failure must resume the later-installed continuation")
+        } catch {
+            XCTAssertEqual(error as? ClaudeHookHelperError, .transportFailure)
+        }
+
+        let gate = ClaudeIPCCompletionGate()
+        let waiter = Task { try await self.awaitGate(gate) }
+        await Task.yield()
+        gate.armTimeout(after: 60)
+        gate.finish(.success(()))
+        gate.finish(.failure(ClaudeHookHelperError.transportTimeout))
+        try await waiter.value
+    }
+
+    private func awaitGate(_ gate: ClaudeIPCCompletionGate) async throws {
+        try await withCheckedThrowingContinuation { continuation in gate.install(continuation) }
+    }
+    #endif
 
     func testAdapterIntakeRejectsAuthCrossOwnerReplayAndRetainsIPCDegradation() async {
         let runtime = ApplicationRuntime(store: SessionStore(), idGenerator: { "generated" }, clock: { Date(timeIntervalSince1970: 400) })

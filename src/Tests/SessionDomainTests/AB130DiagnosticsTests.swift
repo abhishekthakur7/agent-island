@@ -72,6 +72,30 @@ final class AB130DiagnosticsTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: artifacts.integrityManifest.path))
     }
 
+    func testExportPreviewDigestIsCanonicalAndCannotCollideOnNativeIDDelimiters() throws {
+        let first = AgentSessionIdentity(productNamespace: ProductNamespace("product:part"), nativeSessionID: NativeSessionID("session\u{001F}|part"))
+        let second = AgentSessionIdentity(productNamespace: ProductNamespace("product"), nativeSessionID: NativeSessionID("part:session\u{001F}|part"))
+        let selection = UserDataExportSelection(
+            sessions: [first],
+            dateScope: UserDataExportDateScope(from: fixed, through: fixed),
+            dataClasses: [.sessionHistory, .sessionFacts]
+        )
+        let repeated = UserDataExportSelection(
+            sessions: [first],
+            dateScope: UserDataExportDateScope(from: fixed, through: fixed),
+            dataClasses: [.sessionFacts, .sessionHistory]
+        )
+        let firstPreview = try UserDataExportWriter.preview(selection: selection, verifiedRecords: [VerifiedUserDataRecord(identity: first)], at: fixed)
+        let repeatedPreview = try UserDataExportWriter.preview(selection: repeated, verifiedRecords: [VerifiedUserDataRecord(identity: first)], at: fixed)
+        let secondPreview = try UserDataExportWriter.preview(
+            selection: UserDataExportSelection(sessions: [second], dateScope: UserDataExportDateScope(from: fixed, through: fixed), dataClasses: [.sessionFacts, .sessionHistory]),
+            verifiedRecords: [VerifiedUserDataRecord(identity: second)],
+            at: fixed
+        )
+        XCTAssertEqual(firstPreview.previewDigest, repeatedPreview.previewDigest)
+        XCTAssertNotEqual(firstPreview.previewDigest, secondPreview.previewDigest)
+    }
+
     func testMaintenanceScopeConfirmationStalePreviewAndResidualHonesty() {
         let manifest = MaintenanceManifestScope(manifestID: "manifest", exactEntryCount: 1, ownedArtifactCount: 1, lifecycle: .drifted, residualKnown: true)
         var state = MaintenanceState()

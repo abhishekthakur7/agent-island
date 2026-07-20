@@ -117,10 +117,11 @@ public enum ClaudeJSONHookEditor {
         guard candidates.count == 1, let candidate = candidates.first else { throw candidates.isEmpty ? EditorError.notManifestProven : EditorError.ambiguous }
         let actualDigest = ExactEntryDigest.value(Data(parsed.raw(candidate).utf8))
         guard actualDigest == receipt.entryFingerprint.rawValue else { throw EditorError.notManifestProven }
-        let next = parsed.removing(candidate, from: array)
+        let next = try parsed.removing(candidate, from: array, jsonc: ext == "jsonc")
         try write(next, to: path, preserving: source)
         let verified = ExactEntryEditor.snapshot(at: path)
-        guard inspect(at: path, entry: Entry(selector: receipt.selector, event: event, helperPath: "")).markerMatches == 0 else { throw EditorError.verificationFailed }
+        let check = inspect(at: path, entry: Entry(selector: receipt.selector, event: event, helperPath: ""))
+        guard check.supported, check.markerMatches == 0 else { throw EditorError.verificationFailed }
         return ExactEntryReceipt(selector: receipt.selector, path: path.path, sourceFingerprint: verified.fingerprint, createdAt: now)
     }
 
@@ -139,8 +140,14 @@ public enum ClaudeJSONHookEditor {
         let temporary = parent.appendingPathComponent(".agent-island-claude-hooks-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try data.write(to: temporary, options: .atomic)
-        if let bits = source.fingerprint.permissionBits { try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: bits)], ofItemAtPath: temporary.path) }
+        if let bits = source.fingerprint.permissionBits {
+            try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: bits)], ofItemAtPath: temporary.path)
+            guard ExactEntryEditor.snapshot(at: temporary).fingerprint.permissionBits == bits else { throw EditorError.verificationFailed }
+        }
         if FileManager.default.fileExists(atPath: destination.path) { _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary) } else { try FileManager.default.moveItem(at: temporary, to: destination) }
+        if let bits = source.fingerprint.permissionBits {
+            guard ExactEntryEditor.snapshot(at: destination).fingerprint.permissionBits == bits else { throw EditorError.verificationFailed }
+        }
     }
 }
 
@@ -224,15 +231,25 @@ private struct ParsedSource: @unchecked Sendable {
         return insert(rendered, before: close, separator: object.members.isEmpty ? "" : ",")
     }
 
-    func removing(_ node: JSONNode, from container: JSONNode) -> Data {
-        // Remove only the value and one comma. Any whitespace/comments between
-        // the value and comma are separate ranges and therefore survive.
-        var ranges: [(Int, Int)] = [(node.start, node.end)]
-        if let comma = token(after: node.end), comma.kind.isComma { ranges.append((comma.start, comma.end)) }
-        else if let comma = token(before: node.start), comma.kind.isComma { ranges.append((comma.start, comma.end)) }
-        var result = data
-        for (start, end) in ranges.sorted(by: { $0.0 > $1.0 }) { result.removeSubrange(start..<end) }
-        return result
+    func removing(_ node: JSONNode, from container: JSONNode, jsonc: Bool) throws -> Data {
+        // Comments are deliberately absent from tokens. Try each syntactically
+        // meaningful separator ownership choice, retaining every non-entry
+        // byte, and accept only a fully reparsable result. If comments make
+        // neither lossless choice representable, fail before touching disk.
+        var candidates: [[(Int, Int)]] = []
+        if let comma = token(after: node.end), comma.kind.isComma {
+            candidates.append([(node.start, node.end), (comma.start, comma.end)])
+        }
+        if let comma = token(before: node.start), comma.kind.isComma {
+            candidates.append([(comma.start, comma.end), (node.start, node.end)])
+        }
+        if candidates.isEmpty { candidates.append([(node.start, node.end)]) }
+        for ranges in candidates {
+            var result = data
+            for (start, end) in ranges.sorted(by: { $0.0 > $1.0 }) { result.removeSubrange(start..<end) }
+            if (try? ParsedSource(data: result, jsonc: jsonc)) != nil { return result }
+        }
+        throw ClaudeJSONHookEditor.EditorError.unsupported
     }
 
     private func insert(_ rendered: String, before offset: Int, separator: String) -> Data {

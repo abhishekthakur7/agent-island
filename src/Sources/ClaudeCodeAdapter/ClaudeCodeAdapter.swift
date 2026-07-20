@@ -694,13 +694,17 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
         guard supportsLosslessHookSource(URL(fileURLWithPath: approval.plan.sourcePath)) else { return IntegrationInstallationApplyResult(status: .blocked, reason: .unsupported) }
         let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: approval.plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
         let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
+        let helperBefore = ExactEntryEditor.snapshot(at: helperPath)
+        guard helperBefore.symlinkTarget == nil else { return IntegrationInstallationApplyResult(status: .blocked, reason: .symlinkChanged) }
         let existed = FileManager.default.fileExists(atPath: helperPath.path)
         if existed {
-            let helperSnapshot = ExactEntryEditor.snapshot(at: helperPath)
-            guard helperSnapshot.symlinkTarget == nil, helperSnapshot.fingerprint.content == helper.fingerprint, (helperSnapshot.fingerprint.permissionBits ?? 0) & 0o077 == 0 else { return IntegrationInstallationApplyResult(status: .blocked, reason: .sourceChanged) }
+            guard helperBefore.fingerprint.content == helper.fingerprint, helperBefore.fingerprint.permissionBits == 0o700 else { return IntegrationInstallationApplyResult(status: .blocked, reason: .sourceChanged) }
         } else {
             guard FileManager.default.fileExists(atPath: helperPath.deletingLastPathComponent().path) else { return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable) }
-            do { try bootstrap.write(to: helperPath, options: [.atomic]); try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: helperPath.path) } catch { return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable) }
+            do { try writePrivateHelper(bootstrap, to: helperPath) } catch {
+                try? FileManager.default.removeItem(at: helperPath)
+                return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable)
+            }
         }
         let result = coordinator.apply(approval, currentSnapshot: currentSnapshot, policy: policy, probe: { ExactEntryEditor.snapshot(at: helperPath).fingerprint.content == helper.fingerprint }, now: now)
         if result.manifest == nil && !existed { try? FileManager.default.removeItem(at: helperPath) }
@@ -767,12 +771,11 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             let helperSource = ExactEntryEditor.snapshot(at: helperPath)
             if helperSource.symlinkTarget != nil { throw ClaudeJSONHookEditor.EditorError.symlink }
             if helperExisted {
-                guard helperSource.fingerprint.content == plan.artifacts[0].fingerprint, (helperSource.fingerprint.permissionBits ?? 0) & 0o077 == 0 else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
+                guard helperSource.fingerprint.content == plan.artifacts[0].fingerprint, helperSource.fingerprint.permissionBits == 0o700 else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
             } else {
                 guard FileManager.default.fileExists(atPath: helperPath.deletingLastPathComponent().path) else { throw ClaudeJSONHookEditor.EditorError.unavailable }
                 let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
-                try bootstrap.write(to: helperPath, options: .atomic)
-                try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: helperPath.path)
+                try writePrivateHelper(bootstrap, to: helperPath)
             }
         } catch let error as ClaudeJSONHookEditor.EditorError {
             rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
@@ -798,6 +801,18 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             guard let removed = try? ClaudeJSONHookEditor.remove(receipt: item.receipt, event: item.event, at: URL(fileURLWithPath: sourcePath), expected: current, now: now) else { continue }
             current = removed.sourceFingerprint
         }
+    }
+
+    private func writePrivateHelper(_ bootstrap: Data, to helperPath: URL) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: helperPath.deletingLastPathComponent().path) else { throw ClaudeJSONHookEditor.EditorError.unavailable }
+        guard ExactEntryEditor.snapshot(at: helperPath).symlinkTarget == nil else { throw ClaudeJSONHookEditor.EditorError.symlink }
+        try bootstrap.write(to: helperPath, options: [.atomic])
+        try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: helperPath.path)
+        let snapshot = ExactEntryEditor.snapshot(at: helperPath)
+        guard snapshot.symlinkTarget == nil,
+              snapshot.fingerprint.content == ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)),
+              snapshot.fingerprint.permissionBits == 0o700 else { throw ClaudeJSONHookEditor.EditorError.verificationFailed }
     }
 
     private func removeJSON(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date) -> OwnershipManifestRemovalReport {
