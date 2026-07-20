@@ -40,7 +40,17 @@ actor LaunchIntegrationAutoInstaller {
 
     func start() {
         guard launchTask == nil, !stopping else { return }
-        launchTask = Task { await runOnce() }
+        launchTask = Task { _ = await runOnce() }
+    }
+
+    /// Person-initiated re-run of the same bounded, fail-closed install pass.
+    /// Identical pipeline to launch — including the code-signature identity
+    /// gate — so it never installs into an unverifiable Product; it only runs
+    /// on explicit request instead of at launch, and returns the per-product
+    /// outcome so a person-facing surface can show it. `applicationSupport`
+    /// overrides the durable-state root for isolated verification.
+    func installOnRequest(applicationSupport: URL? = nil) async -> [AtlasIntegrationKind: LaunchInstallationReport] {
+        await runOnce(applicationSupport: applicationSupport)
     }
 
     func stop() {
@@ -50,9 +60,11 @@ actor LaunchIntegrationAutoInstaller {
         observations.stopAll()
     }
 
-    private func runOnce() async {
+    @discardableResult
+    private func runOnce(applicationSupport: URL? = nil) async -> [AtlasIntegrationKind: LaunchInstallationReport] {
+        var reports: [AtlasIntegrationKind: LaunchInstallationReport] = [:]
         do {
-            let store = try DurableInstallationStore()
+            let store = try DurableInstallationStore(applicationSupportDirectory: applicationSupport)
             // Keep the descriptor alive across every async phase. A second
             // app process cannot interleave recovery, bootstrap, or writes.
             let processLock = try DurableInstallationLock(url: store.directory.appendingPathComponent(".installation.lock"))
@@ -60,36 +72,37 @@ actor LaunchIntegrationAutoInstaller {
             let unresolved = try store.journals().filter { $0.phase != .completed && $0.phase != .rolledBack }
             guard unresolved.isEmpty else {
                 for kind in AtlasIntegrationKind.allCases {
-                    await publish(kind, .refused("An interrupted integration transaction requires review before configuration can change."))
+                    reports[kind] = .refused("An interrupted integration transaction requires review before configuration can change.")
+                    await publish(kind, reports[kind]!)
                 }
-                return
+                return reports
             }
             for completed in try store.journals() { try store.removeJournal(transactionID: completed.transactionID) }
             for product in DurableInstallationProduct.allCases {
-                guard !Task.isCancelled, !stopping else { return }
-                await install(product, store: store)
+                guard !Task.isCancelled, !stopping else { return reports }
+                let outcome = await install(product, store: store)
+                reports[product.atlasKind] = outcome
+                await publish(product.atlasKind, outcome)
             }
         } catch {
             for kind in AtlasIntegrationKind.allCases {
-                await publish(kind, .failed("Launch integration state is unavailable; no hook configuration was changed."))
+                reports[kind] = .failed("Launch integration state is unavailable; no hook configuration was changed.")
+                await publish(kind, reports[kind]!)
             }
         }
+        return reports
     }
 
-    private func install(_ product: DurableInstallationProduct, store: DurableInstallationStore) async {
-        let kind = product.atlasKind
+    private func install(_ product: DurableInstallationProduct, store: DurableInstallationStore) async -> LaunchInstallationReport {
         let productCLI = product.productCLI
         guard case .verified(let identity) = await detector.verifyInstallationIdentity(product: productCLI, explicitPath: nil) else {
-            await publish(kind, .refused("The installed product could not be trusted for automatic hook setup."))
-            return
+            return .refused("The installed product could not be trusted for automatic hook setup.")
         }
         guard ReviewedIntegrationContractCatalog.supports(product, version: identity.version) else {
-            await publish(kind, .refused("Version \(identity.version) has no reviewed automatic hook contract."))
-            return
+            return .refused("Version \(identity.version) has no reviewed automatic hook contract.")
         }
         guard detector.revalidateInstallationIdentity(identity) == .valid else {
-            await publish(kind, .refused("The product executable changed during launch detection."))
-            return
+            return .refused("The product executable changed during launch detection.")
         }
 
         do {
@@ -135,8 +148,7 @@ actor LaunchIntegrationAutoInstaller {
                     }
                 }
                 await enable(product: product)
-                await publish(kind, .installed(snapshot, alreadyInstalled: true))
-                return
+                return .installed(snapshot, alreadyInstalled: true)
             }
 
             let transactionID = UUID().uuidString
@@ -180,7 +192,7 @@ actor LaunchIntegrationAutoInstaller {
                 try store.saveJournal(.init(transactionID: transactionID, installationID: installationID.rawValue, phase: .completed, configurationPath: configURL.path))
                 try store.removeJournal(transactionID: transactionID)
                 await enable(product: product)
-                await publish(kind, .installed(snapshot, alreadyInstalled: false))
+                return .installed(snapshot, alreadyInstalled: false)
             } catch {
                 if configurationWritten {
                     // The config has a complete exact-entry receipt in the
@@ -198,11 +210,11 @@ actor LaunchIntegrationAutoInstaller {
                 throw error
             }
         } catch LaunchInstallationError.configurationRefused(let reason) {
-            await publish(kind, .refused("Existing or unsupported hook configuration was left unchanged (\(reason?.rawValue ?? "not safe to mutate"))."))
+            return .refused("Existing or unsupported hook configuration was left unchanged (\(reason?.rawValue ?? "not safe to mutate")).")
         } catch LaunchInstallationError.ownedStateDrifted {
-            await publish(kind, .refused("Agent Island's owned hook entries changed; automatic repair was refused."))
+            return .refused("Agent Island's owned hook entries changed; automatic repair was refused.")
         } catch {
-            await publish(kind, .failed("Automatic hook setup could not complete; configuration was left unchanged or rolled back."))
+            return .failed("Automatic hook setup could not complete; configuration was left unchanged or rolled back.")
         }
     }
 
@@ -448,7 +460,7 @@ actor LaunchIntegrationAutoInstaller {
     }
 }
 
-enum LaunchInstallationReport: Sendable {
+public enum LaunchInstallationReport: Sendable {
     case installed(NegotiationSnapshot, alreadyInstalled: Bool)
     case refused(String)
     case failed(String)

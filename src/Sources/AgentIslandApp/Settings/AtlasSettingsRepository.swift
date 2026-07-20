@@ -218,6 +218,8 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     @Published public private(set) var integrations: [AtlasIntegrationState]
     @Published private(set) var productInstallations: [ProductCLI: AtlasProductInstallationState]
     @Published private(set) var verificationResults: [AtlasIntegrationKind: IntegrationVerificationResult] = [:]
+    @Published private(set) var installStatus: [AtlasIntegrationKind: String] = [:]
+    @Published private(set) var installInProgress = false
     @Published public private(set) var preview: AtlasPreviewState
 
     private let previewRouter: AtlasPreviewRouter
@@ -227,17 +229,21 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     private var didLoadProductInstallations = false
     private let sessionVerifier: (any IntegrationSessionVerifying)?
     private var verificationTasks: [AtlasIntegrationKind: Task<Void, Never>] = [:]
+    private let installHooks: (@Sendable () async -> [AtlasIntegrationKind: LaunchInstallationReport])?
+    private var installTask: Task<Void, Never>?
 
     public init(
         repository: AtlasSettingsRepository = AtlasSettingsRepository(),
         shortcutInputSourceResolver: @escaping ShortcutInputSourceResolver = { ShortcutInputSource() },
         productInstallationDetector: any ProductInstallationDetecting = LocalProductInstallationDetector(),
-        sessionVerifier: (any IntegrationSessionVerifying)? = nil
+        sessionVerifier: (any IntegrationSessionVerifying)? = nil,
+        installHooks: (@Sendable () async -> [AtlasIntegrationKind: LaunchInstallationReport])? = nil
     ) {
         self.repository = repository
         self.shortcutInputSourceResolver = shortcutInputSourceResolver
         self.productInstallationDetector = productInstallationDetector
         self.sessionVerifier = sessionVerifier
+        self.installHooks = installHooks
         let loaded = repository.loadSnapshot()
         self.snapshot = loaded
         self.selectedDestination = loaded.selectedDestination
@@ -428,6 +434,35 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
 
     public func setIntegrationIntent(_ kind: AtlasIntegrationKind, enabled: Bool) {
         updateIntegration(kind) { $0.enabledIntent = enabled }
+    }
+
+    /// Person-initiated install of Agent Island's hooks. Runs the same bounded,
+    /// fail-closed pipeline as launch — it merges Agent Island's entries
+    /// alongside any existing hooks and never installs into a Product whose
+    /// executable fails code-signature verification (e.g. an unsigned CLI).
+    func installAgentIslandHooks() {
+        guard let installHooks, !installInProgress else { return }
+        installInProgress = true
+        for kind in AtlasIntegrationKind.allCases { installStatus[kind] = "Installing…" }
+        installTask?.cancel()
+        installTask = Task { [weak self] in
+            let reports = await installHooks()
+            guard !Task.isCancelled, let self else { return }
+            for kind in AtlasIntegrationKind.allCases {
+                self.installStatus[kind] = self.summarizeInstall(reports[kind])
+            }
+            self.installInProgress = false
+            self.installTask = nil
+        }
+    }
+
+    private func summarizeInstall(_ report: LaunchInstallationReport?) -> String {
+        switch report {
+        case .installed(_, let alreadyInstalled): alreadyInstalled ? "Already installed and verified." : "Installed."
+        case .refused(let message): "Not installed — \(message)"
+        case .failed(let message): "Failed — \(message)"
+        case nil: "No result reported."
+        }
     }
 
     /// Person-initiated end-to-end check: launch the real Product CLI and

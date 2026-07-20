@@ -207,8 +207,50 @@ private func discardLocalProtectedStore() {
 // that then *owns* `app.run()` for the process lifetime, starving every
 // main-actor `Task { … }` scheduled afterwards (product discovery, launch hook
 // installation). See `runToCompletion`.
+/// Headless person-initiated hook install. Runs the same bounded, fail-closed
+/// pipeline as launch — including the code-signature identity gate — and prints
+/// the per-product outcome. `--home DIR` and `--app-support DIR` redirect the
+/// config and durable-state roots for isolated verification without touching
+/// the real user configuration.
+@MainActor
+private func runInstallHooks() async -> Int32 {
+    func argValue(_ flag: String) -> String? {
+        guard let index = CommandLine.arguments.firstIndex(of: flag), index + 1 < CommandLine.arguments.count else { return nil }
+        return CommandLine.arguments[index + 1]
+    }
+    let home = argValue("--home").map { URL(fileURLWithPath: $0, isDirectory: true) }
+    let appSupport = argValue("--app-support").map { URL(fileURLWithPath: $0, isDirectory: true) }
+
+    let runtime = ApplicationRuntime(store: SessionStore())
+    let installer = LaunchIntegrationAutoInstaller(
+        port: runtime,
+        claudeActionLifecycle: ClaudeActionIntegrationLifecycle(composition: ClaudeActionApplicationComposition()),
+        detector: LocalProductInstallationDetector(),
+        homeDirectory: home ?? FileManager.default.homeDirectoryForCurrentUser,
+        publish: { _, _ in }
+    )
+    print("Installing Agent Island hooks (home=\(home?.path ?? "REAL user home"))…")
+    let reports = await installer.installOnRequest(applicationSupport: appSupport)
+    var anyInstalled = false
+    for kind in AtlasIntegrationKind.allCases {
+        let line: String
+        switch reports[kind] {
+        case .installed(_, let already):
+            anyInstalled = anyInstalled || !already
+            line = already ? "already installed (verified)" : "INSTALLED"
+        case .refused(let message): line = "refused — \(message)"
+        case .failed(let message): line = "failed — \(message)"
+        case nil: line = "no report"
+        }
+        print("[\(kind)] \(line)")
+    }
+    return anyInstalled ? 0 : 1
+}
+
 if CommandLine.arguments.contains("--self-check") {
     exit(runToCompletion { await SelfCheck.run() })
+} else if CommandLine.arguments.contains("--install-hooks") {
+    exit(runToCompletion { await runInstallHooks() })
 } else {
     launchGUI()
 }

@@ -13,6 +13,14 @@ import SessionDomain
 import ApplicationRuntime
 import LocalProductDiscovery
 
+/// A weak, set-once holder used only to break the construction cycle between
+/// `AtlasSettingsModel` and `LaunchIntegrationAutoInstaller`. The value is
+/// assigned on the main actor during `AppDelegate.init`, before any UI can
+/// trigger a read, so the unchecked concurrency annotation is sound.
+private final class WeakInstallerReference: @unchecked Sendable {
+    weak var value: LaunchIntegrationAutoInstaller?
+}
+
 /// AppKit owns the two deliberately distinct presentation hosts: a normally
 /// non-activating Island Overlay and an independently activating Settings
 /// window. SwiftUI supplies content only; it never owns panel lifecycle.
@@ -111,20 +119,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.warpHostComposition = warpHostComposition
         self.orcaHostComposition = orcaHostComposition
         self.orcaHostCapture = orcaHostCapture
+        // The settings model's install action needs the installer, and the
+        // installer's publish closure needs the model. Break the construction
+        // cycle with a weak holder the model's closure reads after both exist.
+        let installerRef = WeakInstallerReference()
         let atlasSettings = AtlasSettingsModel(
             shortcutInputSourceResolver: {
                 NativeShortcutInputSourceResolver.current()
             },
-            sessionVerifier: IntegrationSessionVerifier(port: applicationRuntime)
+            sessionVerifier: IntegrationSessionVerifier(port: applicationRuntime),
+            installHooks: { [installerRef] in
+                await installerRef.value?.installOnRequest() ?? [:]
+            }
         )
         self.atlasSettings = atlasSettings
-        self.launchIntegrationAutoInstaller = LaunchIntegrationAutoInstaller(
+        let installer = LaunchIntegrationAutoInstaller(
             port: applicationRuntime,
             claudeActionLifecycle: claudeActionLifecycle,
             detector: productInstallationIdentityVerifier
         ) { [weak atlasSettings] kind, report in
             atlasSettings?.applyLaunchInstallationReport(kind, report: report)
         }
+        self.launchIntegrationAutoInstaller = installer
+        installerRef.value = installer
     }
 
     /// Explicit person-initiated production entry point. No startup scan or

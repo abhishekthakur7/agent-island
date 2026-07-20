@@ -208,9 +208,15 @@ private struct AtlasIntegrationsSection: View {
                 Text("Agent Product installation")
                     .font(.headline)
                 Spacer()
+                Button("Install Agent Island hooks") { model.installAgentIslandHooks() }
+                    .disabled(model.installInProgress)
+                    .accessibilityIdentifier("atlas.installations.install")
+                if model.installInProgress { ProgressView().controlSize(.small) }
                 Button("Refresh") { model.refreshProductInstallations() }
                     .accessibilityIdentifier("atlas.installations.refresh")
             }
+            Text("Installs Agent Island's hooks alongside your existing hooks (never replacing them). Only a Product whose CLI passes code-signature verification is installed; an unsigned CLI is refused.")
+                .font(.caption).foregroundStyle(.secondary)
             ForEach(model.integrations, id: \.kind) { integration in
                 AtlasCard(title: integration.kind.title) {
                     let installation = model.productInstallations[integration.kind.productCLI] ?? .unknown
@@ -229,6 +235,10 @@ private struct AtlasIntegrationsSection: View {
                     }
                     Text("Installation detection does not mean an Agent Session is running. Sessions appear only from a configured Adapter with a Product-owned session identifier.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if let status = model.installStatus[integration.kind] {
+                        LabeledContent("Hook install", value: status)
+                            .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue).install.status")
+                    }
                     Toggle("Enabled intent", isOn: Binding(
                         get: { integration.enabledIntent },
                         set: { model.setIntegrationIntent(integration.kind, enabled: $0) }
