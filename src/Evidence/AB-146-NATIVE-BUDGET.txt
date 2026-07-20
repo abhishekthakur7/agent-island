@@ -1,0 +1,9 @@
+# AB-146 headless supported-hardware baseline
+# Capture: AB-146-run-20260720-224609 on Mac15,6 / Apple Silicon / macOS 27.0.
+# Rule from workload-v1.json: ceiling(max RSS/open handles * 1.5); maximum
+# CPU sample * 1.5 + 0.1. The verifier rejects a valid later sample above any
+# numeric value below. These apply only to the headless 30-session fixture.
+rss_mb=19
+workload_cpu_percent=152.8
+idle_cpu_percent=2.8
+open_handles=15

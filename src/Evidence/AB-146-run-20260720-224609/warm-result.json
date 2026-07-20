@@ -1,0 +1,29 @@
+{
+  "archivedSessions" : 1,
+  "correlationID" : "ab146-2026-07-20",
+  "limitations" : [
+    "Headless timing ends at a revisioned presentation snapshot; it is not a pixel-render or VoiceOver capture.",
+    "The handoff probe proves one local Adapter-boundary invocation only; Product application remains unclaimed.",
+    "OS energy, wakeups, CPU, memory, handles, disk, display, sleep\/wake, sound, keyboard, and VoiceOver measurements are collected or classified by verify-ab-146.sh and require supported-hardware review."
+  ],
+  "overflowSessions" : 31,
+  "retainedAudioOutputs" : 0,
+  "retainedTasksTimers" : 0,
+  "schema" : "agent-island.ab-146.result",
+  "timings" : [
+    {
+      "milliseconds" : 1.280333,
+      "name" : "local-event-to-presentation-revision",
+      "passed" : true,
+      "targetMilliseconds" : 250
+    },
+    {
+      "milliseconds" : 0.006333,
+      "name" : "confirmed-action-to-one-adapter-handoff",
+      "passed" : true,
+      "targetMilliseconds" : 150
+    }
+  ],
+  "version" : 1,
+  "workingSessions" : 30
+}

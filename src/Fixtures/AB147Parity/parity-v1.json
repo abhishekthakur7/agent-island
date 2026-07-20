@@ -1,0 +1,92 @@
+{
+  "schema": "agent-island.ab-147.parity",
+  "version": 1,
+  "baseline": {
+    "product": "Vibe Island",
+    "version": "1.0.42",
+    "observedAt": "2026-07-18",
+    "platform": "macOS 14+ / Apple Silicon"
+  },
+  "legend": {
+    "S": "concurrent Agent Session monitoring",
+    "I": "Integration Installation health and capability",
+    "P": "Island Overlay presentation and attention",
+    "A": "typed Attention Request action",
+    "J": "Jump Back",
+    "N": "notification and interruption policy",
+    "O": "operational recovery",
+    "H": "Session History and Usage Snapshot"
+  },
+  "records": [
+    {
+      "id": "S-01", "area": "S", "scenario": "Thirty independently owned sessions retain owner identity, attention, child, selection, recap, history, and scrolling state.",
+      "product": "Claude Code", "adapterMode": "Claude Code Hooks", "hostProfile": "iTerm2", "profileVersion": "fixture contract; live Product/Host version not captured", "capability": "session observation",
+      "positiveFixture": "src/Fixtures/AB146Workload/workload-v1.json", "negativeFixture": "src/Tests/ClaudeCodeAdapterTests/ClaudeCodeAdapterTests.swift", "expected": "Concurrent source observations remain separate; no display metadata joins owners.", "observed": "Deterministic AB-146 workload is retained; no rendered native capture.", "fallback": "Native Claude Code/iTerm2 Host remains the source of truth.", "capture": "src/Evidence/AB-146-CANONICAL-CAPTURE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-01", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "S-02", "area": "S", "scenario": "Duplicate, reordered, and gapped Codex CLI observations do not manufacture completion or cross an owner.",
+      "product": "Codex CLI", "adapterMode": "Codex Hooks", "hostProfile": "Warp", "profileVersion": "reviewed hooks-v1 fixture; live Product/Host version not captured", "capability": "observation only",
+      "positiveFixture": "src/Fixtures/CodexCLIAdapter/independent-lifecycle.json", "negativeFixture": "src/Fixtures/CodexCLIAdapter/reorder-gap-duplicates.json", "expected": "Gap/reorder projects unresolved and no action authority.", "observed": "Authored fixture evidence only.", "fallback": "Native Codex CLI/Warp Host; inspect unresolved work there.", "capture": "src/Evidence/AB-136-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-02", "status": "blocked-human"
+    },
+    {
+      "id": "I-01", "area": "I", "scenario": "Cursor integration intent, exact-entry ownership, and degraded health stay independent.",
+      "product": "Cursor", "adapterMode": "Cursor Hooks", "hostProfile": "Cursor Host", "profileVersion": "Cursor Hooks v1 fixture; live Cursor version not captured", "capability": "session observation",
+      "positiveFixture": "src/Fixtures/CursorHooksAdapter/documented-v1-lifecycle.json", "negativeFixture": "src/Fixtures/CursorHooksAdapter/negative-cases.json", "expected": "Enabled intent never claims Active; unknown/drifted capability degrades honestly.", "observed": "Authored contract evidence only.", "fallback": "Native Cursor Host and manual exact-entry remedy.", "capture": "src/Evidence/AB-138-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-03", "status": "blocked-human"
+    },
+    {
+      "id": "I-02", "area": "I", "scenario": "Negotiated Codex app-server capability is version- and epoch-scoped.",
+      "product": "Codex", "adapterMode": "Codex App Server", "hostProfile": "Orca", "profileVersion": "codex-cli 0.144.6 schema review; live current version unverified", "capability": "negotiated observation and typed controls",
+      "positiveFixture": "src/Fixtures/CodexAppServerAdapter/initialize-valid.json", "negativeFixture": "src/Fixtures/CodexAppServerAdapter/initialize-incompatible.json", "expected": "Digest/version mismatch disables only the affected capability and retires leases.", "observed": "Generated-schema/fixture evidence only.", "fallback": "Native Codex/Orca Host; no generic control route.", "capture": "src/Evidence/AB-137-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-04", "status": "blocked-human"
+    },
+    {
+      "id": "P-01", "area": "P", "scenario": "Selected-display Island Overlay presents attention without activation or duplicate/disruptive presentation.",
+      "product": "Cursor", "adapterMode": "Cursor ACP", "hostProfile": "Cursor Host", "profileVersion": "ACP fixture contract; live Cursor version not captured", "capability": "local presentation",
+      "positiveFixture": "src/Fixtures/CursorACPAdapter/positive.json", "negativeFixture": "src/Fixtures/CursorACPAdapter/negative.json", "expected": "No stale or duplicate control; unavailable display/quiet scene withdraws the visible and AX region.", "observed": "Model/test seam exists; native rendered/AX review is absent.", "fallback": "Keep the native Cursor Host focused; present no overlay when unavailable.", "capture": "src/Evidence/AB-146-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-05", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "A-01", "area": "A", "scenario": "A Claude Code approval, denial, answer, or plan action consumes one live owner-bound lease.",
+      "product": "Claude Code", "adapterMode": "Claude Code Hooks", "hostProfile": "iTerm2", "profileVersion": "reviewed Hook contract; live executable version not captured", "capability": "typed Attention Request response",
+      "positiveFixture": "src/Tests/ClaudeActionRoutingTests/ClaudeActionRoutingTests.swift", "negativeFixture": "src/Tests/ClaudeActionRoutingTests/ClaudeActionRoutingTests.swift#stale-and-resolved-elsewhere", "expected": "No cross-owner or stale dispatch; indeterminate is not applied; persistent scope needs separate confirmation.", "observed": "Deterministic routing evidence only; accessible action surface is unrecorded.", "fallback": "Respond in the native Claude Code Host / Jump Back.", "capture": "src/Evidence/AB-135-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-06", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "J-01", "area": "J", "scenario": "iTerm2 revalidates exact live pane/tab identity before Jump Back.",
+      "product": "Claude Code", "adapterMode": "Claude Code Hooks", "hostProfile": "iTerm2", "profileVersion": "documented iTerm2 API fixture; live API/module version not captured", "capability": "exact Host Context navigation",
+      "positiveFixture": "src/Fixtures/ITerm2HostAdapter/live-exact-surface.json", "negativeFixture": "src/Fixtures/ITerm2HostAdapter/negative-revalidation.json", "expected": "Reports achieved exact level only after same-incarnation revalidation; never title/path guess.", "observed": "Controlled seam only; live pointer/keyboard/VoiceOver capture absent.", "fallback": "Open iTerm2 natively and state unavailable/exact-tab result honestly.", "capture": "docs/evidence/AB-140-iterm2-host-navigation.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-07", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "J-02", "area": "J", "scenario": "Cursor Host navigation rejects duplicate/native-incompatible terminal evidence.",
+      "product": "Cursor", "adapterMode": "Cursor Host Adapter", "hostProfile": "Cursor Host", "profileVersion": "adapter fixture contract; live Cursor Host version not captured", "capability": "exact terminal navigation when source-proven",
+      "positiveFixture": "src/Fixtures/CursorHostAdapter/live-reveal.json", "negativeFixture": "src/Fixtures/CursorHostAdapter/duplicate-name-pid.json", "expected": "Duplicate or incompatible evidence lowers/withdraws navigation rather than selecting a lookalike.", "observed": "Fixture evidence only.", "fallback": "Native Cursor Host; explicit app-only/unavailable result.", "capture": "src/Fixtures/CursorHostAdapter/lower-fallbacks.json", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-08", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "J-03", "area": "J", "scenario": "Warp offers only app-only or explicitly elected current-window best effort.",
+      "product": "Codex CLI", "adapterMode": "Codex Hooks", "hostProfile": "Warp", "profileVersion": "Warp AX boundary fixture; live Warp version not captured", "capability": "app-only / elected window best-effort navigation",
+      "positiveFixture": "src/Fixtures/WarpHostAdapter/jump-back-boundary.json", "negativeFixture": "src/Fixtures/WarpHostAdapter/jump-back-boundary.json#permission-or-stale-negative-cases", "expected": "No implicit Accessibility request or pane/tab claim; restart/Space/full-screen falls back.", "observed": "Controlled boundary only; current computer-use target denied twice.", "fallback": "Activate Warp app only, or report unavailable.", "capture": "docs/evidence/AB-142-warp-host-navigation.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-09", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "J-04", "area": "J", "scenario": "Orca uses documented opaque runtime and terminal/tab evidence; child surface remains unproven.",
+      "product": "Codex", "adapterMode": "Codex App Server", "hostProfile": "Orca", "profileVersion": "installed CLI runtime ID observed; semantic runtime version unavailable", "capability": "exact tab only when documented live evidence proves it",
+      "positiveFixture": "src/Fixtures/OrcaHostAdapter/exact-child-surface.json", "negativeFixture": "src/Fixtures/OrcaHostAdapter/restart-loss-duplicate.json", "expected": "Restart/loss/duplicate never reuses a locator; no exact-surface claim without source proof.", "observed": "Read-only CLI probe and fixture evidence; no live switch capture.", "fallback": "Native Orca Host or exact-tab/unavailable wording.", "capture": "docs/evidence/AB-143-orca-host-navigation.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-10", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "N-01", "area": "N", "scenario": "Quiet Scene/filtering suppresses automatic presentation without losing local state or replaying alerts.",
+      "product": "Claude Code", "adapterMode": "Claude Code Hooks", "hostProfile": "iTerm2", "profileVersion": "local notification-policy contract; live OS notification settings not captured", "capability": "local notification policy",
+      "positiveFixture": "src/Tests/AgentIslandAppTests/NotificationPresentationCoordinatorTests.swift", "negativeFixture": "src/Tests/AgentIslandAppTests/NotificationPresentationCoordinatorTests.swift#quiet-and-duplicate-cases", "expected": "No duplicate/disruptive presentation; state stays visible on deliberate inspection.", "observed": "Automated policy seam only.", "fallback": "No automatic alert; inspect the native Host and local working set.", "capture": "src/Evidence/AB-146-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-11", "status": "blocked-human"
+    },
+    {
+      "id": "O-01", "area": "O", "scenario": "Restart, wake, display loss, and recovery invalidate authority/locators without losing active Product work.",
+      "product": "Codex CLI", "adapterMode": "Codex Hooks", "hostProfile": "Warp", "profileVersion": "recovery contract; live wake/display sequence not captured", "capability": "recovery boundary",
+      "positiveFixture": "src/Tests/ApplicationRuntimeTests/AB145RecoveryTests.swift", "negativeFixture": "src/Fixtures/OrcaHostAdapter/restart-loss-duplicate.json", "expected": "No active-work cleanup, source completion, stale action, or stale navigation; fresh probe required.", "observed": "Unit/fixture evidence only; restart/wake/display manual cells absent.", "fallback": "Native Host remains active; local state is unresolved/degraded until reproven.", "capture": "src/Evidence/AB-146-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-12", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "H-01", "area": "H", "scenario": "Safely inactive Session History archives only overflow and retains sourced recap for inspection.",
+      "product": "Claude Code", "adapterMode": "Claude Code Hooks", "hostProfile": "iTerm2", "profileVersion": "AB-146 workload contract; live History UI version not captured", "capability": "local Session History",
+      "positiveFixture": "src/Tests/AB146WorkloadTests/AB146WorkloadTests.swift#testThirtyFirstInactiveSessionArchivesLosslesslyWithRecap", "negativeFixture": "src/Tests/AB146WorkloadTests/AB146WorkloadTests.swift#testAttentionAndActiveChildOverflowNeverArchives", "expected": "Never clean up active/attention/child work; recap is sourced and bounded.", "observed": "Headless store test only; History visual/AX capture absent.", "fallback": "Keep in working set and use native Host; no destructive local cleanup.", "capture": "src/Evidence/AB-146-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-13", "status": "blocked-native-and-human"
+    },
+    {
+      "id": "H-02", "area": "H", "scenario": "Usage Snapshot displays only sourced provider data and says unavailable otherwise.",
+      "product": "Codex", "adapterMode": "Codex App Server", "hostProfile": "Orca", "profileVersion": "schema allowlist; live provider usage capability not captured", "capability": "display-only Usage Snapshot",
+      "positiveFixture": "src/Tests/AgentIslandAppTests/UsagePresentationTests.swift", "negativeFixture": "src/Tests/AgentIslandAppTests/UsagePresentationTests.swift#unavailable-cases", "expected": "No billing/quota estimate or invented value; missing source renders unavailable.", "observed": "Presentation test seam only.", "fallback": "Usage unavailable; consult the native Product account/Host.", "capture": "src/Evidence/AB-137-REPORT-TEMPLATE.md", "diagnostic": "docs/evidence/ab-147/diagnostic-index.md#d-14", "status": "blocked-native-and-human"
+    }
+  ]
+}

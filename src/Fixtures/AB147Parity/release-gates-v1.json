@@ -1,0 +1,15 @@
+{
+  "schema": "agent-island.ab-147.release-gates",
+  "version": 1,
+  "structureGate": "All eight areas S/I/P/A/J/N/O/H are represented; every record has profile, positive/negative evidence, expected/observed/fallback, capture/diagnostic link, and current status.",
+  "releaseBlockers": [
+    "native-rendered-overlay-and-settings-capture",
+    "accessibility-tree-voiceover-keyboard-and-scroll-capture",
+    "human-visual-review-on-built-in-and-external-displays",
+    "restart-wake-display-recovery-capture",
+    "energy-disk-and-audio-lifetime-capture",
+    "live-product-host-version-and-capability-capture"
+  ],
+  "readinessExitCode": 2,
+  "readinessMeaning": "AB-147 package is structurally valid but release readiness is BLOCKED; this is intentionally non-success."
+}

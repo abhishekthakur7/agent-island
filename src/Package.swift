@@ -34,6 +34,7 @@ let package = Package(
         .executable(name: "AB143SelfCheck", targets: ["AB143SelfCheck"]),
         .executable(name: "AB144SelfCheck", targets: ["AB144SelfCheck"]),
         .executable(name: "AB145SelfCheck", targets: ["AB145SelfCheck"]),
+        .executable(name: "AB146SelfCheck", targets: ["AB146SelfCheck"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -155,6 +156,7 @@ let package = Package(
         .executableTarget(name: "AB143SelfCheck", dependencies: ["OrcaHostAdapter", "SessionDomain"]),
         .executableTarget(name: "AB144SelfCheck", dependencies: ["SessionDomain", "ClaudeCodeAdapter"]),
         .executableTarget(name: "AB145SelfCheck", dependencies: ["SessionDomain", "ApplicationRuntime", "SessionStore", "ProtectedStore", "AdapterFixtureKit"]),
+        .executableTarget(name: "AB146SelfCheck", dependencies: ["SessionDomain", "ApplicationRuntime", "SessionStore", "PresentationRuntime"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
@@ -195,6 +197,10 @@ let package = Package(
         .testTarget(
             name: "PresentationRuntimeTests",
             dependencies: ["SessionDomain", "PresentationPort", "PresentationRuntime"]
+        ),
+        .testTarget(
+            name: "AB146WorkloadTests",
+            dependencies: ["SessionDomain", "SessionStore", "ApplicationRuntime"]
         ),
         .testTarget(
             name: "AgentIslandAppTests",

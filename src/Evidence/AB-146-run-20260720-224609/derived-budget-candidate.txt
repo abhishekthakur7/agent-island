@@ -1,0 +1,4 @@
+rss_mb=19
+workload_cpu_percent=152.8
+idle_cpu_percent=2.8
+open_handles=15

@@ -1,0 +1,24 @@
+{
+  "schema": "agent-island.ab-146.workload",
+  "version": 1,
+  "correlationPrefix": "ab146-2026-07-20",
+  "profiles": [
+    {"product": "claude-code", "adapter": "claude-hooks", "host": "iTerm2"},
+    {"product": "codex-cli", "adapter": "codex-hooks", "host": "Warp"},
+    {"product": "cursor.acp", "adapter": "cursor-acp", "host": "Cursor"},
+    {"product": "codex-app-server", "adapter": "codex-app-server", "host": "Orca"}
+  ],
+  "sessionCount": 30,
+  "states": ["active", "waiting", "completed", "unresolved", "child", "attention", "selection", "recap", "history", "scroll", "ordinary-event"],
+  "traces": ["duplicate", "delayed", "reordered", "gap", "reconnect", "rewind", "compaction", "concurrent-attention", "restart", "wake"],
+  "targetsMilliseconds": {"presentation": 250, "adapterHandoff": 150, "warmLaunch": 1000, "coldLaunch": 2000},
+  "budgetDerivation": {
+    "residentMemoryMB": "ceil(max(sample RSS MB) * 1.5)",
+    "idleCPUPercent": "max(idle process CPU %) * 1.5 + 0.1",
+    "loadedCPUPercent": "max(workload process CPU %) * 1.5 + 0.1",
+    "openHandles": "ceil(max(sample open handles) * 1.5)",
+    "diskGrowthMBPerEquivalentRun": "requires a protected-store workload capture",
+    "wakeupsPerSecond": "requires Instruments Energy Log or authorized powermetrics"
+  },
+  "captureRequirements": ["visual", "accessibility-tree", "voiceover", "keyboard", "built-in-display", "external-display", "sleep-wake", "extended-idle", "sound-release"]
+}

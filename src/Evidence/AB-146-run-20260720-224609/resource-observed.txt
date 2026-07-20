@@ -1,0 +1,5 @@
+rss_kb=12864
+workload_cpu=101.800
+idle_cpu=1.800
+handles=10
+samples=10

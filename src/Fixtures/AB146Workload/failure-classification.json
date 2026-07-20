@@ -1,0 +1,11 @@
+{
+  "schema": "agent-island.ab-146.failure-classification",
+  "version": 1,
+  "classifications": {
+    "valid-over-target": "release-blocking application failure",
+    "safety-invariant": "release-blocking application failure",
+    "reproducible-measurement-fault": "measurement failure; rerun with corrected method and retain this capture",
+    "measurement-unavailable": "evidence incomplete; not a pass",
+    "environment-unsupported": "supplemental only; not a supported-hardware result"
+  }
+}

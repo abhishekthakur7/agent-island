@@ -1,0 +1,6 @@
+{
+  "schema": "agent-island.ab-146.environment",
+  "version": 1,
+  "required": ["hardware", "macOS", "power", "display", "xcode", "workloadFixtureSHA256", "applicationRevision", "profiles", "captureTimestamp"],
+  "note": "verify-ab-146.sh writes the machine-readable observed environment. Missing privileged energy/wakeup data is classified as measurement-unavailable, never passing evidence."
+}
