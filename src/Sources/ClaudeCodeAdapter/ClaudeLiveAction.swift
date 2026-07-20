@@ -144,11 +144,18 @@ public enum ClaudeLiveCallbackFactory {
         switch hook.name {
         case .permissionRequest:
             guard let requestID = hook.nativeAttentionRequestID, !requestID.isEmpty, hook.nativeToolUseID == nil else { return .failure(.malformedCallback) }
-            guard let mode = input["permission_mode"] as? String ?? root["permission_mode"] as? String,
-                  mode.lowercased() != "bypasspermissions", mode.lowercased() != "bypass_permissions" else { return .failure(.managedPolicy) }
+            // A persistent suggestion changes a Product rule.  It is never
+            // inferred from a displayed prompt: only the documented normal
+            // or default modes may offer it.  Ask still permits the source
+            // callback's one-shot allow/deny decision, including deny, but
+            // it cannot be broadened into a persisted rule.
+            guard let rawMode = input["permission_mode"] as? String ?? root["permission_mode"] as? String,
+                  let mode = ClaudePermissionMode(rawValue: rawMode) else { return .failure(.managedPolicy) }
             if let suggestion = offeredSuggestion(in: input) ?? offeredSuggestion(in: root) {
+                guard mode.allowsPersistentSuggestion else { return .failure(.managedPolicy) }
                 return callback(requestID: requestID, capabilityID: ClaudeCodeIntegration.permissionSuggestionCapability, semantic: .permissionSuggestion, shape: .persistentSuggestion, suggestion: suggestion)
             }
+            guard mode.allowsOneShotDecision else { return .failure(.managedPolicy) }
             return callback(requestID: requestID, capabilityID: ClaudeCodeIntegration.permissionCapability, semantic: .permission, shape: .allowDeny)
         case .preToolUse where toolName == "AskUserQuestion":
             guard let toolUse = hook.nativeToolUseID, !toolUse.isEmpty, let parsed = questions(in: input) else { return .failure(.unsupportedAction) }
@@ -186,5 +193,39 @@ public enum ClaudeLiveCallbackFactory {
 
     private static func hasRevisionSemantics(_ root: [String: Any]) -> Bool {
         (root["revision"] as? Bool) == true || (root["revision_requested"] as? Bool) == true || (root["revisionRequested"] as? Bool) == true
+    }
+}
+
+/// A narrow allowlist over documented permission modes.  Unknown spellings
+/// and policy-managed/bypass states fail closed rather than becoming a route
+/// because an observed prompt happened to include a suggestion.
+private enum ClaudePermissionMode {
+    case `default`
+    case normal
+    case ask
+    case deniedOrManaged
+
+    init?(rawValue: String) {
+        switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "default": self = .default
+        case "normal": self = .normal
+        case "ask": self = .ask
+        case "deny", "managed", "policy", "bypasspermissions", "bypass_permissions": self = .deniedOrManaged
+        default: return nil
+        }
+    }
+
+    var allowsOneShotDecision: Bool {
+        switch self {
+        case .default, .normal, .ask: true
+        case .deniedOrManaged: false
+        }
+    }
+
+    var allowsPersistentSuggestion: Bool {
+        switch self {
+        case .default, .normal: true
+        case .ask, .deniedOrManaged: false
+        }
     }
 }

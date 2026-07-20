@@ -166,6 +166,7 @@ public enum ActionAttemptRejectionReason: String, Codable, Hashable, Sendable, E
     case gateClosed
     case invalidSemanticResponse
     case missingConfirmation
+    case textCompositionActive
     case alreadyDispatched
     case disconnected
     case restarted

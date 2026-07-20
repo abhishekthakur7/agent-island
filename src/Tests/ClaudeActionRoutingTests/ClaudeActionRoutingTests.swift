@@ -93,12 +93,71 @@ final class ClaudeActionRoutingTests: XCTestCase {
         guard case .dispatched(.preToolAllow(_), _) = await planRouter.submit(callbackIdentity: plan.identity, submission: ClaudeActionSubmission(action: .planReview(.accept, reason: nil), deliberateConfirmation: true), attemptID: "approve", at: now) else { return XCTFail("only plan approval is supported") }
     }
 
+    func testStructuredAndPlanActionsWaitForLiveTextCompositionToEnd() async {
+        let groups = [ClaudeQuestionGroup(questionIndex: 0, choiceIDs: ["q0-o0"], allowsMultiple: false)]
+        let questionStore = ActionAttemptStore(); let questionDispatch = DispatchFixture(); let questionRouter = ClaudeGuidedActionRouter(store: questionStore, dispatchPort: questionDispatch)
+        let question = callback(semantic: .questionAnswers, hook: .preToolUse, request: "composing-question", toolUse: "composing-question", groups: groups)
+        _ = await questionRouter.open(question, at: now)
+        let answer = GuidedAction.structuredResponse(GuidedStructuredResponse(selectedChoiceIDs: ["q0-o0"]))
+        guard case .rejected(let rejected?, .invalidAnswer) = await questionRouter.submit(callbackIdentity: question.identity, submission: .init(action: answer, deliberateConfirmation: true, textCompositionActive: true), attemptID: "composing-question", at: now) else { return XCTFail("composition must reject structured mapping") }
+        XCTAssertEqual(rejected.rejectionReason, .textCompositionActive)
+        XCTAssertEqual(rejected.dispatchCount, 0)
+        XCTAssertEqual(await questionDispatch.count(), 0)
+        guard case .dispatched = await questionRouter.submit(callbackIdentity: question.identity, submission: .init(action: answer, deliberateConfirmation: true, textCompositionActive: false), attemptID: "after-composition-question", at: now) else { return XCTFail("structured mapping should resume after composition") }
+        XCTAssertEqual(await questionDispatch.count(), 1)
+
+        let planStore = ActionAttemptStore(); let planDispatch = DispatchFixture(); let planRouter = ClaudeGuidedActionRouter(store: planStore, dispatchPort: planDispatch)
+        let plan = callback(semantic: .planApproval, hook: .preToolUse, request: "composing-plan", toolUse: "composing-plan")
+        _ = await planRouter.open(plan, at: now)
+        let approve = GuidedAction.planReview(.accept, reason: nil)
+        guard case .rejected(let rejected?, .invalidAnswer) = await planRouter.submit(callbackIdentity: plan.identity, submission: .init(action: approve, deliberateConfirmation: true, textCompositionActive: true), attemptID: "composing-plan", at: now) else { return XCTFail("composition must reject plan mapping") }
+        XCTAssertEqual(rejected.rejectionReason, .textCompositionActive)
+        XCTAssertEqual(rejected.dispatchCount, 0)
+        XCTAssertEqual(await planDispatch.count(), 0)
+        guard case .dispatched = await planRouter.submit(callbackIdentity: plan.identity, submission: .init(action: approve, deliberateConfirmation: true, textCompositionActive: false), attemptID: "after-composition-plan", at: now) else { return XCTFail("plan mapping should resume after composition") }
+        XCTAssertEqual(await planDispatch.count(), 1)
+    }
+
     func testFactoryUsesToolUseNotTextAndRejectsManagedAndUnsupportedPaths() throws {
         let question = try ClaudeHookEnvelope.decode(Data("{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"s\",\"event_id\":\"e\",\"tool_use_id\":\"tool-1\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"options\":[{},{}]},{\"multi_select\":true,\"options\":[{},{}]}]}}".utf8))
         guard case .success(let callback) = ClaudeLiveCallbackFactory.make(hook: question, snapshot: snapshot(), integrationInstanceID: instance, deadline: now.addingTimeInterval(30)) else { return XCTFail("documented question fixture") }
         XCTAssertEqual(callback.requestID.nativeAttentionRequestID, "tool-1")
         let managed = try ClaudeHookEnvelope.decode(Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"s\",\"event_id\":\"p\",\"request_id\":\"request\",\"permission_mode\":\"bypassPermissions\"}".utf8))
         guard case .failure(.managedPolicy) = ClaudeLiveCallbackFactory.make(hook: managed, snapshot: snapshot(), integrationInstanceID: instance, deadline: now.addingTimeInterval(30)) else { return XCTFail("managed policy must not route") }
+    }
+
+    func testPermissionSuggestionModeAllowlistNeverBroadensPolicyAndAskKeepsOneShotDeny() async throws {
+        func payload(mode: String, suggestion: Bool) -> Data {
+            let suffix = suggestion ? ",\"permission_suggestions\":[{\"scope\":\"project\",\"rule\":\"offered\"}]" : ""
+            return Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"mode-session\",\"event_id\":\"mode-event\",\"request_id\":\"mode-request\",\"permission_mode\":\"\(mode)\"\(suffix)}".utf8)
+        }
+
+        let defaultHook = try ClaudeHookEnvelope.decode(payload(mode: "default", suggestion: true))
+        guard case .success(let defaultCallback) = ClaudeLiveCallbackFactory.make(hook: defaultHook, snapshot: snapshot(), integrationInstanceID: instance, deadline: now.addingTimeInterval(30)) else { return XCTFail("default is eligible for the exact offered suggestion") }
+        XCTAssertEqual(defaultCallback.semantic, .permissionSuggestion)
+
+        let askHook = try ClaudeHookEnvelope.decode(payload(mode: "ask", suggestion: false))
+        guard case .success(let askCallback) = ClaudeLiveCallbackFactory.make(hook: askHook, snapshot: snapshot(), integrationInstanceID: instance, deadline: now.addingTimeInterval(30)) else { return XCTFail("ask one-shot deny remains source-proven") }
+        let oneShotStore = ActionAttemptStore(); let oneShotDispatch = DispatchFixture(); let oneShotRouter = ClaudeGuidedActionRouter(store: oneShotStore, dispatchPort: oneShotDispatch)
+        _ = await oneShotRouter.open(askCallback, at: now)
+        guard case .dispatched(.permission(.deny, nil), _) = await oneShotRouter.submit(callbackIdentity: askCallback.identity, submission: .init(action: .deny, deliberateConfirmation: true), attemptID: "ask-one-shot-deny", at: now) else { return XCTFail("ask callback may deny only for that live request") }
+        XCTAssertEqual(await oneShotDispatch.count(), 1)
+
+        let authenticator = ClaudeIPCAuthenticator(secret: "mode-secret")
+        let listener = ClaudeActionRequestListener(configuration: .init(installationID: instance, helperID: "helper", authenticator: authenticator, snapshot: snapshot()))
+        let rejectedStore = ActionAttemptStore(); let rejectedDispatch = DispatchFixture(); let rejectedRouter = ClaudeGuidedActionRouter(store: rejectedStore, dispatchPort: rejectedDispatch)
+        await listener.attach(router: rejectedRouter)
+        for mode in ["deny", "ask", "managed", "policy", "bypassPermissions", "unknown"] {
+            let body = payload(mode: mode, suggestion: true)
+            let fingerprint = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+            let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: body, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: authenticator)
+            let channel = ClaudeInMemoryActionReplyChannel()
+            XCTAssertFalse(await listener.receive(request, channel: channel, at: now), "\(mode) must not route a persistent suggestion")
+            XCTAssertTrue(await channel.isClosed)
+        }
+        XCTAssertTrue((await rejectedStore.requests()).isEmpty)
+        XCTAssertTrue((await rejectedStore.attempts()).isEmpty)
+        XCTAssertEqual(await rejectedDispatch.count(), 0)
     }
 
     func testResolvedElsewhereAndAcknowledgementOutcomesNeverClaimLifecycleCompletion() async {
@@ -156,7 +215,7 @@ final class ClaudeActionRoutingTests: XCTestCase {
         let listener = ClaudeActionRequestListener(configuration: configuration)
         let store = ActionAttemptStore(); let router = ClaudeGuidedActionRouter(store: store, dispatchPort: listener)
         await listener.attach(router: router)
-        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\"}".utf8)
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\",\"permission_mode\":\"default\"}".utf8)
         let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: secret)
         XCTAssertTrue(await listener.receive(request, channel: ClaudeInMemoryActionReplyChannel(), at: now))
@@ -174,7 +233,7 @@ final class ClaudeActionRoutingTests: XCTestCase {
         let listener = ClaudeActionRequestListener(configuration: configuration)
         let store = ActionAttemptStore(); let router = ClaudeGuidedActionRouter(store: store, dispatchPort: listener)
         await listener.attach(router: router)
-        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\"}".utf8)
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\",\"permission_mode\":\"default\"}".utf8)
         let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         let nonce = UUID().uuidString
         let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: nonce, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: secret)
@@ -190,7 +249,7 @@ final class ClaudeActionRoutingTests: XCTestCase {
 
     func testServiceBootstrapAttachesRouterBeforeItCanReceive() async {
         let service = await ClaudeGuidedActionService(configuration: .init(installationID: instance, helperID: "helper", authenticator: ClaudeIPCAuthenticator(secret: "listener-secret"), snapshot: snapshot()))
-        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\"}".utf8)
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\",\"permission_mode\":\"default\"}".utf8)
         let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: ClaudeIPCAuthenticator(secret: "listener-secret"))
         XCTAssertTrue(await service.listener.receive(request, channel: ClaudeInMemoryActionReplyChannel(), at: now))

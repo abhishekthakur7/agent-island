@@ -6,13 +6,14 @@ Claude Code recording. No manual recording is claimed by this change.
 | Requirement / trace | Evidence | Status | Boundary |
 | --- | --- | --- | --- |
 | Permission allow/deny, exact callback owner and typed capture | `ClaudeActionRoutingTests.testPermissionCallbackIsBoundToOneExactIdentityAndOneDispatch` | authored | One PermissionRequest has session, prompt when supplied, hook, fingerprint, fresh nonce; no tool-use ID or text matching. |
-| Exact persistent suggestion + second scope confirmation | `testPersistentSuggestionRequiresExactSecondScopeConfirmationAndEchoesOnlyOffer` | authored | Only the Product-offered JSON is returned; missing/mismatched scope has zero dispatch. |
-| Single/multi structured answers and ExitPlanMode approval | `testQuestionAndPlanRequireCompleteDocumentedInput` | authored | PreToolUse requires tool-use ID and complete choices/updated input; revisions remain Host-native. |
+| Exact persistent suggestion + second scope confirmation | `testPersistentSuggestionRequiresExactSecondScopeConfirmationAndEchoesOnlyOffer`, `testPermissionSuggestionModeAllowlistNeverBroadensPolicyAndAskKeepsOneShotDeny` | authored | Only an exact Product offer in documented default/normal mode is returned; deny/ask/managed/policy/bypass/unknown suggestion modes have zero route and zero dispatch. Ask may still deny one source-proven live request. |
+| Single/multi structured answers and ExitPlanMode approval | `testQuestionAndPlanRequireCompleteDocumentedInput`, `testStructuredAndPlanActionsWaitForLiveTextCompositionToEnd` | authored | PreToolUse requires tool-use ID and complete choices/updated input; structured and plan mappings reject while caller-provided text composition is active, then may route after it ends. Revisions remain Host-native. |
 | Faithful Hook fixtures / mode and unsupported path | `testFactoryUsesToolUseNotTextAndRejectsManagedAndUnsupportedPaths` | authored | Managed/bypass mode and unknown semantics do not route. |
 | Double submit, stale and resolved elsewhere | `testPermissionCallbackIsBoundToOneExactIdentityAndOneDispatch`, `testResolvedElsewhereAndAcknowledgementOutcomesNeverClaimLifecycleCompletion` | authored | Callback gate is consumed before dispatch; resolved elsewhere has zero dispatch. |
 | Rejected / accepted / applied / superseded / indeterminate acknowledgement model | `ActionAttemptStore`, `ClaudeGuidedActionRouter.recordApplied/recordSuperseded/recordIndeterminate` | authored | A socket reply is indeterminate because the documented Hook protocol exposes no Product acknowledgement. Accepted/applied require later explicit Product evidence; no local lifecycle completion claim. |
 | Restart, reconnect, wake, helper loss, deadline/capability retirement | `ActionAttemptStore.invalidate*`, `ClaudeGuidedActionRouter.retireAll` | authored | Live callbacks and leases are volatile; no callback recreation or automatic retry. |
-| Accessibility and unsupported fallback | Pending dedicated routing UI wiring and tests | pending | The existing Guided workflow is not evidence that callback availability, confirmation, scope consequence, or dispatch outcome is exposed accessibly. |
+| Live backend installation composition | `ClaudeActionIntegrationLifecycle.activate`, `AppDelegate.activateClaudeActionInstallation` and lifecycle tests | authored backend | The retained composition API starts only after enabled manifest, current action capability, and Keychain credential validation; disable/helper loss/capability change retire it. No setup UI calls it yet. |
+| Accessibility and unsupported fallback | Pending dedicated routing UI wiring and tests | pending | The existing Guided workflow is not evidence that callback availability, confirmation, scope consequence, text-composition state, or dispatch outcome is exposed accessibly. |
 
 ## C-mode parity matrix
 
@@ -31,4 +32,6 @@ Claude Code recording. No manual recording is claimed by this change.
 Pending: run the reviewed Claude Code build with a real synchronous Hook
 callback endpoint, capture VoiceOver/keyboard/reduced-motion/high-contrast
 flows, and attach typed native response captures. This change does not claim
-those recordings were performed.
+those recordings were performed. The live backend composition API is
+implemented, but setup UI wiring and all manual/accessibility recordings
+remain pending.

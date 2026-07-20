@@ -3,6 +3,8 @@ import Combine
 import SwiftUI
 import ServiceManagement
 import PresentationRuntime
+import ClaudeCodeAdapter
+import SessionDomain
 
 /// AppKit owns the two deliberately distinct presentation hosts: a normally
 /// non-activating Island Overlay and an independently activating Settings
@@ -97,6 +99,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.terminate()
         Task { await claudeActionLifecycle.retireCurrentInstallation() }
         return .terminateNow
+    }
+
+    /// Reachable composition API for the Integration Installation flow. The
+    /// current Settings surface does not yet provide installation controls;
+    /// its future flow must call this only with newly verified installation,
+    /// manifest, helper, snapshot, and Keychain credential evidence.
+    @discardableResult
+    func activateClaudeActionInstallation(
+        installation: IntegrationInstallation,
+        manifest: OwnershipManifest,
+        helperID: String,
+        snapshot: NegotiationSnapshot,
+        credentialStore: any ClaudeHookCredentialStore = KeychainClaudeHookCredentialStore()
+    ) async -> Bool {
+        await claudeActionLifecycle.activate(
+            installation: installation,
+            manifest: manifest,
+            helperID: helperID,
+            snapshot: snapshot,
+            credentialStore: credentialStore
+        )
+    }
+
+    /// Matching lifecycle endpoint for disablement, helper loss, removal, or
+    /// a capability/negotiation change. The reason invalidates Action Leases
+    /// through the same source-change category before the endpoint stops.
+    func retireClaudeActionInstallation(reason: ClaudeLiveActionRejection = .helperUnavailable) async {
+        await claudeActionLifecycle.retireCurrentInstallation(reason: reason)
     }
 
     /// The user explicitly requested the normal window; this intentionally

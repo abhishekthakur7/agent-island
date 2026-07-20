@@ -11,31 +11,47 @@ import SessionDomain
 @MainActor
 final class ClaudeActionApplicationComposition {
     private var production: ClaudeActionProductionComposition?
+    /// Tests inject a temporary app-owned endpoint. Production leaves this
+    /// nil and uses the fixed Application Support location below.
+    private let endpointOverride: ClaudeLocalEndpoint?
+
+    init(endpointOverride: ClaudeLocalEndpoint? = nil) {
+        self.endpointOverride = endpointOverride
+    }
 
     @discardableResult
     func install(configuration: ClaudeActionRequestListener.Configuration) async -> Bool {
         await retire()
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
-        let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-actions.sock"), appOwnedRoot: root)
+        let endpoint: ClaudeLocalEndpoint
+        if let endpointOverride {
+            endpoint = endpointOverride
+        } else {
+            let root = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
+            endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-actions.sock"), appOwnedRoot: root)
+        }
         let production = await ClaudeActionProductionComposition(endpoint: endpoint, configuration: configuration)
-        guard production.start() else { return false }
+        guard production.start() else {
+            await production.stop(reason: .helperUnavailable)
+            return false
+        }
         self.production = production
         return true
     }
 
-    func retire() async {
+    func retire(reason: ClaudeLiveActionRejection = .helperUnavailable) async {
         guard let production else { return }
         self.production = nil
-        await production.stop()
+        await production.stop(reason: reason)
     }
 }
 
-/// The only GUI-facing action endpoint lifecycle.  Integration installation
-/// code calls this after it has proved an enabled owned manifest and supplied
-/// a current action-capability snapshot plus the Keychain-backed credential.
-/// Any later disable, helper loss, removal, or capability change calls
-/// `retire`; absence never starts a listener.
+/// The retained installation-flow action endpoint controller. The current
+/// integration installation flow can call `activate` after it has proved an
+/// enabled owned manifest and supplied a current action-capability snapshot
+/// plus the Keychain-backed credential. Any later disable, helper loss,
+/// removal, or capability change calls `retireCurrentInstallation`; absence
+/// never starts a listener. There is no setup UI caller yet.
 @MainActor
 final class ClaudeActionIntegrationLifecycle {
     private let composition: ClaudeActionApplicationComposition
@@ -67,7 +83,7 @@ final class ClaudeActionIntegrationLifecycle {
               manifest.verification?.capabilityIDs.contains(where: ClaudeCodeIntegration.allActionCapabilities.contains) == true,
               let secret = credentialStore.secret(for: installation.id, helperID: helperID), !secret.isEmpty
         else {
-            await composition.retire()
+            await composition.retire(reason: .capabilityUnavailable)
             return false
         }
         let configuration = ClaudeActionRequestListener.Configuration(
@@ -84,11 +100,13 @@ final class ClaudeActionIntegrationLifecycle {
         guard configuration.snapshot.integrationInstanceID == configuration.installationID,
               configuration.snapshot.capabilities.contains(where: { $0.direction == .act && $0.availability == .available && $0.freshness == .current })
         else {
-            await composition.retire()
+            await composition.retire(reason: .capabilityUnavailable)
             return false
         }
         return await composition.install(configuration: configuration)
     }
 
-    func retireCurrentInstallation() async { await composition.retire() }
+    func retireCurrentInstallation(reason: ClaudeLiveActionRejection = .helperUnavailable) async {
+        await composition.retire(reason: reason)
+    }
 }

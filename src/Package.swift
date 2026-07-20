@@ -119,7 +119,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AgentIslandAppTests",
-            dependencies: ["AgentIslandApp", "SessionStore"]
+            dependencies: ["AgentIslandApp", "SessionDomain", "SessionStore", "ClaudeActionRouting", "ClaudeCodeAdapter"]
         ),
         .testTarget(
             name: "ClaudeCodeAdapterTests",

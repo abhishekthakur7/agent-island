@@ -67,7 +67,7 @@ public final class ClaudeUnixDomainActionServer: @unchecked Sendable {
 
     /// Stopping a listener is an incarnation boundary: no connection, nonce,
     /// or lease is recovered by a later listener instance.
-    public func stop() async {
+    public func stop(reason: ClaudeLiveActionRejection = .helperUnavailable) async {
         let state = lock.withLock { () -> (Int32, Task<Void, Never>?, Task<Void, Never>?, SocketReceipt?, [ClaudeUnixDomainActionReplyChannel]) in
             let fd = socketFD; socketFD = -1
             let acceptTask = self.acceptTask; self.acceptTask = nil
@@ -85,7 +85,7 @@ public final class ClaudeUnixDomainActionServer: @unchecked Sendable {
         if let receipt, socketReceipt(at: endpoint.path) == receipt {
             try? FileManager.default.removeItem(atPath: endpoint.path)
         }
-        await listener.retireAll(reason: .helperUnavailable)
+        await listener.retireAll(reason: reason)
     }
 
     private func acceptLoop(_ fd: Int32) async {
@@ -186,7 +186,7 @@ public final class ClaudeActionProductionComposition: @unchecked Sendable {
     /// Failure deliberately has no diagnostic payload: endpoint paths,
     /// request bytes, nonces, and credentials are not diagnostic material.
     @discardableResult public func start() -> Bool { (try? server.start()) != nil }
-    public func stop() async { await server.stop() }
+    public func stop(reason: ClaudeLiveActionRejection = .helperUnavailable) async { await server.stop(reason: reason) }
 }
 
 public actor ClaudeUnixDomainActionReplyChannel: ClaudeActionReplyChannel {

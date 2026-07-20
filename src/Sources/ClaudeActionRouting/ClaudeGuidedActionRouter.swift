@@ -9,9 +9,12 @@ public struct ClaudeActionSubmission: Sendable {
     public let action: GuidedAction
     public let deliberateConfirmation: Bool
     public let persistentScopeConfirmation: String?
+    /// Volatile input state supplied by the presentation that owns the text
+    /// editor. This is deliberately state, never inferred from text content.
+    public let textCompositionActive: Bool
 
-    public init(action: GuidedAction, deliberateConfirmation: Bool, persistentScopeConfirmation: String? = nil) {
-        self.action = action; self.deliberateConfirmation = deliberateConfirmation; self.persistentScopeConfirmation = persistentScopeConfirmation
+    public init(action: GuidedAction, deliberateConfirmation: Bool, persistentScopeConfirmation: String? = nil, textCompositionActive: Bool = false) {
+        self.action = action; self.deliberateConfirmation = deliberateConfirmation; self.persistentScopeConfirmation = persistentScopeConfirmation; self.textCompositionActive = textCompositionActive
     }
 }
 
@@ -146,6 +149,14 @@ public actor ClaudeGuidedActionRouter {
         guard submission.deliberateConfirmation else {
             let attempt = await store.recordRejectedAttempt(id: attemptID, requestID: liveCallback.callback.requestID, owner: liveCallback.callback.owner, action: submission.action, at: now, reason: .missingConfirmation)
             return .rejected(attempt, .missingConfirmation)
+        }
+        // IME/text composition is live presentation state.  Answer and plan
+        // mappings can change native input, so they must wait until the
+        // caller reports composition ended. The rejected attempt retains no
+        // text payload beyond the typed action's existing redacted shape.
+        guard !(submission.textCompositionActive && requiresCompositionToBeIdle(liveCallback.callback.semantic)) else {
+            let attempt = await store.recordRejectedAttempt(id: attemptID, requestID: liveCallback.callback.requestID, owner: liveCallback.callback.owner, action: submission.action, at: now, reason: .textCompositionActive)
+            return .rejected(attempt, .invalidAnswer)
         }
         guard validate(submission, for: liveCallback.callback) else {
             let attempt = await store.recordRejectedAttempt(id: attemptID, requestID: liveCallback.callback.requestID, owner: liveCallback.callback.owner, action: submission.action, at: now, reason: .invalidSemanticResponse)
@@ -312,6 +323,13 @@ public actor ClaudeGuidedActionRouter {
         switch action {
         case .allow: "allow"; case .deny: "deny"; case .persistentSuggestion: "persistent"; case .structuredResponse: "answers"; case .planReview: "plan-approval"
         case .turnInput, .interruption, .productExtension: "unsupported"
+        }
+    }
+
+    private func requiresCompositionToBeIdle(_ semantic: ClaudeLiveActionSemantic) -> Bool {
+        switch semantic {
+        case .questionAnswers, .planApproval: true
+        case .permission, .permissionSuggestion: false
         }
     }
 
