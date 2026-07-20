@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "ProtectedStore", targets: ["ProtectedStore"]),
         .library(name: "ApplicationRuntime", targets: ["ApplicationRuntime"]),
         .library(name: "AdapterFixtureKit", targets: ["AdapterFixtureKit"]),
+        .library(name: "ClaudeCodeAdapter", targets: ["ClaudeCodeAdapter"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -64,6 +65,12 @@ let package = Package(
         // handle or bypass validation even if misused.
         .target(name: "AdapterFixtureKit", dependencies: ["SessionDomain", "AdapterPort"]),
 
+        // Documented Claude Code Hooks observation boundary. The adapter is
+        // deliberately outer-only: it may enter through AdapterPort but never
+        // receives a SessionStore, ProtectedStore, Product action client, or
+        // transcript reader.
+        .target(name: "ClaudeCodeAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
+
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
         // the canonical store directly.
@@ -100,6 +107,10 @@ let package = Package(
         .testTarget(
             name: "AgentIslandAppTests",
             dependencies: ["AgentIslandApp", "SessionStore"]
+        ),
+        .testTarget(
+            name: "ClaudeCodeAdapterTests",
+            dependencies: ["ClaudeCodeAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime"]
         ),
     ]
 )
