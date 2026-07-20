@@ -47,7 +47,7 @@ final class ShortcutModelsTests: XCTestCase {
         let deliberate = ShortcutKeyEvent(binding: ShortcutBinding(key: PhysicalKey(0), modifiers: [.option]), hasMarkedText: true)
         XCTAssertTrue(gate.shouldInvoke(deliberate))
         XCTAssertFalse(gate.shouldInvoke(ShortcutKeyEvent(binding: deliberate.binding, isRepeat: true)))
-        XCTAssertFalse(gate.shouldInvoke(ShortcutKeyEvent(binding: deliberate.binding, phase: .up)))
+        XCTAssertFalse(gate.shouldInvoke(ShortcutKeyEvent(binding: ShortcutBinding(key: deliberate.binding.key), phase: .up)))
         XCTAssertTrue(gate.shouldInvoke(deliberate))
     }
 
@@ -76,5 +76,142 @@ final class ShortcutModelsTests: XCTestCase {
         XCTAssertNotNil(ledger.announce(requestID: "request-1", priority: 2, owner: "Claude Code / Session 1"))
         XCTAssertNil(ledger.announce(requestID: "request-1", priority: 2, owner: "Claude Code / Session 1"))
         XCTAssertNotNil(ledger.announce(requestID: "request-1", priority: 3, owner: "Claude Code / Session 1"))
+    }
+}
+
+@MainActor
+final class ShortcutRegistrationCoordinatorTests: XCTestCase {
+    private final class FakeBackend: ShortcutRegistrationBackend {
+        var readiness: ShortcutRegistrationStatus = .active
+        var outcomes: [ShortcutBinding: ShortcutRegistrationBackendResult] = [:]
+        var handlers: [ShortcutCommand: (ShortcutKeyEvent.Phase) -> Void] = [:]
+        var registered: [ShortcutCommand: ShortcutBinding] = [:]
+        var unregistered: [ShortcutCommand] = []
+
+        func register(
+            command: ShortcutCommand,
+            binding: ShortcutBinding,
+            handler: @escaping @MainActor @Sendable (ShortcutKeyEvent.Phase) -> Void
+        ) -> ShortcutRegistrationBackendResult {
+            let result = outcomes[binding] ?? .registered
+            if case .registered = result {
+                registered[command] = binding
+                handlers[command] = handler
+            }
+            return result
+        }
+
+        func unregister(command: ShortcutCommand) {
+            registered.removeValue(forKey: command)
+            handlers.removeValue(forKey: command)
+            unregistered.append(command)
+        }
+
+        func emit(_ command: ShortcutCommand, phase: ShortcutKeyEvent.Phase) {
+            handlers[command]?(phase)
+        }
+    }
+
+    func testAtomicCollisionRollbackRetainsPriorRegistrationAndMapping() {
+        let backend = FakeBackend()
+        let coordinator = ShortcutRegistrationCoordinator(backend: backend)
+        let oldBinding = ShortcutBinding(key: PhysicalKey(0), modifiers: [.option])
+        let replacement = ShortcutBinding(key: PhysicalKey(1), modifiers: [.option])
+        var oldRegistry = ShortcutRegistry()
+        XCTAssertEqual(oldRegistry.setBinding(oldBinding, for: .toggleOverlay), .valid)
+        XCTAssertEqual(coordinator.apply(oldRegistry, invocation: { _ in }).status, .active)
+
+        backend.outcomes[replacement] = .collision("OS-owned collision")
+        var candidate = oldRegistry
+        XCTAssertEqual(candidate.setBinding(replacement, for: .toggleOverlay), .valid)
+        let result = coordinator.apply(candidate, invocation: { _ in })
+        XCTAssertEqual(result, .rejected(.registeredCollision, .unavailable("OS-owned collision"), replacement))
+        XCTAssertEqual(coordinator.registeredBindings[.toggleOverlay], oldBinding)
+        XCTAssertEqual(backend.registered[.toggleOverlay], oldBinding)
+    }
+
+    func testAtomicRollbackUnregistersEarlierCandidateRegistrations() {
+        let backend = FakeBackend()
+        let coordinator = ShortcutRegistrationCoordinator(backend: backend)
+        let oldBinding = ShortcutBinding(key: PhysicalKey(0), modifiers: [.option])
+        let nextBinding = ShortcutBinding(key: PhysicalKey(1), modifiers: [.option])
+        let replacement = ShortcutBinding(key: PhysicalKey(2), modifiers: [.option])
+        var oldRegistry = ShortcutRegistry()
+        XCTAssertEqual(oldRegistry.setBinding(oldBinding, for: .toggleOverlay), .valid)
+        XCTAssertEqual(coordinator.apply(oldRegistry, invocation: { _ in }).status, .active)
+
+        var candidate = oldRegistry
+        XCTAssertEqual(candidate.setBinding(nextBinding, for: .nextSession), .valid)
+        XCTAssertEqual(candidate.setBinding(replacement, for: .toggleOverlay), .valid)
+        backend.outcomes[replacement] = .collision("OS-owned collision")
+        XCTAssertEqual(coordinator.apply(candidate, invocation: { _ in }).status, .unavailable("OS-owned collision"))
+        XCTAssertNil(backend.registered[.nextSession])
+        XCTAssertEqual(backend.registered[.toggleOverlay], oldBinding)
+    }
+
+    func testMasterDisableUnregistersOnlyNativeSetAndCallbackIsAtMostOnce() {
+        let backend = FakeBackend()
+        let coordinator = ShortcutRegistrationCoordinator(backend: backend)
+        let binding = ShortcutBinding(key: PhysicalKey(0), modifiers: [.option])
+        var registry = ShortcutRegistry()
+        XCTAssertEqual(registry.setBinding(binding, for: .toggleOverlay), .valid)
+        var invocations = 0
+        XCTAssertEqual(coordinator.apply(registry, invocation: { _ in invocations += 1 }), .accepted(.active))
+        backend.emit(.toggleOverlay, phase: .down)
+        backend.emit(.toggleOverlay, phase: .down)
+        XCTAssertEqual(invocations, 1)
+        backend.emit(.toggleOverlay, phase: .up)
+        backend.emit(.toggleOverlay, phase: .down)
+        XCTAssertEqual(invocations, 2)
+
+        registry.setMasterEnabled(false)
+        XCTAssertEqual(coordinator.apply(registry, invocation: { _ in }), .accepted(.disabled))
+        XCTAssertTrue(coordinator.registeredBindings.isEmpty)
+        XCTAssertEqual(registry.bindings[.toggleOverlay], binding)
+    }
+
+    func testFocusedAndSafeActionCommandsNeverReachGlobalBackend() {
+        let backend = FakeBackend()
+        let coordinator = ShortcutRegistrationCoordinator(backend: backend)
+        var registry = ShortcutRegistry()
+        XCTAssertEqual(registry.setBinding(ShortcutBinding(key: PhysicalKey(2)), for: .safeAction("answer")), .valid)
+        XCTAssertEqual(registry.setBinding(ShortcutBinding(key: PhysicalKey(3)), for: .showAll), .valid)
+        XCTAssertEqual(coordinator.apply(registry, invocation: { _ in }), .accepted(.active))
+        XCTAssertTrue(backend.registered.isEmpty)
+    }
+
+    func testRemovingLastGlobalBindingUnregistersItWhileFocusedMappingCanPersist() {
+        let backend = FakeBackend()
+        let coordinator = ShortcutRegistrationCoordinator(backend: backend)
+        let binding = ShortcutBinding(key: PhysicalKey(0), modifiers: [.option])
+        var registry = ShortcutRegistry()
+        XCTAssertEqual(registry.setBinding(binding, for: .toggleOverlay), .valid)
+        XCTAssertEqual(coordinator.apply(registry, invocation: { _ in }), .accepted(.active))
+        registry.removeBinding(for: .toggleOverlay)
+        XCTAssertEqual(registry.setBinding(ShortcutBinding(key: PhysicalKey(1)), for: .showAll), .valid)
+        XCTAssertEqual(coordinator.apply(registry, invocation: { _ in }), .accepted(.active))
+        XCTAssertTrue(backend.registered.isEmpty)
+        XCTAssertEqual(registry.bindings[.showAll], ShortcutBinding(key: PhysicalKey(1)))
+    }
+
+    func testProductionEventMapperPreservesMarkedTextGateAndPhysicalFallback() {
+        let ordinary = ShortcutKeyEventMapper.make(
+            keyCode: 0,
+            modifiers: [],
+            phase: .down,
+            isRepeat: false,
+            hasMarkedText: true
+        )
+        var gate = ShortcutInvocationGate()
+        XCTAssertFalse(gate.shouldInvoke(ordinary))
+        let deliberate = ShortcutKeyEventMapper.make(
+            keyCode: 0,
+            modifiers: [.option],
+            phase: .down,
+            isRepeat: false,
+            hasMarkedText: true
+        )
+        XCTAssertTrue(gate.shouldInvoke(deliberate))
+        XCTAssertEqual(ShortcutInputSource(identifier: "ime", localizedName: "Japanese").label(for: PhysicalKey(0)), "A")
     }
 }

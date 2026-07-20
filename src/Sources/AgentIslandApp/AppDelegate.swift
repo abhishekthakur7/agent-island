@@ -26,12 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsCancellable: AnyCancellable?
     private var displaySettingsCancellable: AnyCancellable?
     private var displayAvailabilityCancellable: AnyCancellable?
-    private var shortcutsCancellable: AnyCancellable?
+    private var shortcutStatusCancellable: AnyCancellable?
 
     init(presentation: PresentationRuntime, fixtureController: FixtureController) {
         self.presentation = presentation
         self.fixtureController = fixtureController
-        let atlasSettings = AtlasSettingsModel()
+        let atlasSettings = AtlasSettingsModel(shortcutInputSourceResolver: {
+            NativeShortcutInputSourceResolver.current()
+        })
         self.atlasSettings = atlasSettings
     }
 
@@ -47,7 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyLaunchAtLogin(atlasSettings.general.launchBehavior)
         applyAtlasPresentationPreferences(atlasSettings.general)
         applyAtlasDisplayPreferences(atlasSettings.display)
-        overlay.applyShortcutPreferences(atlasSettings.shortcuts)
+        overlay.bootstrapShortcutPreferences(atlasSettings.shortcuts)
+        atlasSettings.setShortcutRegistrationHandler { [weak self] preferences in
+            guard let self else {
+                return .rejected(.registrationUnavailable, .unavailable("Overlay registration coordinator is unavailable."), nil)
+            }
+            return self.overlay.tryApplyShortcutPreferences(preferences)
+        }
         settingsCancellable = atlasSettings.$general.sink { [weak self] general in
             self?.applyLaunchAtLogin(general.launchBehavior)
             self?.applyAtlasPresentationPreferences(general)
@@ -55,8 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displaySettingsCancellable = atlasSettings.$display.sink { [weak self] display in
             self?.applyAtlasDisplayPreferences(display)
         }
-        shortcutsCancellable = atlasSettings.$shortcuts.sink { [weak self] shortcuts in
-            self?.overlay.applyShortcutPreferences(shortcuts)
+        shortcutStatusCancellable = overlay.$shortcutRegistrationStatus.sink { [weak self] status in
+            self?.atlasSettings.updateShortcutRegistrationStatus(status)
         }
         overlay.start()
         // This is a one-way, read-only bridge into the Settings preview. The

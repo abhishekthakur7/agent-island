@@ -444,7 +444,10 @@ private struct AtlasShortcutsSection: View {
             Text("Bindings use physical keys and current input-source labels. Agent Island does not simulate Host input or require Accessibility permission.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Label("Global registration is reported unavailable until a native safe registration capability is proven; saved mappings remain intact.", systemImage: "info.circle")
+            Label(model.shortcutRegistrationStatus.shortcutStatusMessage, systemImage: model.shortcutRegistrationStatus.shortcutStatusSymbol)
+                .font(.caption)
+                .foregroundStyle(model.shortcutRegistrationStatus.shortcutStatusIsHealthy ? Color.secondary : Color.orange)
+            Text("Input source: \(model.shortcutInputSource.localizedName)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -466,7 +469,7 @@ private struct AtlasShortcutsSection: View {
                         .frame(width: 130, height: 28)
                         .accessibilityLabel("Press a physical key for \(command.shortcutTitle)")
                     } else {
-                        Button(model.shortcuts.registry.bindings[command]?.renderedLabel() ?? "Set shortcut") {
+                        Button(model.shortcuts.registry.bindings[command]?.renderedLabel(inputSource: model.shortcutInputSource) ?? "Set shortcut") {
                             model.beginShortcutCapture(command)
                         }
                         .buttonStyle(.bordered)
@@ -567,7 +570,35 @@ private extension ShortcutBindingValidation {
             case .registeredCollision: "Not saved: another registered shortcut owns that binding."
             case .emptySafeAction: "Not saved: safe action identifier is empty."
             case .invalidKey: "Not saved: invalid physical key."
+            case .requiresModifier: "Not saved: global shortcuts need Command, Option, Control, or Function."
+            case .registrationUnavailable: "Not saved: native global registration is unavailable."
+            case .registrationFailed: "Not saved: native global registration failed."
             }
+        }
+    }
+}
+
+private extension ShortcutRegistrationStatus {
+    var shortcutStatusIsHealthy: Bool {
+        switch self {
+        case .active, .disabled: true
+        case .unavailable: false
+        }
+    }
+
+    var shortcutStatusSymbol: String {
+        switch self {
+        case .active: "checkmark.circle"
+        case .disabled: "pause.circle"
+        case .unavailable: "exclamationmark.triangle"
+        }
+    }
+
+    var shortcutStatusMessage: String {
+        switch self {
+        case .active: "Global registration active for eligible Overlay commands."
+        case .disabled: "Global shortcuts disabled; saved mappings are retained."
+        case let .unavailable(reason): "Global registration unavailable: \(reason)"
         }
     }
 }

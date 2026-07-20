@@ -101,4 +101,33 @@ final class AtlasSettingsRepositoryTests: XCTestCase {
         XCTAssertTrue(loaded.registry.activeBindings.isEmpty)
         XCTAssertEqual(loaded.registry.bindings[.toggleOverlay], binding)
     }
+
+    @MainActor
+    func testNativeRegistrationFailureKeepsPriorBindingAndRecordsCollisionEvidence() {
+        let suite = "AtlasShortcutRegistrationTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let repository = AtlasSettingsRepository(defaults: defaults, namespace: "test.atlas")
+        let model = AtlasSettingsModel(
+            repository: repository,
+            shortcutInputSourceResolver: { ShortcutInputSource(identifier: "azerty", localizedName: "French", keyCodeLabels: [0: "Q"]) }
+        )
+        model.setShortcutRegistrationHandler { preferences in
+            let replacement = ShortcutBinding(key: PhysicalKey(1), modifiers: [.option])
+            if preferences.registry.bindings[.toggleOverlay] == replacement {
+                return .rejected(.registeredCollision, .unavailable("OS-owned collision"), replacement)
+            }
+            return .accepted(.active)
+        }
+
+        let prior = ShortcutBinding(key: PhysicalKey(0), modifiers: [.option])
+        XCTAssertEqual(model.setShortcut(prior, for: .toggleOverlay), .valid)
+        let replacement = ShortcutBinding(key: PhysicalKey(1), modifiers: [.option])
+        XCTAssertEqual(model.setShortcut(replacement, for: .toggleOverlay), .rejected(.registeredCollision))
+        XCTAssertEqual(model.shortcuts.registry.bindings[.toggleOverlay], prior)
+        XCTAssertTrue(model.shortcuts.registry.registeredCollisions.contains(replacement))
+        XCTAssertEqual(repository.shortcuts.registry.bindings[.toggleOverlay], prior)
+        XCTAssertEqual(model.shortcutInputSource.label(for: PhysicalKey(0)), "Q")
+        XCTAssertEqual(model.shortcutRegistrationStatus, .unavailable("OS-owned collision"))
+    }
 }

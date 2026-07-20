@@ -25,9 +25,10 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var selectionAvailability: IslandDisplayAvailability = .selectionUnavailable
     @Published private(set) var lastClickOutcome: PresentationClickOutcome?
     @Published private(set) var focusedSessionIndex: Int? = nil
-    @Published private(set) var shortcutRegistrationStatus: ShortcutRegistrationStatus = .unavailable("Global registration is unavailable in this build; saved bindings remain intact.")
+    @Published private(set) var shortcutRegistrationStatus: ShortcutRegistrationStatus = .unavailable("Native global registration is not configured.")
 
     private let presentation: PresentationRuntime
+    private let shortcutRegistrar: ShortcutRegistrationCoordinator
     private var stateMachine = IslandOverlayStateMachine()
     private var panel: IslandOverlayPanel?
     private var container: IslandOverlayContainerView?
@@ -48,7 +49,11 @@ final class IslandOverlayController: NSObject, ObservableObject {
     /// accidentally activate a plausible app/window.
     var jumpBackAction: (() -> JumpBackOutcome?)?
 
-    init(presentation: PresentationRuntime) { self.presentation = presentation }
+    init(presentation: PresentationRuntime, shortcutRegistrar: ShortcutRegistrationCoordinator? = nil) {
+        self.presentation = presentation
+        self.shortcutRegistrar = shortcutRegistrar ?? ShortcutRegistrationCoordinator(backend: CarbonShortcutRegistrationBackend())
+        self.shortcutRegistrationStatus = self.shortcutRegistrar.status
+    }
 
     var selectedScreen: NSScreen? {
         guard let selectedDisplayID else { return nil }
@@ -193,15 +198,26 @@ final class IslandOverlayController: NSObject, ObservableObject {
         restorePrecedingKeyWindowIfEligible()
     }
 
-    /// Apply durable bindings without claiming that a global monitor or Host
-    /// input simulation is available. The current process only has a local
-    /// engaged-panel monitor; mappings remain durable for a future native
-    /// registration capability.
-    func applyShortcutPreferences(_ preferences: AtlasShortcutPreferences) {
+    /// Bootstrap persisted mappings even if the OS rejects one. This preserves
+    /// durable intent while exposing the exact unavailable/collision status.
+    func bootstrapShortcutPreferences(_ preferences: AtlasShortcutPreferences) {
         shortcutRegistry = preferences.registry
-        shortcutRegistrationStatus = preferences.registry.masterEnabled
-            ? .unavailable("Global registration is unavailable in this build; saved bindings remain intact.")
-            : .disabled
+        let result = shortcutRegistrar.apply(preferences.registry) { [weak self] command in
+            self?.handleGlobalShortcut(command)
+        }
+        shortcutRegistrationStatus = result.status
+    }
+
+    /// Settings calls this before committing a rebind/master toggle. Native
+    /// registration succeeds first; only then does the caller persist/swap its
+    /// registry. Focused commands never reach Carbon.
+    func tryApplyShortcutPreferences(_ preferences: AtlasShortcutPreferences) -> ShortcutRegistrationApplyResult {
+        let result = shortcutRegistrar.apply(preferences.registry) { [weak self] command in
+            self?.handleGlobalShortcut(command)
+        }
+        shortcutRegistrationStatus = result.status
+        if case .accepted = result { shortcutRegistry = preferences.registry }
+        return result
     }
 
     var keyboardFocusTarget: KeyboardFocusTarget? { keyboardFocus.focusedTarget }
@@ -249,6 +265,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
         hoverWork?.cancel()
         dismissalWork?.cancel()
         presentationCancellable?.cancel()
+        shortcutRegistrar.unregisterAll()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
@@ -286,7 +303,13 @@ final class IslandOverlayController: NSObject, ObservableObject {
                 event.modifierFlags.contains(.shift) ? ShortcutModifiers.shift.rawValue : 0,
                 event.modifierFlags.contains(.function) ? ShortcutModifiers.function.rawValue : 0
             ].reduce(0) { $0 | $1 })
-            let keyEvent = ShortcutKeyEvent(binding: ShortcutBinding(key: PhysicalKey(event.keyCode), modifiers: modifiers), phase: event.type == .keyUp ? .up : .down, isRepeat: event.isARepeat)
+            let keyEvent = ShortcutKeyEventMapper.make(
+                keyCode: event.keyCode,
+                modifiers: modifiers,
+                phase: event.type == .keyUp ? .up : .down,
+                isRepeat: event.isARepeat,
+                hasMarkedText: CurrentMarkedTextState.hasMarkedText
+            )
             let isNavigationKey = [PhysicalKey.escape.rawValue, PhysicalKey.tab.rawValue].contains(event.keyCode)
             if event.type == .keyUp {
                 _ = self.shortcutGate.shouldInvoke(keyEvent)
@@ -348,6 +371,36 @@ final class IslandOverlayController: NSObject, ObservableObject {
             // dispatch path; Guided workflow/Action Lease remains authoritative.
             break
         }
+    }
+
+    /// Global callbacks are deliberate engagement requests, not ambient
+    /// reveals. A missing selected display leaves no panel/hit/AX region and
+    /// reports the honest unavailable state to Settings.
+    private func handleGlobalShortcut(_ command: ShortcutCommand) {
+        guard command.isGloballyEligible else { return }
+        guard selectedScreen != nil else {
+            removeOverlayRegionsAndWindow()
+            shortcutRegistrationStatus = .unavailable("No selected display is available; the Overlay remains withdrawn.")
+            return
+        }
+        if command == .toggleOverlay {
+            if stateMachine.state.keyboardEngaged {
+                collapse()
+            } else {
+                if stateMachine.state.presentation == .withdrawn || stateMachine.state.presentation == .collapsed {
+                    stateMachine.reduce(.hoverEntered)
+                    applyState()
+                }
+                engageKeyboard()
+            }
+            return
+        }
+        if stateMachine.state.presentation == .withdrawn || stateMachine.state.presentation == .collapsed {
+            stateMachine.reduce(.hoverEntered)
+            applyState()
+        }
+        dispatchLocalShortcut(command)
+        if !stateMachine.state.keyboardEngaged { engageKeyboard() }
     }
 
     private func refreshDisplays(coldResume: Bool) {

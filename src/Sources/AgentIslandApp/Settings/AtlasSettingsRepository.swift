@@ -196,7 +196,12 @@ public struct AtlasSettingsRepository {
 /// ephemeral.
 @MainActor
 public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvailabilitySink {
+    public typealias ShortcutRegistrationHandler = (AtlasShortcutPreferences) -> ShortcutRegistrationApplyResult
+    public typealias ShortcutInputSourceResolver = () -> ShortcutInputSource
+
     private let repository: AtlasSettingsRepository
+    private let shortcutInputSourceResolver: ShortcutInputSourceResolver
+    private var shortcutRegistrationHandler: ShortcutRegistrationHandler?
 
     @Published public private(set) var snapshot: AtlasSettingsSnapshot
     @Published public private(set) var selectedDestination: AtlasSettingsDestination
@@ -206,14 +211,20 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     @Published public private(set) var shortcuts: AtlasShortcutPreferences
     @Published public private(set) var shortcutCaptureCommand: ShortcutCommand?
     @Published public private(set) var shortcutFeedback: String?
+    @Published public private(set) var shortcutRegistrationStatus: ShortcutRegistrationStatus
+    @Published public private(set) var shortcutInputSource: ShortcutInputSource
     @Published public private(set) var onboarding: AtlasOnboardingState
     @Published public private(set) var integrations: [AtlasIntegrationState]
     @Published public private(set) var preview: AtlasPreviewState
 
     private let previewRouter: AtlasPreviewRouter
 
-    public init(repository: AtlasSettingsRepository = AtlasSettingsRepository()) {
+    public init(
+        repository: AtlasSettingsRepository = AtlasSettingsRepository(),
+        shortcutInputSourceResolver: @escaping ShortcutInputSourceResolver = { ShortcutInputSource() }
+    ) {
         self.repository = repository
+        self.shortcutInputSourceResolver = shortcutInputSourceResolver
         let loaded = repository.loadSnapshot()
         self.snapshot = loaded
         self.selectedDestination = loaded.selectedDestination
@@ -222,6 +233,10 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
         self.shortcuts = loaded.shortcuts
         self.shortcutCaptureCommand = nil
         self.shortcutFeedback = nil
+        self.shortcutRegistrationStatus = loaded.shortcuts.registry.masterEnabled
+            ? .unavailable("Native global registration is not configured.")
+            : .disabled
+        self.shortcutInputSource = shortcutInputSourceResolver()
         self.onboarding = loaded.onboarding
         self.integrations = loaded.integrations
         self.previewRouter = AtlasPreviewRouter(initialState: loaded.preview)
@@ -274,17 +289,30 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
 
     public func setShortcuts(_ value: AtlasShortcutPreferences) {
         guard shortcuts != value else { return }
-        shortcuts = value
-        repository.saveShortcuts(value)
-        publishSnapshot()
+        _ = commitShortcuts(value)
+    }
+
+    /// Installs the AppKit/Carbon transaction seam after composition-root
+    /// construction. Existing persisted mappings are not rewritten here; the
+    /// Overlay performs one bootstrap attempt and reports its status.
+    public func setShortcutRegistrationHandler(_ handler: @escaping ShortcutRegistrationHandler) {
+        shortcutRegistrationHandler = handler
+    }
+
+    public func updateShortcutRegistrationStatus(_ status: ShortcutRegistrationStatus) {
+        shortcutRegistrationStatus = status
+    }
+
+    public func refreshShortcutInputSource() {
+        shortcutInputSource = shortcutInputSourceResolver()
     }
 
     @discardableResult
     public func setShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) -> ShortcutBindingValidation {
         var value = shortcuts
         let result = value.registry.setBinding(binding, for: command)
-        if case .valid = result { setShortcuts(value) }
-        return result
+        guard case .valid = result else { return result }
+        return commitShortcuts(value)
     }
 
     public func removeShortcut(for command: ShortcutCommand) {
@@ -307,6 +335,7 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     public func cancelShortcutCapture() { shortcutCaptureCommand = nil }
 
     public func captureShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) {
+        refreshShortcutInputSource()
         let result = setShortcut(binding, for: command)
         switch result {
         case .valid: shortcutFeedback = "Saved."
@@ -382,5 +411,53 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
             integrations: integrations,
             preview: preview
         )
+    }
+
+    @discardableResult
+    private func commitShortcuts(_ value: AtlasShortcutPreferences) -> ShortcutBindingValidation {
+        if let handler = shortcutRegistrationHandler {
+            switch handler(value) {
+            case let .accepted(status):
+                var committed = value
+                if case .active = status {
+                    let activeGlobalBindings = Set(value.registry.activeBindings.compactMap { command, binding in
+                        command.isGloballyEligible ? binding : nil
+                    })
+                    committed.registry.registeredCollisions.subtract(activeGlobalBindings)
+                }
+                shortcuts = committed
+                shortcutRegistrationStatus = status
+                repository.saveShortcuts(committed)
+                publishSnapshot()
+                return .valid
+            case let .rejected(reason, status, collisionBinding):
+                shortcutRegistrationStatus = status
+                shortcutFeedback = "Not saved: \(reason.rawValue)."
+                // A native collision is retained as model evidence without
+                // replacing the prior valid command mapping. Unavailable and
+                // generic failures remain transient status only.
+                if reason == .registeredCollision {
+                    var evidence = shortcuts
+                    evidence.registry.registeredCollisions.formUnion(value.registry.registeredCollisions)
+                    if let collisionBinding {
+                        evidence.registry.registeredCollisions.insert(collisionBinding)
+                    } else if let command = value.registry.bindings.first(where: { old in
+                        shortcuts.registry.bindings[old.key] != old.value
+                    })?.key,
+                       let binding = value.registry.bindings[command] {
+                        evidence.registry.registeredCollisions.insert(binding)
+                    }
+                    shortcuts = evidence
+                    repository.saveShortcuts(evidence)
+                    publishSnapshot()
+                }
+                return .rejected(reason)
+            }
+        } else {
+            shortcuts = value
+            repository.saveShortcuts(value)
+            publishSnapshot()
+            return .valid
+        }
     }
 }

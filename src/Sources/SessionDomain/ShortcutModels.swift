@@ -140,6 +140,18 @@ public enum ShortcutCommand: Codable, Hashable, Sendable, Equatable {
         }
     }
 
+    /// Only commands whose effect is local Overlay/session navigation may be
+    /// installed as native global hot keys. Focused controls and safe actions
+    /// stay on the engaged Overlay/Guided workflow path.
+    public var isGloballyEligible: Bool {
+        switch self {
+        case .toggleOverlay, .nextSession, .previousSession:
+            return true
+        case .showAll, .collapse, .inspect, .safeAction:
+            return false
+        }
+    }
+
     private enum CodingKeys: String, CodingKey { case kind, id }
     private enum Kind: String, Codable { case toggleOverlay, nextSession, previousSession, showAll, collapse, inspect, safeAction }
 
@@ -188,6 +200,9 @@ public enum ShortcutBindingValidationFailure: String, Codable, Hashable, Sendabl
     case registeredCollision
     case emptySafeAction
     case invalidKey
+    case requiresModifier
+    case registrationUnavailable
+    case registrationFailed
 }
 
 public enum ShortcutBindingValidation: Equatable, Sendable {
@@ -215,6 +230,10 @@ public struct ShortcutRegistry: Codable, Hashable, Sendable, Equatable {
     public func validate(_ binding: ShortcutBinding, for command: ShortcutCommand, reserved: Set<ShortcutBinding> = Self.reservedSystemShortcuts) -> ShortcutBindingValidation {
         guard binding.key.rawValue <= 255 else { return .rejected(.invalidKey) }
         if case let .safeAction(id) = command, id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .rejected(.emptySafeAction) }
+        if command.isGloballyEligible,
+           binding.modifiers.intersection([.command, .option, .control, .function]).isEmpty {
+            return .rejected(.requiresModifier)
+        }
         if reserved.contains(binding) { return .rejected(.reservedSystemShortcut) }
         if registeredCollisions.contains(binding) { return .rejected(.registeredCollision) }
         if bindings.contains(where: { $0.key != command && $0.value == binding }) { return .rejected(.duplicateBinding) }
@@ -271,7 +290,10 @@ public struct ShortcutInvocationGate: Sendable, Equatable {
     public mutating func shouldInvoke(_ event: ShortcutKeyEvent) -> Bool {
         switch event.phase {
         case .up:
-            held.remove(event.binding)
+            // AppKit may omit a modifier from key-up after the modifier was
+            // released first. Clear by physical key so a stale held binding
+            // cannot suppress the next deliberate press.
+            held = held.filter { $0.key != event.binding.key }
             return false
         case .down:
             guard !(event.hasMarkedText && event.binding.modifiers.isOrdinaryCharacterShortcut) else { return false }
@@ -372,6 +394,200 @@ public enum ShortcutRegistrationStatus: Codable, Hashable, Sendable, Equatable {
     case disabled
     case active
     case unavailable(String)
+}
+
+/// Result returned by a native or fake registration backend. A backend must
+/// distinguish an OS-owned collision from an unavailable/failed capability so
+/// Settings can report the actual reason without fabricating active status.
+public enum ShortcutRegistrationBackendResult: Codable, Hashable, Sendable, Equatable {
+    case registered
+    case collision(String)
+    case unavailable(String)
+    case failed(String)
+}
+
+/// The backend is deliberately tiny: Carbon owns registration and callback
+/// delivery in the AppKit shell; tests can supply a deterministic fake without
+/// requiring a login session, Accessibility permission, or Host input.
+@MainActor
+public protocol ShortcutRegistrationBackend: AnyObject {
+    /// Readiness is observable even when the registry has no eligible global
+    /// bindings, so Settings does not claim active capability on a failed OS
+    /// event-handler installation.
+    var readiness: ShortcutRegistrationStatus { get }
+
+    func register(
+        command: ShortcutCommand,
+        binding: ShortcutBinding,
+        handler: @escaping @MainActor @Sendable (ShortcutKeyEvent.Phase) -> Void
+    ) -> ShortcutRegistrationBackendResult
+    func unregister(command: ShortcutCommand)
+}
+
+public enum ShortcutRegistrationApplyResult: Codable, Hashable, Sendable, Equatable {
+    case accepted(ShortcutRegistrationStatus)
+    case rejected(ShortcutBindingValidationFailure, ShortcutRegistrationStatus, ShortcutBinding?)
+
+    public var status: ShortcutRegistrationStatus {
+        switch self {
+        case let .accepted(status), let .rejected(_, status, _): status
+        }
+    }
+}
+
+/// Main-thread-owned transaction coordinator for native global bindings.
+/// Registration is all-or-nothing: the old native set remains the durable
+/// source of truth until every candidate registration succeeds. A failed
+/// replacement is rolled back to the previous native set and never reaches
+/// the settings repository.
+@MainActor
+public final class ShortcutRegistrationCoordinator {
+    public typealias Invocation = @MainActor @Sendable (ShortcutCommand) -> Void
+
+    private let backend: ShortcutRegistrationBackend
+    private var callback: Invocation?
+    private var gate = ShortcutInvocationGate()
+    private(set) public var registeredBindings: [ShortcutCommand: ShortcutBinding] = [:]
+    private(set) public var status: ShortcutRegistrationStatus = .unavailable("Native global registration has not been configured.")
+    private(set) public var lastCollisionBinding: ShortcutBinding?
+
+    public init(backend: ShortcutRegistrationBackend) {
+        self.backend = backend
+    }
+
+    /// Applies one complete registry snapshot. Focused and consequential
+    /// commands are intentionally omitted from native registration.
+    public func apply(
+        _ registry: ShortcutRegistry,
+        invocation: @escaping Invocation
+    ) -> ShortcutRegistrationApplyResult {
+        callback = invocation
+        lastCollisionBinding = nil
+        let previous = registeredBindings
+
+        if !registry.masterEnabled {
+            unregisterAll()
+            status = .disabled
+            return .accepted(.disabled)
+        }
+
+        let candidates = registry.activeBindings
+            .filter { $0.key.isGloballyEligible }
+            .sorted { $0.key.identifier < $1.key.identifier }
+
+        if candidates.isEmpty {
+            unregisterAll()
+            status = backend.readiness
+            return .accepted(status)
+        }
+        if case let .unavailable(reason) = backend.readiness {
+            status = .unavailable(reason)
+            return .rejected(.registrationUnavailable, status, nil)
+        }
+
+        // A registry loaded from older data may contain an invalid global
+        // binding. Reject before touching the currently active native set.
+        var seenBindings: Set<ShortcutBinding> = []
+        for (command, binding) in candidates {
+            guard !ShortcutRegistry.reservedSystemShortcuts.contains(binding) else {
+                status = .unavailable("\(binding.renderedLabel()) is reserved by macOS.")
+                return .rejected(.reservedSystemShortcut, status, nil)
+            }
+            guard seenBindings.insert(binding).inserted else {
+                status = .unavailable("Two global commands use \(binding.renderedLabel()).")
+                return .rejected(.duplicateBinding, status, nil)
+            }
+            guard binding.modifiers.intersection([.command, .option, .control, .function]).isEmpty == false else {
+                status = .unavailable("Global shortcut \(command.identifier) needs a deliberate modifier.")
+                return .rejected(.requiresModifier, status, nil)
+            }
+        }
+
+        unregisterAll()
+        var registered: [ShortcutCommand: ShortcutBinding] = [:]
+        for (command, binding) in candidates {
+            let result = backend.register(command: command, binding: binding) { [weak self] phase in
+                self?.receive(command: command, binding: binding, phase: phase)
+            }
+            switch result {
+            case .registered:
+                registered[command] = binding
+            case let .collision(reason):
+                registeredBindings = registered
+                rollback(to: previous)
+                lastCollisionBinding = binding
+                status = .unavailable(reason.isEmpty ? "Another application owns \(binding.renderedLabel())." : reason)
+                return .rejected(.registeredCollision, status, binding)
+            case let .unavailable(reason):
+                registeredBindings = registered
+                rollback(to: previous)
+                status = .unavailable(reason.isEmpty ? "Global registration is unavailable." : reason)
+                return .rejected(.registrationUnavailable, status, nil)
+            case let .failed(reason):
+                registeredBindings = registered
+                rollback(to: previous)
+                status = .unavailable(reason.isEmpty ? "Global registration failed." : reason)
+                return .rejected(.registrationFailed, status, nil)
+            }
+        }
+
+        registeredBindings = registered
+        gate.reset()
+        status = .active
+        return .accepted(.active)
+    }
+
+    public func unregisterAll() {
+        Array(registeredBindings.keys).forEach { backend.unregister(command: $0) }
+        registeredBindings.removeAll()
+        gate.reset()
+    }
+
+    /// Carbon reports both pressed and released events. The shared gate makes
+    /// held/repeated global events one-shot while still allowing the next
+    /// physical press after key-up.
+    private func receive(command: ShortcutCommand, binding: ShortcutBinding, phase: ShortcutKeyEvent.Phase) {
+        guard registeredBindings[command] == binding else { return }
+        let event = ShortcutKeyEvent(binding: binding, phase: phase)
+        guard gate.shouldInvoke(event), phase == .down else { return }
+        // The coordinator has no alternate dispatch surface: only the
+        // configured local Overlay callback receives globally registered IDs.
+        guard command.dispatchDisposition == .localOverlayNavigation else { return }
+        callback?(command)
+    }
+
+    private func rollback(to previous: [ShortcutCommand: ShortcutBinding]) {
+        registeredBindings.keys.forEach { backend.unregister(command: $0) }
+        registeredBindings.removeAll()
+        for (command, binding) in previous.sorted(by: { $0.key.identifier < $1.key.identifier }) {
+            guard command.isGloballyEligible else { continue }
+            let result = backend.register(command: command, binding: binding) { [weak self] phase in
+                self?.receive(command: command, binding: binding, phase: phase)
+            }
+            if case .registered = result { registeredBindings[command] = binding }
+        }
+        gate.reset()
+    }
+}
+
+/// Platform-neutral conversion used by the AppKit monitor and production
+/// tests. `hasMarkedText` is supplied by the active NSTextInputClient rather
+/// than inferred from characters, so ordinary composition is never consumed.
+public enum ShortcutKeyEventMapper {
+    public static func make(
+        keyCode: UInt16,
+        modifiers: ShortcutModifiers,
+        phase: ShortcutKeyEvent.Phase,
+        isRepeat: Bool,
+        hasMarkedText: Bool
+    ) -> ShortcutKeyEvent {
+        ShortcutKeyEvent(
+            binding: ShortcutBinding(key: PhysicalKey(keyCode), modifiers: modifiers),
+            phase: phase,
+            isRepeat: isRepeat,
+            hasMarkedText: hasMarkedText
+        )
+    }
 }
 
 /// Keeps dynamic Attention announcements concise and one-shot. A higher

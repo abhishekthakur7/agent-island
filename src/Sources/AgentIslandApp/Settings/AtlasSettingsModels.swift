@@ -154,8 +154,9 @@ public struct AtlasGeneralPreferences: Codable, Equatable, Hashable, Sendable {
 public typealias AtlasGeneralSettings = AtlasGeneralPreferences
 
 /// Durable shortcut intent. The registry stores physical keys and modifiers;
-/// runtime registration remains capability/platform dependent and therefore
-/// reports unavailable rather than pretending to own global input.
+/// the AppKit Carbon registrar applies eligible bindings transactionally and
+/// publishes active/disabled/unavailable status without pretending to own
+/// global input when the OS rejects registration.
 public struct AtlasShortcutPreferences: Codable, Equatable, Hashable, Sendable {
     public var registry: ShortcutRegistry
 
