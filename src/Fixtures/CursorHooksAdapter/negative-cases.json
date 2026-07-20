@@ -1,7 +1,7 @@
 [
   {"case":"orphan-before-activation","payload":{"conversation_id":"fixture-a","generation_id":"g1","hook_event_name":"sessionStart","cursor_version":"1.7.2"},"expected":"degraded-no-fact"},
   {"case":"malformed-duplicate-key","payload":"{\"conversation_id\":\"one\",\"conversation_id\":\"two\"}","expected":"degraded-no-fact"},
-  {"case":"oversize","payload_bytes":65537,"expected":"degraded-no-fact"},
+  {"case":"oversized-framed-declared-length","expected":"oversized-framed-length-rejected-no-fact"},
   {"case":"incompatible-cursor-version","payload":{"conversation_id":"fixture-a","generation_id":"g2","hook_event_name":"sessionStart","cursor_version":"9.9.9","user_email":"private@example.test"},"expected":"unavailable-no-retained-email"},
   {"case":"weak-duplicate-collision-gap","payload":{"conversation_id":"fixture-a","generation_id":"g3","hook_event_name":"preToolUse","cursor_version":"1.7.2"},"expected":"weak-fact-collision-unresolved"},
   {"case":"ambiguous-subagent-stop","payload":{"conversation_id":"fixture-a","generation_id":"g4","hook_event_name":"subagentStop","cursor_version":"1.7.2","status":"completed"},"expected":"unresolved-no-child-or-parent-close"},

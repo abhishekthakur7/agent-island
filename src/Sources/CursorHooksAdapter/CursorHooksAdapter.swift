@@ -89,7 +89,16 @@ public actor CursorHooksReceiver {
     public init(adapter: CursorHooksAdapter) { self.adapter = adapter }
     public func receive(frame: Data, at receiptTime: Date = Date()) async -> CursorHookIntakeOutcome {
         do { return await adapter.ingest(try ClaudeHookIPCFrame.decode(frame), at: receiptTime) }
-        catch { return .degraded(.init(.transportFailure, observedAt: receiptTime)) }
+        catch let error as ClaudeHookHelperError {
+            switch error {
+            case .frameTooLarge, .oversizedStdin:
+                return .degraded(.init(.oversizedEnvelope, observedAt: receiptTime))
+            case .malformedJSON:
+                return .degraded(.init(.malformedEnvelope, observedAt: receiptTime))
+            default:
+                return .degraded(.init(.transportFailure, observedAt: receiptTime))
+            }
+        } catch { return .degraded(.init(.transportFailure, observedAt: receiptTime)) }
     }
     public func transportLost(at date: Date = Date()) async { await adapter.reportHelperLoss(at: date) }
 }
@@ -161,7 +170,14 @@ public actor CursorHooksAdapter {
             events = [fact(.turnDeclared, "parent-turn", owner: turn), fact(.subagentRunDeclared, "child-declared", owner: childOwner), fact(.sessionActivity, "child-working", activity: .working, owner: childOwner)]
         case .subagentStop:
             // Cursor documents no child tuple here. It cannot close a child or parent.
-            return .degraded(.init(.unresolvedSubagentStop, observedAt: receiptTime))
+            let health = await commitReconciliation(
+                for: identity,
+                suffix: "subagent-stop-unresolved:\(input.identity.generationID)",
+                variant: "cursor.hook.subagentStop.unresolved",
+                ownership: turn,
+                scope: .nonExhaustive
+            )
+            return healthOutcome([health], degraded: .unresolvedSubagentStop, at: receiptTime)
         case .preCompact:
             // Sourced compaction, explicitly non-exhaustive—not ordinary work.
             events = [fact(.reconciliation, "compaction", reconciliation: .nonExhaustive)]
@@ -195,8 +211,75 @@ public actor CursorHooksAdapter {
         for identity in activeSessions { _ = await port.reportObservationBoundary(.init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, identity: identity, reason: .transportLost)) }
         activeSessions.removeAll(); weakClaims.removeAll(); self.snapshot = nil
     }
-    public func reportHelperFailure(_ reason: CursorHookRejection) -> CursorHookIntakeOutcome { .degraded(.init(reason)) }
-    public func reportWeakOrderingGap() -> CursorHookIntakeOutcome { .degraded(.init(.deliveryGap)) }
+    /// Health reports are canonical evidence too. A timeout leaves continuity
+    /// uncertain, while a lost/unavailable helper closes this local liveness
+    /// epoch with an observation boundary; neither manufactures completion.
+    public func reportHelperFailure(_ reason: CursorHookRejection, at date: Date = Date()) async -> CursorHookIntakeOutcome {
+        switch reason {
+        case .timeout, .deliveryGap:
+            return await reportReconciliationGap(reason, at: date)
+        case .transportFailure, .unavailable:
+            guard let snapshot else { return .degraded(.init(reason, observedAt: date)) }
+            var outcomes: [IntakeOutcome] = []
+            for identity in activeSessions {
+                outcomes.append(await port.reportObservationBoundary(.init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, identity: identity, reason: .transportLost)))
+            }
+            guard outcomes.allSatisfy(isCommittedOrDuplicate) else { return healthOutcome(outcomes, degraded: reason, at: date) }
+            liveChildren.removeAll(); seenNonces.removeAll(); activeSessions.removeAll(); weakClaims.removeAll(); self.snapshot = nil
+            return .degraded(.init(reason, observedAt: date))
+        default:
+            // A malformed single envelope says nothing about every currently
+            // active Agent Session, so it remains diagnostic-only.
+            return .degraded(.init(reason, observedAt: date))
+        }
+    }
+    public func reportWeakOrderingGap(at date: Date = Date()) async -> CursorHookIntakeOutcome {
+        await reportReconciliationGap(.deliveryGap, at: date)
+    }
+    private func reportReconciliationGap(_ reason: CursorHookRejection, at date: Date) async -> CursorHookIntakeOutcome {
+        var outcomes: [IntakeOutcome] = []
+        for identity in activeSessions {
+            outcomes.append(await commitReconciliation(
+                for: identity,
+                suffix: "health:\(reason.rawValue):\(identity.nativeSessionID.rawValue)",
+                variant: "cursor.hook.health.\(reason.rawValue)",
+                scope: .nonExhaustive
+            ))
+        }
+        return healthOutcome(outcomes, degraded: reason, at: date)
+    }
+    private func commitReconciliation(for identity: AgentSessionIdentity, suffix: String, variant: String, ownership: LifecycleOwnership? = nil, scope: ReconciliationScope) async -> IntakeOutcome {
+        guard let snapshot else { return .rejected(.unknownNegotiationSnapshot) }
+        let key = "cursor-v1:e\(activationEpoch):\(suffix):\(identity.nativeSessionID.rawValue)"
+        return await port.deliver(.init(
+            negotiationSnapshotID: snapshot.id,
+            integrationInstanceID: integrationInstanceID,
+            contractVersion: snapshot.contractVersion,
+            productNamespace: identity.productNamespace.rawValue,
+            nativeSessionID: identity.nativeSessionID.rawValue,
+            eventIdentity: .weak(key),
+            family: .reconciliation,
+            sourceVariant: variant,
+            classification: .operationalMetadata,
+            payloadByteSize: 0,
+            ownership: ownership,
+            reconciliationScope: scope,
+            integrationMode: CursorHooksIntegration.integrationMode,
+            capabilityID: CursorHooksIntegration.observationCapability,
+            capabilityDirection: .observe,
+            capabilityRevision: 1
+        ))
+    }
+    private func healthOutcome(_ outcomes: [IntakeOutcome], degraded reason: CursorHookRejection, at date: Date) -> CursorHookIntakeOutcome {
+        guard outcomes.allSatisfy(isCommittedOrDuplicate) else {
+            if outcomes.contains(where: { if case .storageUnavailable = $0 { return true }; return false }) { return .degraded(.init(.transportFailure, observedAt: date)) }
+            return .unavailable(.init(.unavailable, observedAt: date))
+        }
+        return .degraded(.init(reason, observedAt: date))
+    }
+    private func isCommittedOrDuplicate(_ outcome: IntakeOutcome) -> Bool {
+        switch outcome { case .committed, .duplicateIgnored: return true; default: return false }
+    }
     private func terminal(_ raw: String?) -> SessionActivityKind? { switch raw?.lowercased() { case "completed", "complete", "success", "succeeded": .completed; case "failed", "failure", "error", "crashed": .failed; case "stopped", "aborted", "cancelled", "canceled": .stopped; default: nil } }
     private func isUserOrWindowClose(_ raw: String?) -> Bool { ["window_close", "window-closed", "user_close", "user-closed"].contains(raw?.lowercased() ?? "") }
 }

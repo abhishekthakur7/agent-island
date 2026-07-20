@@ -12,7 +12,8 @@ public enum SessionReducer {
 
         var execution: ExecutionState = .unresolved
         let sourceOrderAmbiguous = cursorAmbiguity(in: ordered)
-        var observation: ObservationState = sourceOrderAmbiguous ? .gap : .fresh
+        let weakClaimAmbiguous = weakKeyCollision(in: ordered)
+        var observation: ObservationState = (sourceOrderAmbiguous || weakClaimAmbiguous) ? .gap : .fresh
         var attention: AttentionState = .none
         var lineage: LineageState = .current
         var turns: [String: TurnProjection] = [:]
@@ -22,7 +23,7 @@ public enum SessionReducer {
         var hostLabel: String?
         var lastUpdated: Date?
         var terminal: ExecutionState?
-        var ambiguous = sourceOrderAmbiguous || weakKeyCollision(in: ordered)
+        var ambiguous = sourceOrderAmbiguous || weakClaimAmbiguous
 
         for fact in ordered {
             if let title = fact.displayTitle { displayTitle = title }
