@@ -100,7 +100,8 @@ public actor CursorHooksAdapter {
     public let integrationInstanceID: IntegrationInstanceID; public let evidence: CursorHooksContractEvidence; public let helperID: String
     private let port: any AdapterIntakePort; private let authenticator: ClaudeIPCAuthenticator
     private var snapshot: NegotiationSnapshot?; private var activationEpoch = 0
-    private var seenNonces: [String: Date] = [:]; private var knownSessions: Set<AgentSessionIdentity> = []
+    private var seenNonces: [String: Date] = [:]; private var activeSessions: Set<AgentSessionIdentity> = []
+    private var weakClaims: [String: String] = [:]
     private var liveChildren: Set<CursorChildOwnerKey> = []
 
     public init(port: any AdapterIntakePort, integrationInstanceID: IntegrationInstanceID, helperID: String, authenticator: ClaudeIPCAuthenticator, evidence: CursorHooksContractEvidence = .init()) {
@@ -115,13 +116,13 @@ public actor CursorHooksAdapter {
     @discardableResult public func negotiate() async -> NegotiationOutcome {
         let result = await port.negotiate(negotiationRequest())
         if case .compatible(let next) = result, next.grants(CursorHooksIntegration.observationCapability, direction: .observe) {
-            snapshot = next; activationEpoch += 1; seenNonces.removeAll(); liveChildren.removeAll()
-        } else { snapshot = nil }
+            snapshot = next; activationEpoch += 1; seenNonces.removeAll(); activeSessions.removeAll(); weakClaims.removeAll(); liveChildren.removeAll()
+        } else { snapshot = nil; activeSessions.removeAll(); weakClaims.removeAll() }
         return result
     }
-    /// Direct ingress exists only for deterministic fixtures; production uses
-    /// `ingest` after the helper's authenticated local receiver path.
-    public func receive(_ data: Data) async -> CursorHookIntakeOutcome { await normalizeAndDeliver(data) }
+    /// Test-only raw ingress. Production composition must use
+    /// `CursorHooksReceiver.receive(frame:)`, which authenticates a frame.
+    func receiveFixture(_ data: Data) async -> CursorHookIntakeOutcome { await normalizeAndDeliver(data) }
     public func ingest(_ message: ClaudeHookIPCMessage, at receiptTime: Date = Date()) async -> CursorHookIntakeOutcome {
         guard message.payload.count <= CursorHookEnvelope.maximumBytes else { return .degraded(.init(.oversizedEnvelope, observedAt: receiptTime)) }
         guard message.installationID == integrationInstanceID, message.helperID == helperID,
@@ -137,21 +138,22 @@ public actor CursorHooksAdapter {
         guard evidence.isCompatible, input.version == evidence.productVersion else { return .unavailable(.init(.unsupportedVersion, observedAt: receiptTime)) }
         guard let snapshot, activationEpoch > 0, snapshot.grants(CursorHooksIntegration.observationCapability, direction: .observe) else { return .degraded(.init(.orphanBeforeActivation, observedAt: receiptTime)) }
         let identity = AgentSessionIdentity(productNamespace: CursorHooksIntegration.productNamespace, nativeSessionID: .init(input.identity.conversationID))
+        guard input.name == .sessionStart || activeSessions.contains(identity) else { return .degraded(.init(.orphanBeforeActivation, observedAt: receiptTime)) }
         let turn = LifecycleOwnership(nativeTurnID: input.identity.generationID)
-        func fact(_ family: EventFamily, _ suffix: String, activity: SessionActivityKind? = nil, boundary: ObservationBoundaryReason? = nil, owner: LifecycleOwnership? = nil, reconciliation: ReconciliationScope? = nil) -> RawEventEnvelope {
-            let key = "cursor-v1:\(input.name.rawValue):\(input.identity.conversationID):\(input.identity.generationID):\(suffix)"
-            return .init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CursorHooksIntegration.productNamespace.rawValue, nativeSessionID: input.identity.conversationID, eventIdentity: .weak(key), family: family, sourceVariant: "cursor.hook." + input.name.rawValue, activityKind: activity, boundaryReason: boundary, classification: .operationalMetadata, payloadByteSize: data.count, ownership: owner, reconciliationScope: reconciliation, integrationMode: CursorHooksIntegration.integrationMode, capabilityID: CursorHooksIntegration.observationCapability, capabilityDirection: .observe, capabilityRevision: 1)
+        func fact(_ family: EventFamily, _ suffix: String, activity: SessionActivityKind? = nil, boundary: ObservationBoundaryReason? = nil, owner: LifecycleOwnership? = nil, reconciliation: ReconciliationScope? = nil, semantic: String? = nil) -> RawEventEnvelope {
+            let key = "cursor-v1:e\(activationEpoch):\(input.name.rawValue):\(input.identity.conversationID):\(input.identity.generationID):\(suffix)"
+            return .init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CursorHooksIntegration.productNamespace.rawValue, nativeSessionID: input.identity.conversationID, eventIdentity: .weak(key), family: family, sourceVariant: "cursor.hook." + input.name.rawValue + (semantic.map { ".\($0)" } ?? ""), activityKind: activity, boundaryReason: boundary, classification: .operationalMetadata, payloadByteSize: data.count, ownership: owner, reconciliationScope: reconciliation, integrationMode: CursorHooksIntegration.integrationMode, capabilityID: CursorHooksIntegration.observationCapability, capabilityDirection: .observe, capabilityRevision: 1)
         }
         let events: [RawEventEnvelope]
         switch input.name {
         case .sessionStart: events = [fact(.sessionDeclared, "declared"), fact(.sessionActivity, "started", activity: .started)]
         case .sessionEnd:
-            if let outcome = terminal(input.status ?? input.reason) { events = [fact(.sessionActivity, "terminal", activity: outcome, owner: turn)] }
+            if let outcome = terminal(input.status ?? input.reason) { events = [fact(.sessionActivity, "terminal", activity: outcome)] }
             else if isUserOrWindowClose(input.status ?? input.reason) { events = [fact(.observationBoundary, "user-window-close", boundary: .integrationStopped)] }
             else { events = [fact(.reconciliation, "end-unresolved", reconciliation: .nonExhaustive)] }
         case .stop:
             guard let outcome = terminal(input.status ?? input.reason) else { return .degraded(.init(.ambiguousOwnership, observedAt: receiptTime)) }
-            events = [fact(.sessionActivity, "terminal", activity: outcome, owner: turn)]
+            events = [fact(.sessionActivity, "terminal", activity: outcome)]
         case .subagentStart:
             guard let child = input.childID, input.parentConversationID == input.identity.conversationID else { return .degraded(.init(.ambiguousOwnership, observedAt: receiptTime)) }
             let childOwner = LifecycleOwnership(nativeTurnID: input.identity.generationID, nativeSubagentRunID: child)
@@ -164,21 +166,34 @@ public actor CursorHooksAdapter {
             // Sourced compaction, explicitly non-exhaustive—not ordinary work.
             events = [fact(.reconciliation, "compaction", reconciliation: .nonExhaustive)]
         case .afterShellExecution:
-            if let code = input.exitCode { events = [fact(.sessionActivity, "shell-outcome", activity: code == 0 ? .completed : .failed, owner: turn)] }
-            else { events = [fact(.sessionActivity, "shell-working", activity: .working, owner: turn)] }
-        case .postToolUseFailure: events = [fact(.sessionActivity, "tool-failed", activity: .failed, owner: turn)]
+            if let code = input.exitCode { events = [fact(.sessionActivity, "shell-outcome", activity: .working, owner: turn, semantic: code == 0 ? "succeeded" : "failed")] }
+            else { events = [fact(.sessionActivity, "shell-outcome", activity: .working, owner: turn, semantic: "unknown")] }
+        case .postToolUseFailure: events = [fact(.sessionActivity, "tool-outcome", activity: .working, owner: turn, semantic: "failed")]
         case .preToolUse, .postToolUse, .beforeShellExecution, .beforeMCPExecution, .afterMCPExecution, .beforeReadFile, .afterFileEdit, .beforeSubmitPrompt, .afterAgentResponse, .afterAgentThought:
             events = [fact(.turnDeclared, "turn", owner: turn), fact(.sessionActivity, "working", activity: .working, owner: turn)]
         }
-        var outcomes: [IntakeOutcome] = []
-        for event in events { let outcome = await port.deliver(event); outcomes.append(outcome); if case .rejected = outcome { return .degraded(.init(.unavailable, observedAt: receiptTime)) }; if case .storageUnavailable = outcome { return .degraded(.init(.transportFailure, observedAt: receiptTime)) } }
-        knownSessions.insert(identity)
+        var outcomes: [IntakeOutcome] = []; var conflictingWeakClaim = false
+        for event in events {
+            let outcome = await port.deliver(event); outcomes.append(outcome)
+            if case .rejected = outcome { return .degraded(.init(.unavailable, observedAt: receiptTime)) }
+            if case .storageUnavailable = outcome { return .degraded(.init(.transportFailure, observedAt: receiptTime)) }
+            if case let .weak(key)? = event.eventIdentity {
+                let claim = "\(event.family)|\(event.sourceVariant)|\(String(describing: event.activityKind))|\(String(describing: event.boundaryReason))|\(String(describing: event.ownership))|\(String(describing: event.reconciliationScope))"
+                if case .committed = outcome {
+                    if let prior = weakClaims[key], prior != claim { conflictingWeakClaim = true }
+                    else { weakClaims[key] = claim }
+                }
+            }
+        }
+        if outcomes.contains(where: { if case .duplicateIgnored = $0 { return true }; return false }) { return .degraded(.init(.duplicateOrCollision, observedAt: receiptTime)) }
+        if conflictingWeakClaim { return .degraded(.init(.duplicateOrCollision, observedAt: receiptTime)) }
+        if input.name == .sessionStart, outcomes.allSatisfy({ if case .committed = $0 { return true }; return false }) { activeSessions.insert(identity) }
         return .delivered(outcomes)
     }
     public func reportHelperLoss(at date: Date = Date()) async {
         liveChildren.removeAll(); seenNonces.removeAll(); guard let snapshot else { return }
-        for identity in knownSessions { _ = await port.reportObservationBoundary(.init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, identity: identity, reason: .transportLost)) }
-        self.snapshot = nil
+        for identity in activeSessions { _ = await port.reportObservationBoundary(.init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, identity: identity, reason: .transportLost)) }
+        activeSessions.removeAll(); weakClaims.removeAll(); self.snapshot = nil
     }
     public func reportHelperFailure(_ reason: CursorHookRejection) -> CursorHookIntakeOutcome { .degraded(.init(reason)) }
     public func reportWeakOrderingGap() -> CursorHookIntakeOutcome { .degraded(.init(.deliveryGap)) }
@@ -190,7 +205,8 @@ public actor CursorHooksAdapter {
 /// no prompt-type hook and no hook response is installed. Cursor's default
 /// failClosed=false is intentionally preserved, so helper failures are silent.
 public final class CursorHooksInstallationCoordinator: @unchecked Sendable {
-    public init() {}
+    private let runtimeContract: any CursorHookRuntimeContract
+    public init(runtimeContract: any CursorHookRuntimeContract = CursorUnprovenHookRuntimeContract()) { self.runtimeContract = runtimeContract }
     public func entries(installationID: IntegrationInstanceID, helperPath: URL) -> [ClaudeJSONHookEditor.Entry] {
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let command = "AGENT_ISLAND_CURSOR_OBSERVATION_ONLY=1 AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue)) AGENT_ISLAND_HELPER_ID=\(quote(CursorHooksIntegration.helperID(for: helperPath))) exec \(quote(helperPath.path))"
@@ -198,7 +214,7 @@ public final class CursorHooksInstallationCoordinator: @unchecked Sendable {
     }
     public func discover(installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, manifest: OwnershipManifest? = nil, evidence: CursorHooksContractEvidence, policy: ExactEntryWritePolicy = .allowed) -> IntegrationInstallationDiscovery {
         let source = ExactEntryEditor.snapshot(at: scope.url); let all = entries(installationID: installationID, helperPath: helperPath).map { ClaudeJSONHookEditor.inspect(at: scope.url, entry: $0) }; let count = all.reduce(0) { $0 + $1.markerMatches }
-        let compatible = evidence.isCompatible && eligible(scope) && (!source.exists || validVersionOne(source))
+        let compatible = evidence.isCompatible && eligible(scope) && (!source.exists || validVersionOne(source)) && runtimeContract.isProven(installationID: installationID, helperID: CursorHooksIntegration.helperID(for: helperPath), helperPath: helperPath)
         let state: IntegrationInstallationDiscoveryState; let reason: ExactEntryFailureReason?
         if source.symlinkTarget != nil { state = .unsupported; reason = .symlinkChanged }
         else if !compatible { state = .unsupported; reason = .unsupported }
@@ -209,14 +225,14 @@ public final class CursorHooksInstallationCoordinator: @unchecked Sendable {
         return .init(installationID: installationID, product: CursorHooksIntegration.productNamespace, integrationMode: CursorHooksIntegration.integrationMode, scope: scope, state: state, inspection: .init(state: ExactEntryInspectionState(rawValue: state.rawValue) ?? .unsupported, source: source, matchingEntryCount: count, reason: reason), compatibility: compatible ? .compatible : .interfaceChanged, affectedCapabilities: [CursorHooksIntegration.observationCapability], safeToMutate: state == .notConfigured && policy.allowsMutation)
     }
     public func makePlan(id: String, installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, evidence: CursorHooksContractEvidence, action: IntegrationInstallationPlanAction = .enable, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationPlan {
-        let source = ExactEntryEditor.snapshot(at: scope.url); let compatible = evidence.isCompatible && eligible(scope) && (!source.exists || validVersionOne(source))
+        let source = ExactEntryEditor.snapshot(at: scope.url); let compatible = evidence.isCompatible && eligible(scope) && (!source.exists || validVersionOne(source)) && runtimeContract.isProven(installationID: installationID, helperID: CursorHooksIntegration.helperID(for: helperPath), helperPath: helperPath)
         return .init(id: id, installationID: installationID, action: action, product: CursorHooksIntegration.productNamespace, integrationMode: CursorHooksIntegration.integrationMode, scope: scope, sourcePath: scope.path, entries: compatible ? entries(installationID: installationID, helperPath: helperPath).map(\.selector) : [], compatibility: compatible && policy.allowsMutation ? .compatible : (policy.allowsMutation ? .interfaceChanged : .policyBlocked), productVersion: evidence.productVersion, interfaceVersion: evidence.interfaceVersion, sourceFingerprint: source.fingerprint, permissionSummary: ["writes only selected hooks.json exact entries", "hook failures remain fail-open"], affectedCapabilities: [CursorHooksIntegration.observationCapability], rollback: "Remove only exact receipts created by this apply.", manualRemedy: "Resolve unsupported version, policy, malformed JSON, drift, symlink, or marker collision before retrying.", createdAt: now)
     }
     public func approve(_ plan: IntegrationInstallationPlan, personIdentifier: String, at date: Date = Date()) -> IntegrationInstallationApproval { .init(plan: plan, personIdentifier: personIdentifier, approvedAt: date) }
     public func apply(_ approval: IntegrationInstallationApproval, helperPath: URL, evidence: CursorHooksContractEvidence, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationApplyResult {
         let plan = approval.plan; let url = URL(fileURLWithPath: plan.sourcePath); let before = ExactEntryEditor.snapshot(at: url)
         guard (plan.action == .enable || plan.action == .repair), plan.isFresh(at: now), plan.compatibility == .compatible, evidence.isCompatible, plan.productVersion == evidence.productVersion, eligible(plan.scope), before.fingerprint == plan.sourceFingerprint else { return .init(status: .stale, reason: .sourceChanged) }
-        guard before.symlinkTarget == nil, policy.allowsMutation, helperReady(helperPath), parentSafe(for: url) else { return .init(status: .blocked, reason: .policyDenied) }
+        guard before.symlinkTarget == nil, policy.allowsMutation, helperReady(helperPath), parentSafe(for: url), runtimeContract.isProven(installationID: plan.installationID, helperID: CursorHooksIntegration.helperID(for: helperPath), helperPath: helperPath) else { return .init(status: .blocked, reason: .policyDenied) }
         // Full preflight makes collision/malformed failure atomic before any write.
         if before.exists && !validVersionOne(before) { return .init(status: .blocked, reason: .unsupported) }
         let desired = entries(installationID: plan.installationID, helperPath: helperPath)
@@ -227,7 +243,7 @@ public final class CursorHooksInstallationCoordinator: @unchecked Sendable {
             for entry in desired { let receipt = try ClaudeJSONHookEditor.add(entry: entry, at: url, expected: expected, policy: policy, now: now); receipts.append(receipt); expected = receipt.sourceFingerprint }
             let final = ExactEntryEditor.snapshot(at: url)
             guard validVersionOne(final), desired.allSatisfy({ ClaudeJSONHookEditor.inspect(at: url, entry: $0).exactMatches == 1 }) else { throw ClaudeJSONHookEditor.EditorError.ambiguous }
-            let manifest = OwnershipManifest(id: plan.manifestID, installationID: plan.installationID.rawValue, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: receipts, artifacts: [], productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, policyFingerprint: plan.policyFingerprint, verification: .init(verifiedAt: now, reread: true, probeSucceeded: true, sourceFingerprint: final.fingerprint, capabilityIDs: plan.affectedCapabilities), createdAt: now, updatedAt: now)
+            let manifest = OwnershipManifest(id: plan.manifestID, installationID: plan.installationID.rawValue, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: receipts, artifacts: [], productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, policyFingerprint: plan.policyFingerprint, verification: .init(verifiedAt: now, reread: true, probeSucceeded: runtimeContract.isProven(installationID: plan.installationID, helperID: CursorHooksIntegration.helperID(for: helperPath), helperPath: helperPath), sourceFingerprint: final.fingerprint, capabilityIDs: plan.affectedCapabilities), createdAt: now, updatedAt: now)
             return .init(status: .applied, manifest: manifest, installation: .init(id: plan.installationID, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, manifestID: manifest.id, lifecycle: .enabled, enabledIntent: true, capabilities: plan.affectedCapabilities, health: nil))
         } catch {
             var rollbackExpected = ExactEntryEditor.snapshot(at: url).fingerprint
@@ -238,7 +254,7 @@ public final class CursorHooksInstallationCoordinator: @unchecked Sendable {
     }
     public func verify(_ manifest: OwnershipManifest, helperPath: URL) -> IntegrationInstallationApplyResult {
         let url = URL(fileURLWithPath: manifest.sourcePath); let source = ExactEntryEditor.snapshot(at: url)
-        guard let verification = manifest.verification, manifest.product == CursorHooksIntegration.productNamespace, manifest.integrationMode == CursorHooksIntegration.integrationMode, eligible(manifest.scope), source.symlinkTarget == nil, validVersionOne(source), helperReady(helperPath), source.fingerprint == verification.sourceFingerprint else { return .init(status: .degraded, reason: .sourceChanged) }
+        guard let verification = manifest.verification, verification.probeSucceeded, manifest.product == CursorHooksIntegration.productNamespace, manifest.integrationMode == CursorHooksIntegration.integrationMode, eligible(manifest.scope), source.symlinkTarget == nil, validVersionOne(source), helperReady(helperPath), runtimeContract.isProven(installationID: .init(manifest.installationID), helperID: CursorHooksIntegration.helperID(for: helperPath), helperPath: helperPath), source.fingerprint == verification.sourceFingerprint else { return .init(status: .degraded, reason: .sourceChanged) }
         let owned = entries(installationID: .init(manifest.installationID), helperPath: helperPath).allSatisfy { entry in ClaudeJSONHookEditor.inspect(at: url, entry: entry).exactMatches == 1 && manifest.proving(entry.selector, at: manifest.sourcePath) != nil }
         return .init(status: owned ? .applied : .degraded, manifest: owned ? manifest : nil, reason: owned ? nil : .sourceChanged)
     }
@@ -260,6 +276,34 @@ public final class CursorHooksInstallationCoordinator: @unchecked Sendable {
     private func parentSafe(for url: URL) -> Bool { var isDirectory: ObjCBool = false; return FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path, isDirectory: &isDirectory) && isDirectory.boolValue }
     private func helperReady(_ helperPath: URL) -> Bool { FileManager.default.isExecutableFile(atPath: helperPath.path) && (try? FileManager.default.destinationOfSymbolicLink(atPath: helperPath.path)) == nil }
     private func validVersionOne(_ source: ExactEntryFileSnapshot) -> Bool { guard source.symlinkTarget == nil, let text = source.content.flatMap({ String(data: $0, encoding: .utf8) }) else { return false }; return text.range(of: "\\\"version\\\"\\s*:\\s*1", options: .regularExpression) != nil }
+}
+
+/// Installation requires application composition to prove the owner-scoped
+/// credential, private endpoint, and exact helper path. Discovery and planning
+/// are read-only and deliberately never provision those resources.
+public protocol CursorHookRuntimeContract: Sendable { func isProven(installationID: IntegrationInstanceID, helperID: String, helperPath: URL) -> Bool }
+public struct CursorUnprovenHookRuntimeContract: CursorHookRuntimeContract {
+    public init() {}
+    public func isProven(installationID: IntegrationInstanceID, helperID: String, helperPath: URL) -> Bool { false }
+}
+public struct CursorFixtureHookRuntimeContract: CursorHookRuntimeContract {
+    public let proven: Bool
+    public init(proven: Bool = true) { self.proven = proven }
+    public func isProven(installationID: IntegrationInstanceID, helperID: String, helperPath: URL) -> Bool { proven }
+}
+public struct CursorProvisionedHookRuntimeContract: CursorHookRuntimeContract, Sendable {
+    private let credentialStore: any ClaudeHookCredentialStore
+    private let endpoint: ClaudeLocalEndpoint
+    private let executablePath: String
+    public init(credentialStore: any ClaudeHookCredentialStore, endpoint: ClaudeLocalEndpoint, executablePath: String = CursorHooksIntegration.helperExecutablePath) { self.credentialStore = credentialStore; self.endpoint = endpoint; self.executablePath = executablePath }
+    public func isProven(installationID: IntegrationInstanceID, helperID: String, helperPath: URL) -> Bool {
+        guard helperPath.standardizedFileURL.path == URL(fileURLWithPath: executablePath).standardizedFileURL.path,
+              let secret = credentialStore.secret(for: installationID, helperID: helperID), !secret.isEmpty,
+              case .success = endpoint.validate() else { return false }
+        let helper = ExactEntryEditor.snapshot(at: executablePath)
+        guard helper.exists, helper.symlinkTarget == nil, let permissions = helper.fingerprint.permissionBits, (permissions & 0o111) != 0 else { return false }
+        return true
+    }
 }
 
 public struct CursorAttentionPresentation: Hashable, Sendable, Codable {

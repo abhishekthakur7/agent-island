@@ -170,6 +170,6 @@ public enum SessionReducer {
     }
 
     private static func sameWeakClaim(_ lhs: NormalizedEventFact, _ rhs: NormalizedEventFact) -> Bool {
-        lhs.identity == rhs.identity && lhs.family == rhs.family && lhs.activityKind == rhs.activityKind && lhs.boundaryReason == rhs.boundaryReason && lhs.sourceCursor == rhs.sourceCursor && lhs.ownership == rhs.ownership && lhs.turnLineage == rhs.turnLineage && lhs.attentionKind == rhs.attentionKind && lhs.reconciliationScope == rhs.reconciliationScope
+        lhs.identity == rhs.identity && lhs.family == rhs.family && lhs.sourceVariant == rhs.sourceVariant && lhs.activityKind == rhs.activityKind && lhs.boundaryReason == rhs.boundaryReason && lhs.sourceCursor == rhs.sourceCursor && lhs.ownership == rhs.ownership && lhs.turnLineage == rhs.turnLineage && lhs.attentionKind == rhs.attentionKind && lhs.reconciliationScope == rhs.reconciliationScope
     }
 }
