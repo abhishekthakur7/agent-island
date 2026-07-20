@@ -18,6 +18,17 @@ public enum CodexCLIIntegration {
     public static let allObservationCapabilities = [observationCapability, permissionCueCapability]
     /// There are deliberately no action capabilities in this catalog.
     public static let allActionCapabilities: [String] = []
+    public static let helperExecutablePath = "/Applications/Agent Island.app/Contents/MacOS/CodexHookHelper"
+    public static let helperEndpointFileName = "codex-hooks.sock"
+
+    /// This launcher carries only the installation/helper owner labels and an
+    /// immutable observation-only mode. It has no secret, callback, or action
+    /// endpoint; the dedicated helper refuses to start without this mode.
+    public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String) -> Data {
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexport AGENT_ISLAND_CODEX_OBSERVATION_ONLY=1\nexec \"\(helperExecutablePath)\"\n".utf8)
+    }
+    public static func helperID(for helperPath: URL) -> String { "codex-helper-" + ExactEntryDigest.value(Data(helperPath.path.utf8)) }
 }
 
 public struct CodexHooksVersionEvidence: Codable, Hashable, Sendable {
@@ -77,11 +88,23 @@ public struct CodexHookQuarantine: Codable, Hashable, Sendable {
 
 public enum CodexHookIntakeOutcome: Sendable {
     case delivered(CodexNormalizedObservation)
+    case unresolved(CodexHookUnresolved)
     case quarantined(CodexHookQuarantine)
 }
 
+/// Valid authenticated evidence whose source sequence cannot yet support a
+/// lifecycle projection. It intentionally is not a quarantine: one bounded,
+/// non-exhaustive reconciliation fact is delivered and no event/nonce/child
+/// state is consumed, so an exact later redelivery may prove continuity.
+public struct CodexHookUnresolved: Codable, Hashable, Sendable {
+    public enum Reason: String, Codable, Hashable, Sendable { case missingBaseline, sourceGap, reordered }
+    public let reason: Reason
+    public let observedAt: Date
+    public init(reason: Reason, observedAt: Date) { self.reason = reason; self.observedAt = observedAt }
+}
+
 public enum CodexIntegrationHealthReason: String, Codable, Hashable, Sendable {
-    case healthy, disabled, helperMissing, transportTimeout, duplicateDefinition, configurationDrift, unsupportedVersion, unsupportedInterface, quarantinedInput
+    case healthy, disabled, helperMissing, transportTimeout, duplicateDefinition, configurationDrift, unsupportedVersion, unsupportedInterface, orderingUnresolved, quarantinedInput
 }
 
 /// Health is intentionally separate from session lifecycle.  Its diagnostic
@@ -99,6 +122,7 @@ public struct CodexIntegrationHealth: Codable, Hashable, Sendable {
         case .helperMissing, .transportTimeout: return "Restore the application-owned helper and re-probe; use the native Host meanwhile."
         case .duplicateDefinition, .configurationDrift: return "Review the selected configuration and remove or repair only the manifest-proven entry."
         case .unsupportedVersion, .unsupportedInterface: return "Update the reviewed adapter only after the documented Codex interface is verified."
+        case .orderingUnresolved: return "Await documented source continuity or reconcile in the native Host; no lifecycle was inferred."
         case .quarantinedInput: return "Inspect the documented hook helper and owner configuration; no input was accepted."
         }
     }
@@ -277,18 +301,26 @@ public actor CodexCLIAdapter {
         do { hook = try .decode(message.payload) } catch let error as CodexHookRejection { return quarantine(error) } catch { return quarantine(.malformedEnvelope) }
         let key = CodexEventOwnerKey(session: hook.nativeSessionID, event: Self.eventID(hook.eventIdentity), turn: hook.nativeTurnID, child: hook.nativeChildID)
         guard !events.contains(key) else { return quarantine(.duplicateEvent) }
-        if hook.name == .subagentStop { guard let child = hook.nativeChildID, let parent = hook.parentTurnID, children.contains(.init(session: hook.nativeSessionID, parent: parent, child: child)) else { return quarantine(.unprovenChildStop) } }
         let normalized = CodexHookNormalizer.normalize(hook, snapshot: snapshot, installationID: integrationInstanceID)
         guard case .success(let observation) = normalized else { if case .failure(let reason) = normalized { return quarantine(reason) }; return quarantine(.malformedEnvelope) }
         guard let sequence = hook.sourceSequence else { return quarantine(.missingSourceOrdering) }
         let sequenceScope = "codex-session:\(hook.nativeSessionID)"
-        if let previous = lastSourceSequence[sequenceScope], sequence != previous + 1 {
-            // Do not turn a receipt-order gap or late event into a lifecycle
-            // claim.  Record only an explicit non-exhaustive observation fact.
-            let gap = RawEventEnvelope(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CodexCLIIntegration.productNamespace.rawValue, nativeSessionID: hook.nativeSessionID, eventIdentity: .stable("\(Self.eventID(hook.eventIdentity)):ordering-gap"), family: .reconciliation, sourceVariant: "codex.hook.ordering-gap", classification: .operationalMetadata, payloadByteSize: 0, reconciliationScope: .nonExhaustive, integrationMode: CodexCLIIntegration.integrationMode, capabilityID: CodexCLIIntegration.observationCapability, capabilityDirection: .observe, capabilityRevision: 1)
-            _ = await port.deliver(gap)
-            return quarantine(.missingSourceOrdering)
+        let ordering: CodexHookUnresolved.Reason?
+        if let previous = lastSourceSequence[sequenceScope] {
+            ordering = sequence == previous + 1 ? nil : (sequence > previous ? .sourceGap : .reordered)
+        } else {
+            // Source sequence 1 on SessionStart is the only documented local
+            // baseline. Receipt order, a terminal Stop, and child evidence can
+            // never establish a session's omitted source history.
+            ordering = hook.name == .sessionStart && sequence == 1 ? nil : .missingBaseline
         }
+        if let ordering {
+            let gap = RawEventEnvelope(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, contractVersion: snapshot.contractVersion, productNamespace: CodexCLIIntegration.productNamespace.rawValue, nativeSessionID: hook.nativeSessionID, eventIdentity: .stable("\(Self.eventID(hook.eventIdentity)):ordering-\(ordering.rawValue)"), family: .reconciliation, sourceVariant: "codex.hook.ordering-\(ordering.rawValue)", classification: .operationalMetadata, payloadByteSize: 0, reconciliationScope: .nonExhaustive, integrationMode: CodexCLIIntegration.integrationMode, capabilityID: CodexCLIIntegration.observationCapability, capabilityDirection: .observe, capabilityRevision: 1)
+            _ = await port.deliver(gap)
+            currentHealth = .init(enabledIntent: enabled, reason: .orderingUnresolved, observedAt: now)
+            return .unresolved(.init(reason: ordering, observedAt: now))
+        }
+        if hook.name == .subagentStop { guard let child = hook.nativeChildID, let parent = hook.parentTurnID, children.contains(.init(session: hook.nativeSessionID, parent: parent, child: child)) else { return quarantine(.unprovenChildStop) } }
         for envelope in observation.events { if case .rejected = await port.deliver(envelope) { return quarantine(.malformedEnvelope) } }
         nonces[message.nonce] = now; nonces = nonces.filter { now.timeIntervalSince($0.value) <= 120 }
         events.insert(key)
@@ -300,7 +332,7 @@ public actor CodexCLIAdapter {
         return .delivered(observation)
     }
     public func ingest(_ message: ClaudeHookIPCMessage, at now: Date = Date()) async -> Result<CodexNormalizedObservation, CodexHookRejection> {
-        switch await ingestOutcome(message, at: now) { case .delivered(let observation): return .success(observation); case .quarantined(let artifact): return .failure(artifact.reason) }
+        switch await ingestOutcome(message, at: now) { case .delivered(let observation): return .success(observation); case .unresolved: return .failure(.missingSourceOrdering); case .quarantined(let artifact): return .failure(artifact.reason) }
     }
     /// Transport/helper loss is never completion evidence.
     public func reportHelperLoss() async { currentHealth = .init(enabledIntent: enabled, reason: .helperMissing); children.removeAll(); guard let snapshot else { return }; for identity in knownSessions { _ = await port.reportObservationBoundary(.init(negotiationSnapshotID: snapshot.id, integrationInstanceID: integrationInstanceID, identity: identity, reason: .transportLost)) } }
@@ -316,7 +348,8 @@ public actor CodexCLIAdapter {
 /// lifecycle hook contract, and is therefore never installed here.
 public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
     private let coordinator = IntegrationInstallationCoordinator()
-    public init() {}
+    private let runtimeContract: any CodexHookRuntimeContract
+    public init(runtimeContract: any CodexHookRuntimeContract = CodexUnprovenHookRuntimeContract()) { self.runtimeContract = runtimeContract }
     public func selector(event: CodexHookName = .sessionStart, helperPath: URL) -> ExactEntrySelector {
         let path: String = helperPath.path
         let digest: String = ExactEntryDigest.value(Data((path + event.rawValue).utf8))
@@ -330,23 +363,96 @@ public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
     }
     public func selectors(helperPath: URL) -> [ExactEntrySelector] { CodexHookName.allCases.map { selector(event: $0, helperPath: helperPath) } }
     public func discover(installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, manifest: OwnershipManifest? = nil, snapshot: NegotiationSnapshot? = nil, policy: ExactEntryWritePolicy = .allowed) -> IntegrationInstallationDiscovery {
-        guard snapshot.map(CodexHooksConfigurationContract.accepts) ?? false else {
-            let base = coordinator.discover(installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, selector: selector(helperPath: helperPath), manifest: manifest, snapshot: snapshot, policy: policy)
-            return .init(installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, state: .unsupported, inspection: base.inspection, compatibility: .interfaceChanged, affectedCapabilities: [CodexCLIIntegration.configurationCapability], safeToMutate: false)
-        }
-        return coordinator.discover(installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, selector: selector(helperPath: helperPath), manifest: manifest, snapshot: snapshot, policy: policy)
+        let entries = selectors(helperPath: helperPath)
+        let found = entries.map { ExactEntryEditor.inspect(at: scope.url, selector: $0, receipt: manifest?.proving($0, at: scope.path)) }
+        let source = found.first?.source ?? ExactEntryEditor.snapshot(at: scope.url)
+        let compatibility: IntegrationInstallationCompatibility = (snapshot.map(CodexHooksConfigurationContract.accepts) ?? false) && isTOMLSafeHelperPath(helperPath) && runtimeContract.isProven(installationID: installationID, helperID: CodexCLIIntegration.helperID(for: helperPath)) ? .compatible : .interfaceChanged
+        let markerCount = found.reduce(0) { $0 + $1.matchingEntryCount }
+        let state: ExactEntryInspectionState
+        let reason: ExactEntryFailureReason?
+        if compatibility != .compatible { state = .unsupported; reason = .unsupported }
+        else if found.contains(where: { $0.source.symlinkTarget != nil || $0.state == .unsupported || $0.state == .unavailable }) { state = .unsupported; reason = source.symlinkTarget == nil ? .unsupported : .symlinkChanged }
+        else if found.contains(where: { $0.state == .shadowedManaged }) { state = .shadowedManaged; reason = .ambiguous }
+        else if markerCount == 0 && !CodexHooksConfigurationContract.hasExistingEventDefinition(at: scope.url) { state = .notConfigured; reason = nil }
+        else if let manifest, found.indices.allSatisfy({ found[$0].state == .ownedIntact && manifest.proving(entries[$0], at: scope.path) != nil }) { state = .ownedIntact; reason = nil }
+        else { state = .externalCandidate; reason = .ambiguous }
+        let inspection = ExactEntryInspection(state: state, source: source, matchingEntryCount: markerCount, reason: reason)
+        return .init(installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, state: IntegrationInstallationDiscoveryState(rawValue: state.rawValue) ?? .unsupported, inspection: inspection, compatibility: compatibility, affectedCapabilities: [CodexCLIIntegration.configurationCapability], safeToMutate: state == .notConfigured && compatibility == .compatible && policy.allowsMutation)
     }
     public func makePlan(id: String, installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationPlan {
+        let helperID = CodexCLIIntegration.helperID(for: helperPath)
+        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: installationID, helperID: helperID)
+        let artifact = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let plan = coordinator.makePlan(id: id, installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, selectors: selectors(helperPath: helperPath), snapshot: snapshot, policy: policy, now: now)
-        guard CodexHooksConfigurationContract.accepts(snapshot) else { return IntegrationInstallationPlan(id: plan.id, installationID: plan.installationID, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: plan.entries, compatibility: .interfaceChanged, productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, sourceFingerprint: plan.sourceFingerprint, manualRemedy: "Verify the reviewed Codex Hooks contract manually; no configuration was applied.", createdAt: now) }
+        guard CodexHooksConfigurationContract.accepts(snapshot), isTOMLSafeHelperPath(helperPath), runtimeContract.isProven(installationID: installationID, helperID: helperID) else { return copied(plan, artifacts: [artifact], entries: isTOMLSafeHelperPath(helperPath) ? plan.entries : [], compatibility: .interfaceChanged, manualRemedy: "Verify the reviewed hooks-v1 fixture, TOML-safe helper path, and provisioned Codex observation helper contract manually; no configuration was applied.") }
         let preflight = plan.entries.map { ExactEntryEditor.inspect(at: scope.url, selector: $0) }
         guard preflight.allSatisfy({ $0.matchingEntryCount == 0 }) && !CodexHooksConfigurationContract.hasExistingEventDefinition(at: scope.url) else {
-            return IntegrationInstallationPlan(id: plan.id, installationID: plan.installationID, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: plan.entries, compatibility: .incompatible, productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, sourceFingerprint: plan.sourceFingerprint, manualRemedy: "Duplicate or externally owned Codex Hook entries require manual review; no configuration was applied.", createdAt: now)
+            return copied(plan, artifacts: [artifact], compatibility: .incompatible, manualRemedy: "Duplicate or externally owned Codex Hook entries require manual review; no configuration was applied.")
         }
-        return plan
+        return copied(plan, artifacts: [artifact])
     }
     public func approve(_ plan: IntegrationInstallationPlan, personIdentifier: String, at date: Date = Date()) throws -> IntegrationInstallationApproval { try coordinator.approve(plan, personIdentifier: personIdentifier, at: date) }
-    public func apply(_ approval: IntegrationInstallationApproval, currentSnapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationApplyResult { coordinator.apply(approval, currentSnapshot: currentSnapshot, policy: policy, now: now) }
+    public func apply(_ approval: IntegrationInstallationApproval, currentSnapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationApplyResult {
+        let plan = approval.plan
+        guard plan.artifacts.count == 1, let artifact = plan.artifacts.first,
+              runtimeContract.isProven(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: URL(fileURLWithPath: artifact.path))) else { return .init(status: .blocked, reason: .notManifestProven) }
+        let helperPath = URL(fileURLWithPath: artifact.path)
+        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: helperPath))
+        let before = ExactEntryEditor.snapshot(at: helperPath)
+        guard before.symlinkTarget == nil else { return .init(status: .blocked, reason: .symlinkChanged) }
+        let existed = FileManager.default.fileExists(atPath: helperPath.path)
+        if existed { guard before.fingerprint.content == artifact.fingerprint, before.fingerprint.permissionBits == 0o700 else { return .init(status: .blocked, reason: .sourceChanged) } }
+        else { do { try writePrivateHelper(bootstrap, to: helperPath) } catch { return .init(status: .unavailable, reason: .unavailable) } }
+        let result = coordinator.apply(approval, currentSnapshot: currentSnapshot, policy: policy, probe: { ExactEntryEditor.snapshot(at: helperPath).symlinkTarget == nil && ExactEntryEditor.snapshot(at: helperPath).fingerprint.content == artifact.fingerprint && ExactEntryEditor.snapshot(at: helperPath).fingerprint.permissionBits == 0o700 }, now: now)
+        if result.manifest == nil && !existed { try? FileManager.default.removeItem(at: helperPath) }
+        return result
+    }
     public func makeRemovalPlan(id: String, installationID: IntegrationInstanceID, manifest: OwnershipManifest, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationPlan { coordinator.makeRemovalPlan(id: id, installationID: installationID, manifest: manifest, snapshot: snapshot, policy: policy, now: now) }
-    public func remove(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date = Date()) -> OwnershipManifestRemovalReport { coordinator.remove(approval, manifest: manifest, now: now) }
+    public func remove(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date = Date()) -> OwnershipManifestRemovalReport {
+        // The shared coordinator removes artifacts even when a source entry
+        // drifted. Keep the private launcher until every manifest-proven hook
+        // was removed, exactly as the Claude lifecycle does.
+        let plan = approval.plan
+        guard plan.action == .remove, plan.isFresh(at: now), plan.compatibility == .compatible, plan.sourcePath == manifest.sourcePath else { return .init(outcome: .notRemoved, reason: .sourceChanged, manifest: manifest) }
+        var expected = plan.sourceFingerprint; var removed: [ExactEntrySelector] = []; var residual: [ExactEntrySelector] = []
+        for receipt in manifest.entries { do { _ = try ExactEntryEditor.remove(receipt: receipt, at: URL(fileURLWithPath: receipt.path), expected: expected, now: now); removed.append(receipt.selector); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: receipt.path)).fingerprint } catch { residual.append(receipt.selector) } }
+        var removedArtifacts: [String] = []; var notRemovedArtifacts: [String] = []
+        if residual.isEmpty { for artifact in manifest.artifacts { let current = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: artifact.path)); guard current.symlinkTarget == nil, current.fingerprint.content == artifact.fingerprint else { notRemovedArtifacts.append(artifact.path); continue }; do { try FileManager.default.removeItem(atPath: artifact.path); removedArtifacts.append(artifact.path) } catch { notRemovedArtifacts.append(artifact.path) } } } else { notRemovedArtifacts = manifest.artifacts.map(\.path) }
+        let complete = residual.isEmpty && notRemovedArtifacts.isEmpty
+        return .init(outcome: complete ? .removed : ((removed.isEmpty && removedArtifacts.isEmpty) ? .notRemoved : .partialWithResidual), removedEntries: removed, residualEntries: residual, removedArtifacts: removedArtifacts, notRemovedArtifacts: notRemovedArtifacts, reason: complete ? nil : .sourceChanged, manifest: manifest.replacing(lifecycle: complete ? .removed : .partial, at: now))
+    }
+
+    private func isTOMLSafeHelperPath(_ path: URL) -> Bool { !path.path.unicodeScalars.contains { $0.value < 0x20 || $0 == "\"" || $0 == "\\" } }
+    private func writePrivateHelper(_ bootstrap: Data, to path: URL) throws { let fm = FileManager.default; guard fm.fileExists(atPath: path.deletingLastPathComponent().path), ExactEntryEditor.snapshot(at: path).symlinkTarget == nil else { throw ExactEntryEditorError.unavailable }; try bootstrap.write(to: path, options: .atomic); try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: path.path); let snapshot = ExactEntryEditor.snapshot(at: path); guard snapshot.symlinkTarget == nil, snapshot.fingerprint.content == ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), snapshot.fingerprint.permissionBits == 0o700 else { throw ExactEntryEditorError.verificationFailed } }
+    private func copied(_ plan: IntegrationInstallationPlan, artifacts: [OwnershipManifestArtifactReceipt], entries: [ExactEntrySelector]? = nil, compatibility: IntegrationInstallationCompatibility? = nil, manualRemedy: String? = nil) -> IntegrationInstallationPlan { .init(id: plan.id, installationID: plan.installationID, action: plan.action, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: entries ?? plan.entries, artifacts: artifacts, compatibility: compatibility ?? plan.compatibility, productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, policyFingerprint: plan.policyFingerprint, sourceFingerprint: plan.sourceFingerprint, permissionSummary: plan.permissionSummary, affectedCapabilities: plan.affectedCapabilities, capabilityEvidence: plan.capabilityEvidence, rollback: plan.rollback, manualRemedy: manualRemedy ?? plan.manualRemedy, nonEffects: plan.nonEffects, createdAt: plan.createdAt, expiresAt: plan.expiresAt, manifestID: plan.manifestID) }
+}
+
+/// Installation can mutate only after the application composition proves that
+/// its Codex-only receiver and owner-scoped credential are live. The adapter
+/// cannot create or inspect those privileged resources by itself.
+public protocol CodexHookRuntimeContract: Sendable { func isProven(installationID: IntegrationInstanceID, helperID: String) -> Bool }
+public struct CodexUnprovenHookRuntimeContract: CodexHookRuntimeContract {
+    public init() {}
+    public func isProven(installationID: IntegrationInstanceID, helperID: String) -> Bool { false }
+}
+public struct CodexFixtureHookRuntimeContract: CodexHookRuntimeContract { public let proven: Bool; public init(proven: Bool = true) { self.proven = proven }; public func isProven(installationID: IntegrationInstanceID, helperID: String) -> Bool { proven } }
+
+/// Production composition may use this verifier after it has provisioned the
+/// owner-scoped Keychain credential and its private Codex observation socket.
+/// A missing executable, credential, socket, owner, permission, or symlink is
+/// deliberately indistinguishable from an unproven contract to the installer.
+public struct CodexProvisionedHookRuntimeContract: CodexHookRuntimeContract, Sendable {
+    private let credentialStore: any ClaudeHookCredentialStore
+    private let endpoint: ClaudeLocalEndpoint
+    private let executablePath: String
+    public init(credentialStore: any ClaudeHookCredentialStore, endpoint: ClaudeLocalEndpoint, executablePath: String = CodexCLIIntegration.helperExecutablePath) { self.credentialStore = credentialStore; self.endpoint = endpoint; self.executablePath = executablePath }
+    public func isProven(installationID: IntegrationInstanceID, helperID: String) -> Bool {
+        guard let secret = credentialStore.secret(for: installationID, helperID: helperID), !secret.isEmpty,
+              case .success = endpoint.validate() else { return false }
+        let source = ExactEntryEditor.snapshot(at: executablePath)
+        guard source.exists, source.symlinkTarget == nil,
+              let permissions = source.fingerprint.permissionBits,
+              (permissions & 0o111) != 0 else { return false }
+        return true
+    }
 }

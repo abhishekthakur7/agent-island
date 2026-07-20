@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "CodexCLIAdapter", targets: ["CodexCLIAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
+        .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -87,6 +88,10 @@ let package = Package(
         // transcript, or store dependency; it only validates stdin and sends
         // authenticated bounded frames through the local IPC abstraction.
         .executableTarget(name: "ClaudeHookHelper", dependencies: ["ClaudeCodeAdapter", "SessionDomain"]),
+
+        // Codex has a separate executable so its observation launcher cannot
+        // reach Claude's synchronous action/callback branch.
+        .executableTarget(name: "CodexHookHelper", dependencies: ["CodexCLIAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or

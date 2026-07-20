@@ -10,11 +10,11 @@ any version/interface mismatch is non-mutating and requires manual setup.
 | Acceptance area | Deterministic evidence | Result | Notes |
 | --- | --- | --- | --- |
 | Independent lifecycle, tool/compact, permission, child fixtures | `Fixtures/CodexCLIAdapter/independent-lifecycle.json`, `testIndependentLifecycleFixtureNormalizesEveryDocumentedHook` | authored | Exact native session IDs and source cursors are retained; permission is a Host/Jump Back cue only. |
-| Reordered, concurrent, gap, duplicate reduction | `reorder-gap-duplicates.json`, `testSourceOrderGapAndReorderingRemainUnresolved` | authored | Receipt order never proves continuity; gaps/reordering remain unresolved. |
+| Reordered, concurrent, gap, duplicate reduction | `reorder-gap-duplicates.json`, `testAdapterRequiresSourceStartBaselineAndExactTerminalRedelivery`, `testSourceOrderGapAndReorderingRemainUnresolved` | authored | A source `SessionStart` at sequence 1 is the only local baseline. Stop-first, a gap, and reordering deliver non-exhaustive reconciliation only; a withheld terminal requires exact redelivery after continuity. |
 | Bounded authenticated intake and quarantine | `testQuarantineRejectsUntrustedInputWithoutDeliveryOrReplayState`, `testReplayDuplicateMalformedOversizedAndDisabledAreQuarantined` | authored | Malformed, unknown, oversized, cross-owner, duplicate, replay, disabled, and unauthenticated input produce a redacted quarantine outcome and no delivery. |
 | Protected content and redaction | `testClassifiedContentNeverLeaksIntoFactsOrUnconsentedOutput` | authored | Only explicit prompt/command scalar content crosses the protected boundary after local opt-in; raw envelopes, IDs, facts, health diagnostics, notifications, and exports receive none. |
 | Health/degradation | `testHealthNeverClaimsTerminalAndCoversDegradation` | authored | Disabled, helper loss/timeout, duplicate definition, drift, unsupported version/interface narrow health only and retain native Host fallback. |
-| Exact reversible selected-scope installation | `configuration-contract.json`, `testFreshPlanApprovalApplyVerifyAndExactRemovalPreserveTOML` | authored | Read-only discovery, fresh plan, approval, apply/verify, and manifest-proven removal preserve unrelated TOML/comments/profile fields, but mutation is version/capability-gated to the reviewed contract. Generic `notify` is never used as a lifecycle hook. |
+| Exact reversible selected-scope installation | `configuration-contract.json`, `testFreshPlanApprovalApplyVerifyAndExactRemovalPreserveTOML`, `testHelperContractPathSafetyAndApplyRollbackFailClosed`, `testUnprovenRuntimeContractNeverPlansOrApplies`, `testDiscoveryExaminesEveryOwnedHookSelector` | authored | A private 0700 bootstrap exports exact owner identity and immutable observation-only mode before executing `CodexHookHelper`. The manifest proves it; changed/symlinked helpers and unproven helper credential/receiver contracts fail closed; rollback removes a newly created launcher when config apply fails. Discovery scans every owned hook selector; TOML comments/profile fields remain preserved. Generic `notify` is never used as a lifecycle hook. |
 | Manual K-mode S1–S6/A6 capture | reviewed Codex terminal | pending | Native Host / Jump Back fallback until a reviewed live capture exists. |
 
 ## Verification
@@ -23,7 +23,7 @@ any version/interface mismatch is non-mutating and requires manual setup.
   command-line-tools XCTest resolution result is recorded with the commit.
 - `cd src && swift build` — recorded with the commit.
 - `cd src && Scripts/self-check.sh` — recorded with the commit.
-- `git diff --check c78a0c5..HEAD` — recorded with the commit.
+- `git diff --check c14388b5236d323ccdd5cbfc94906ef547d620c7..HEAD` — recorded with the repair commit.
 
 ## K-mode / degraded parity matrix
 

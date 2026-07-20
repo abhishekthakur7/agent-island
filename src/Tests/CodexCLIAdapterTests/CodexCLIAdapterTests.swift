@@ -101,6 +101,25 @@ final class CodexCLIAdapterTests: XCTestCase {
         XCTAssertEqual(reordered.execution, .unresolved)
     }
 
+    func testAdapterRequiresSourceStartBaselineAndExactTerminalRedelivery() async throws {
+        let port = RecordingPort(snapshot: snapshot()); let auth = ClaudeIPCAuthenticator(secret: "fixture")
+        let adapter = CodexCLIAdapter(port: port, integrationInstanceID: installation, helperID: "helper", authenticator: auth)
+        _ = await adapter.negotiate(version: .init(productVersion: "1.0", documentedHooksAvailable: true)); await adapter.setEnabledIntent(true)
+        func message(_ nonce: String, _ body: String) -> ClaudeHookIPCMessage { .init(installationID: installation, helperID: "helper", nonce: nonce, payload: Data(body.utf8), issuedAt: Date(), authenticator: auth) }
+        let stop3 = message("stop-3", #"{"hook_event_name":"Stop","session_id":"s","event_id":"stop-3","sequence":3,"status":"completed"}"#)
+        guard case .unresolved(let first) = await adapter.ingestOutcome(stop3) else { return XCTFail("stop-first must be unresolved") }
+        XCTAssertEqual(first.reason, .missingBaseline)
+        XCTAssertEqual(await port.terminalDeliveries, 0)
+        XCTAssertEqual(await port.reconciliationDeliveries, 1)
+        guard case .delivered = await adapter.ingestOutcome(message("start-1", #"{"hook_event_name":"SessionStart","session_id":"s","event_id":"start-1","sequence":1}"#)) else { return XCTFail("source baseline must deliver") }
+        guard case .unresolved(let gap) = await adapter.ingestOutcome(stop3) else { return XCTFail("gap must be unresolved") }
+        XCTAssertEqual(gap.reason, .sourceGap); XCTAssertEqual(await port.terminalDeliveries, 0)
+        guard case .delivered = await adapter.ingestOutcome(message("activity-2", #"{"hook_event_name":"Activity","session_id":"s","event_id":"activity-2","sequence":2}"#)) else { return XCTFail("missing source event must deliver") }
+        XCTAssertEqual(await port.terminalDeliveries, 0, "later continuity cannot fabricate the withheld terminal")
+        guard case .delivered = await adapter.ingestOutcome(stop3) else { return XCTFail("only exact terminal redelivery may complete") }
+        XCTAssertEqual(await port.terminalDeliveries, 1)
+    }
+
     func testHealthNeverClaimsTerminalAndCoversDegradation() async {
         let port = RecordingPort(snapshot: snapshot()); let adapter = CodexCLIAdapter(port: port, integrationInstanceID: installation, helperID: "helper", authenticator: .init(secret: "s"))
         await adapter.setEnabledIntent(true); await adapter.reportTimeout(); XCTAssertEqual(await adapter.health().reason, .transportTimeout)
@@ -112,31 +131,73 @@ final class CodexCLIAdapterTests: XCTestCase {
     func testFreshPlanApprovalApplyVerifyAndExactRemovalPreserveTOML() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
         let config = root.appendingPathComponent("config.toml"); let original = "# keep\nprofile = \"safe\"\n[profiles.work]\nmode = \"read-only\"\n"; try Data(original.utf8).write(to: config)
-        let coordinator = CodexCLIInstallationCoordinator(); let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config); let plan = coordinator.makePlan(id: "fresh", installationID: installation, scope: scope, helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract()); let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config); let plan = coordinator.makePlan(id: "fresh", installationID: installation, scope: scope, helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
         XCTAssertFalse(plan.entries.contains { $0.renderedLine.hasPrefix("notify") }); XCTAssertEqual(plan.entries.count, CodexHookName.allCases.count)
         let approval = try coordinator.approve(plan, personIdentifier: "person")
         let applied = coordinator.apply(approval, currentSnapshot: snapshot()); XCTAssertEqual(applied.status, .applied)
-        let manifest = try XCTUnwrap(applied.manifest); XCTAssertTrue(String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self).contains("[profiles.work]"))
+        let manifest = try XCTUnwrap(applied.manifest); let helper = root.appendingPathComponent("helper")
+        XCTAssertTrue(String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self).contains("[profiles.work]")); XCTAssertEqual(ExactEntryEditor.snapshot(at: helper).fingerprint.permissionBits, 0o700)
+        let bootstrap = String(decoding: try Data(contentsOf: helper), as: UTF8.self); XCTAssertTrue(bootstrap.contains("AGENT_ISLAND_INSTALLATION_ID='codex-install'")); XCTAssertTrue(bootstrap.contains("AGENT_ISLAND_CODEX_OBSERVATION_ONLY=1")); XCTAssertTrue(bootstrap.contains("CodexHookHelper")); XCTAssertFalse(bootstrap.contains("claude-actions.sock"))
         let removalPlan = coordinator.makeRemovalPlan(id: "remove", installationID: installation, manifest: manifest, snapshot: snapshot())
         let removal = coordinator.remove(try coordinator.approve(removalPlan, personIdentifier: "person"), manifest: manifest)
-        XCTAssertEqual(removal.status, .removed); XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data(original.utf8))
+        XCTAssertEqual(removal.status, .removed); XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data(original.utf8)); XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path))
     }
 
     func testExistingOrDuplicateReviewedHookDefinitionRequiresManualRemedyWithoutMutation() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
         let config = root.appendingPathComponent("config.toml"); let original = "hooks.SessionStart = [\"outside-helper\"]\n"; try Data(original.utf8).write(to: config)
-        let coordinator = CodexCLIInstallationCoordinator(); let plan = coordinator.makePlan(id: "ambiguous", installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract()); let plan = coordinator.makePlan(id: "ambiguous", installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
         XCTAssertEqual(plan.compatibility, .incompatible)
         XCTAssertTrue(plan.manualRemedy.contains("manual"))
         XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data(original.utf8))
+    }
+
+    func testDiscoveryExaminesEveryOwnedHookSelector() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config.toml"); try Data("hooks.Stop = [\"outside-helper\"]\n".utf8).write(to: config)
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract())
+        let discovery = coordinator.discover(installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
+        XCTAssertEqual(discovery.state, .externalCandidate); XCTAssertFalse(discovery.safeToMutate)
+    }
+
+    func testHelperContractPathSafetyAndApplyRollbackFailClosed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config.toml"); try Data("# keep\n".utf8).write(to: config)
+        let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config)
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract())
+        let unsafe = coordinator.makePlan(id: "unsafe", installationID: installation, scope: scope, helperPath: root.appendingPathComponent("bad\"path"), snapshot: snapshot())
+        XCTAssertEqual(unsafe.compatibility, .interfaceChanged); XCTAssertTrue(unsafe.entries.isEmpty)
+        let helper = root.appendingPathComponent("helper")
+        let plan = coordinator.makePlan(id: "rollback", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
+        let approval = try coordinator.approve(plan, personIdentifier: "person")
+        try Data("# changed\n".utf8).write(to: config)
+        let rollback = coordinator.apply(approval, currentSnapshot: snapshot())
+        XCTAssertEqual(rollback.status, .stale); XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path), "created helper must roll back when configuration cannot apply")
+        let fresh = coordinator.makePlan(id: "changed-helper", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
+        try Data("not bootstrap".utf8).write(to: helper)
+        let changed = coordinator.apply(try coordinator.approve(fresh, personIdentifier: "person"), currentSnapshot: snapshot())
+        XCTAssertEqual(changed.reason, .sourceChanged)
+        try FileManager.default.removeItem(at: helper); try FileManager.default.createSymbolicLink(atPath: helper.path, withDestinationPath: config.path)
+        let symlink = coordinator.apply(try coordinator.approve(fresh, personIdentifier: "person"), currentSnapshot: snapshot())
+        XCTAssertEqual(symlink.reason, .symlinkChanged)
+    }
+
+    func testUnprovenRuntimeContractNeverPlansOrApplies() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("config.toml"); try Data().write(to: config)
+        let plan = CodexCLIInstallationCoordinator().makePlan(id: "unproven", installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
+        XCTAssertEqual(plan.compatibility, .interfaceChanged)
+        XCTAssertEqual(CodexCLIInstallationCoordinator().apply(try CodexCLIInstallationCoordinator().approve(plan, personIdentifier: "person"), currentSnapshot: snapshot()).status, .blocked)
     }
 }
 
 private actor RecordingPort: AdapterIntakePort {
     let accepted: NegotiationSnapshot
     var deliveries = 0
+    var terminalDeliveries = 0
+    var reconciliationDeliveries = 0
     init(snapshot: NegotiationSnapshot) { accepted = snapshot }
     func negotiate(_ request: NegotiationRequest) async -> NegotiationOutcome { .compatible(accepted) }
-    func deliver(_ envelope: RawEventEnvelope) async -> IntakeOutcome { deliveries += 1; return .committed(ledgerRevision: Int64(deliveries)) }
+    func deliver(_ envelope: RawEventEnvelope) async -> IntakeOutcome { deliveries += 1; if envelope.family == .reconciliation { reconciliationDeliveries += 1 }; if envelope.activityKind == .completed || envelope.activityKind == .failed || envelope.activityKind == .stopped { terminalDeliveries += 1 }; return .committed(ledgerRevision: Int64(deliveries)) }
     func reportObservationBoundary(_ report: ObservationBoundaryReport) async -> IntakeOutcome { deliveries += 1; return .committed(ledgerRevision: Int64(deliveries)) }
 }
