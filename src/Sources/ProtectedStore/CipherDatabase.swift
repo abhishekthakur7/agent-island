@@ -72,6 +72,13 @@ final class CipherDatabase {
             PRIMARY KEY (product_namespace, native_session_id)
         ) WITHOUT ROWID;
         """)
+        // History content and replay boundaries are additive protected
+        // records. They are deliberately separate from the immutable fact
+        // ledger so selected local deletion can remove content while leaving
+        // the minimum non-content boundary needed to suppress old replay.
+        try execute("CREATE TABLE IF NOT EXISTS session_history_content (identity TEXT NOT NULL, content_id TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(identity, content_id)) WITHOUT ROWID;")
+        try execute("CREATE TABLE IF NOT EXISTS session_history_recaps (identity TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) WITHOUT ROWID;")
+        try execute("CREATE TABLE IF NOT EXISTS session_history_boundaries (identity TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) WITHOUT ROWID;")
     }
 
     func writeSchemaVersion(_ version: Int) throws {
@@ -141,6 +148,125 @@ final class CipherDatabase {
     func readProjectionCachePayloads() throws -> [Data] {
         try readBlobs(sql: "SELECT payload FROM projection_cache;")
     }
+
+    func upsertHistoryContent(identity: String, contentID: String, payload: Data) throws {
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "INSERT OR REPLACE INTO session_history_content(identity, content_id, payload) VALUES (?, ?, ?);"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_bind_text(statement, 1, identity, -1, SQLITE_TRANSIENT) == SQLITE_OK,
+              sqlite3_bind_text(statement, 2, contentID, -1, SQLITE_TRANSIENT) == SQLITE_OK else { throw ProtectedStoreFailure.corruptDatabase }
+        let result = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 3, $0.baseAddress, Int32(payload.count), SQLITE_TRANSIENT) }
+        guard result == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+    }
+
+    func readHistoryContent() throws -> [(identity: String, payload: Data)] {
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "SELECT identity, payload FROM session_history_content ORDER BY identity, content_id;"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        var results: [(identity: String, payload: Data)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let identityPointer = sqlite3_column_text(statement, 0) else { throw ProtectedStoreFailure.corruptDatabase }
+            let count = Int(sqlite3_column_bytes(statement, 1))
+            guard let pointer = sqlite3_column_blob(statement, 1), count > 0 else { throw ProtectedStoreFailure.corruptDatabase }
+            results.append((String(cString: identityPointer), Data(bytes: pointer, count: count)))
+        }
+        guard sqlite3_errcode(handle) == SQLITE_OK || sqlite3_errcode(handle) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+        return results
+    }
+
+    func deleteHistoryContent(identity: String) throws {
+        try execute("DELETE FROM session_history_content WHERE identity = '\(escapeSQL(identity))';")
+    }
+
+    func upsertHistoryRecap(identity: String, payload: Data) throws {
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "INSERT OR REPLACE INTO session_history_recaps(identity, payload) VALUES (?, ?);"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_bind_text(statement, 1, identity, -1, SQLITE_TRANSIENT) == SQLITE_OK else { throw ProtectedStoreFailure.corruptDatabase }
+        let result = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32(payload.count), SQLITE_TRANSIENT) }
+        guard result == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+    }
+
+    func readHistoryRecaps() throws -> [(identity: String, payload: Data)] {
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "SELECT identity, payload FROM session_history_recaps ORDER BY identity;"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        var results: [(identity: String, payload: Data)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let identityPointer = sqlite3_column_text(statement, 0) else { throw ProtectedStoreFailure.corruptDatabase }
+            let count = Int(sqlite3_column_bytes(statement, 1))
+            guard let pointer = sqlite3_column_blob(statement, 1), count > 0 else { throw ProtectedStoreFailure.corruptDatabase }
+            results.append((String(cString: identityPointer), Data(bytes: pointer, count: count)))
+        }
+        guard sqlite3_errcode(handle) == SQLITE_OK || sqlite3_errcode(handle) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+        return results
+    }
+
+    func deleteHistoryRecap(identity: String) throws {
+        try execute("DELETE FROM session_history_recaps WHERE identity = '\(escapeSQL(identity))';")
+    }
+
+    func upsertHistoryBoundary(identity: String, payload: Data) throws {
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "INSERT OR REPLACE INTO session_history_boundaries(identity, payload) VALUES (?, ?);"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_bind_text(statement, 1, identity, -1, SQLITE_TRANSIENT) == SQLITE_OK else { throw ProtectedStoreFailure.corruptDatabase }
+        let result = payload.withUnsafeBytes { sqlite3_bind_blob(statement, 2, $0.baseAddress, Int32(payload.count), SQLITE_TRANSIENT) }
+        guard result == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+    }
+
+    func readHistoryBoundaryPayloads() throws -> [(identity: String, payload: Data)] {
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "SELECT identity, payload FROM session_history_boundaries ORDER BY identity;"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        var results: [(identity: String, payload: Data)] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let identityPointer = sqlite3_column_text(statement, 0) else { throw ProtectedStoreFailure.corruptDatabase }
+            let count = Int(sqlite3_column_bytes(statement, 1))
+            guard let pointer = sqlite3_column_blob(statement, 1), count > 0 else { throw ProtectedStoreFailure.corruptDatabase }
+            results.append((String(cString: identityPointer), Data(bytes: pointer, count: count)))
+        }
+        guard sqlite3_errcode(handle) == SQLITE_OK || sqlite3_errcode(handle) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+        return results
+    }
+
+    func deleteFacts(receiptOrdinals: [Int64], identity: String) throws {
+        guard !receiptOrdinals.isEmpty else {
+            try deleteProjectionCache(identity: identity)
+            return
+        }
+        let placeholders = receiptOrdinals.map { _ in "?" }.joined(separator: ",")
+        guard let handle else { throw ProtectedStoreFailure.corruptDatabase }
+        var statement: OpaquePointer?
+        let sql = "DELETE FROM facts WHERE receipt_ordinal IN (\(placeholders));"
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw ProtectedStoreFailure.corruptDatabase }
+        defer { sqlite3_finalize(statement) }
+        for (index, ordinal) in receiptOrdinals.enumerated() {
+            guard sqlite3_bind_int64(statement, Int32(index + 1), ordinal) == SQLITE_OK else { throw ProtectedStoreFailure.corruptDatabase }
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw ProtectedStoreFailure.corruptDatabase }
+        try deleteProjectionCache(identity: identity)
+    }
+
+    private func deleteProjectionCache(identity: String) throws {
+        let pieces = identity.split(separator: "\u{001F}", omittingEmptySubsequences: false)
+        guard pieces.count == 2 else { throw ProtectedStoreFailure.invalidSource }
+        try execute("DELETE FROM projection_cache WHERE product_namespace = '\(escapeSQL(String(pieces[0])))' AND native_session_id = '\(escapeSQL(String(pieces[1])))';")
+    }
+
+    private func escapeSQL(_ value: String) -> String { value.replacingOccurrences(of: "'", with: "''") }
 
     func execute(_ sql: String) throws {
         guard let handle else { throw ProtectedStoreFailure.corruptDatabase }

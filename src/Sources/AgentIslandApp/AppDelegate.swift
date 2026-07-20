@@ -11,9 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let presentation: PresentationRuntime
     private let fixtureController: FixtureController
     private let atlasSettings: AtlasSettingsModel
+    private let notificationSettings = NotificationPolicySettingsModel()
     private lazy var settingsCoordinator = AtlasSettingsWindowCoordinator { [unowned self] in
         AnyView(AgentIslandSettingsView(
             model: self.atlasSettings,
+            notificationSettings: self.notificationSettings,
             liveDisplayControls: AnyView(AtlasOverlayDisplayControls(overlay: self.overlay))
         ))
     }

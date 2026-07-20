@@ -24,6 +24,51 @@ public struct FixtureScenarioResult: Sendable {
 /// ownership, incompatible contract, malformed shape, oversized payload, and
 /// transport loss. Every scenario runs through `AdapterIntakePort` only.
 public enum FixtureScenarios {
+    public static func readOnlyDiscovery() -> FixtureScenarioResult {
+        let result = AdapterFixture.discoverReadOnly()
+        switch result {
+        case .candidates(let candidates):
+            let safe = candidates.allSatisfy { $0.probePlan.isSafe && $0.selectable }
+            return FixtureScenarioResult(
+                name: "readOnlyDiscovery",
+                steps: [FixtureTraceStep(label: "discover", outcome: "\(candidates.count) selectable candidate(s), no mutation")],
+                succeeded: safe
+            )
+        case .rejected(let error):
+            return FixtureScenarioResult(name: "readOnlyDiscovery", steps: [FixtureTraceStep(label: "discover", outcome: "rejected(\(error))")], succeeded: false)
+        }
+    }
+
+    public static func interfaceChangedNarrowing(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        let outcome = await fixture.negotiateInterfaceChanged()
+        switch outcome {
+        case .compatible(let snapshot):
+            let observation = snapshot.capabilities.first { $0.id == WellKnownCapability.sessionObservation }
+            let action = snapshot.capabilities.first { $0.id == WellKnownCapability.sessionAction }
+            let succeeded = observation?.availability == .available && action?.availability == .interfaceChanged
+            return FixtureScenarioResult(
+                name: "interfaceChangedNarrowing",
+                steps: [FixtureTraceStep(label: "negotiate", outcome: "observe=\(String(describing: observation?.availability)), act=\(String(describing: action?.availability))")],
+                succeeded: succeeded
+            )
+        default:
+            return FixtureScenarioResult(name: "interfaceChangedNarrowing", steps: [FixtureTraceStep(label: "negotiate", outcome: "(outcome)")], succeeded: false)
+        }
+    }
+
+    public static func observationKillSwitch(port: any AdapterIntakePort) async -> FixtureScenarioResult {
+        let fixture = AdapterFixture(port: port)
+        guard let snapshot = await fixture.negotiateCompatible() else {
+            return FixtureScenarioResult(name: "observationKillSwitch", steps: [FixtureTraceStep(label: "negotiate", outcome: "incompatible")], succeeded: false)
+        }
+        let closed = await fixture.close(.observe, for: snapshot)
+        let outcome = await fixture.deliverSessionDeclared(snapshot: closed, nativeSessionID: "sess-kill-switch")
+        let succeeded: Bool
+        if case .rejected(.killSwitchClosed) = outcome { succeeded = true } else { succeeded = false }
+        return FixtureScenarioResult(name: "observationKillSwitch", steps: [FixtureTraceStep(label: "deliver", outcome: "(outcome)")], succeeded: succeeded)
+    }
+
     public static func positiveObservation(port: any AdapterIntakePort) async -> FixtureScenarioResult {
         let fixture = AdapterFixture(port: port)
         var steps: [FixtureTraceStep] = []

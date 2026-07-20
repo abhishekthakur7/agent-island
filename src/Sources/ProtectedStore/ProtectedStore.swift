@@ -21,6 +21,45 @@ public struct LoadedState: Sendable {
     public let facts: [NormalizedEventFact]
     public let negotiations: [NegotiationSnapshot]
     public let projectionCacheFault: RedactedStorageDiagnostic?
+    public let historyContent: [LoadedHistoryContent]
+    public let historyRecaps: [LoadedHistoryRecap]
+    public let historyBoundaries: [SessionHistoryDeletionBoundary]
+
+    public init(
+        facts: [NormalizedEventFact],
+        negotiations: [NegotiationSnapshot],
+        projectionCacheFault: RedactedStorageDiagnostic?,
+        historyContent: [LoadedHistoryContent] = [],
+        historyRecaps: [LoadedHistoryRecap] = [],
+        historyBoundaries: [SessionHistoryDeletionBoundary] = []
+    ) {
+        self.facts = facts
+        self.negotiations = negotiations
+        self.projectionCacheFault = projectionCacheFault
+        self.historyContent = historyContent
+        self.historyRecaps = historyRecaps
+        self.historyBoundaries = historyBoundaries
+    }
+}
+
+public struct LoadedHistoryContent: Sendable {
+    public let identity: AgentSessionIdentity
+    public let content: SessionHistoryContent
+
+    public init(identity: AgentSessionIdentity, content: SessionHistoryContent) {
+        self.identity = identity
+        self.content = content
+    }
+}
+
+public struct LoadedHistoryRecap: Sendable {
+    public let identity: AgentSessionIdentity
+    public let recap: SourcedSessionRecap
+
+    public init(identity: AgentSessionIdentity, recap: SourcedSessionRecap) {
+        self.identity = identity
+        self.recap = recap
+    }
 }
 
 /// The encrypted, per-installation-Keychain-keyed canonical store for Agent
@@ -61,6 +100,8 @@ public final class ProtectedStore: @unchecked Sendable {
         try migrateIfNeeded()
         let database = try openVerifiedDatabase()
         defer { database.close() }
+        try database.createSchemaIfNeeded()
+        try database.verify()
         return try loadState(from: database)
     }
 
@@ -97,6 +138,60 @@ public final class ProtectedStore: @unchecked Sendable {
         try database.execute("BEGIN IMMEDIATE;")
         do {
             try database.upsertNegotiation(snapshotID: snapshot.id.rawValue, payload: payload)
+            try database.execute("COMMIT;")
+        } catch {
+            try? database.execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    /// Persists one authorized piece of received Interaction Content. The
+    /// caller has already validated Product ownership; this method only
+    /// performs the protected durable write.
+    public func commitHistoryContent(_ content: SessionHistoryContent, for identity: AgentSessionIdentity) throws {
+        let database = try openVerifiedDatabase()
+        defer { database.close() }
+        try database.createSchemaIfNeeded()
+        let payload = try JSONEncoder.sorted.encode(content)
+        try database.execute("BEGIN IMMEDIATE;")
+        do {
+            try database.upsertHistoryContent(identity: identityKey(identity), contentID: content.contentID, payload: payload)
+            try database.execute("COMMIT;")
+        } catch {
+            try? database.execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    public func commitHistoryRecap(_ recap: SourcedSessionRecap, for identity: AgentSessionIdentity) throws {
+        let database = try openVerifiedDatabase()
+        defer { database.close() }
+        try database.createSchemaIfNeeded()
+        let payload = try JSONEncoder.sorted.encode(recap)
+        try database.execute("BEGIN IMMEDIATE;")
+        do {
+            try database.upsertHistoryRecap(identity: identityKey(identity), payload: payload)
+            try database.execute("COMMIT;")
+        } catch {
+            try? database.execute("ROLLBACK;")
+            throw error
+        }
+    }
+
+    /// Removes selected local history and writes its replay boundary in one
+    /// protected transaction. Product data, setup, and other identities are
+    /// never touched.
+    public func deleteHistory(facts: [NormalizedEventFact], boundary: SessionHistoryDeletionBoundary) throws {
+        let database = try openVerifiedDatabase()
+        defer { database.close() }
+        try database.createSchemaIfNeeded()
+        try database.execute("BEGIN IMMEDIATE;")
+        do {
+            try database.deleteFacts(receiptOrdinals: facts.map(\.receiptOrdinal), identity: identityKey(boundary.identity))
+            try database.deleteHistoryContent(identity: identityKey(boundary.identity))
+            try database.deleteHistoryRecap(identity: identityKey(boundary.identity))
+            let payload = try JSONEncoder.sorted.encode(boundary)
+            try database.upsertHistoryBoundary(identity: identityKey(boundary.identity), payload: payload)
             try database.execute("COMMIT;")
         } catch {
             try? database.execute("ROLLBACK;")
@@ -194,7 +289,28 @@ public final class ProtectedStore: @unchecked Sendable {
             projectionCacheFault = RedactedStorageDiagnostic(code: "storage.projection_snapshot_invalid", operation: "open")
         }
 
-        return LoadedState(facts: facts, negotiations: negotiations, projectionCacheFault: projectionCacheFault)
+        let historyContent = try database.readHistoryContent().compactMap { identityKey, payload -> LoadedHistoryContent? in
+            guard let identity = Self.identity(from: identityKey), let content = try? JSONDecoder.sorted.decode(SessionHistoryContent.self, from: payload) else { return nil }
+            return LoadedHistoryContent(identity: identity, content: content)
+        }
+        let historyRecaps = try database.readHistoryRecaps().compactMap { identityKey, payload -> LoadedHistoryRecap? in
+            guard let identity = Self.identity(from: identityKey), let recap = try? JSONDecoder.sorted.decode(SourcedSessionRecap.self, from: payload) else { return nil }
+            return LoadedHistoryRecap(identity: identity, recap: recap)
+        }
+        let historyBoundaries = try database.readHistoryBoundaryPayloads().compactMap { _, payload in
+            try? JSONDecoder.sorted.decode(SessionHistoryDeletionBoundary.self, from: payload)
+        }
+        return LoadedState(facts: facts, negotiations: negotiations, projectionCacheFault: projectionCacheFault, historyContent: historyContent, historyRecaps: historyRecaps, historyBoundaries: historyBoundaries)
+    }
+
+    private func identityKey(_ identity: AgentSessionIdentity) -> String {
+        "\(identity.productNamespace.rawValue)\u{001F}\(identity.nativeSessionID.rawValue)"
+    }
+
+    private static func identity(from key: String) -> AgentSessionIdentity? {
+        let parts = key.split(separator: "\u{001F}", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return AgentSessionIdentity(productNamespace: ProductNamespace(String(parts[0])), nativeSessionID: NativeSessionID(String(parts[1])))
     }
 
     /// Staged migration: validate the source without mutating it, build and

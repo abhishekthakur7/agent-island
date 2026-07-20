@@ -1,3 +1,4 @@
+import Foundation
 import SessionDomain
 import AdapterPort
 
@@ -36,6 +37,76 @@ public actor AdapterFixture {
             offeredContractVersion: ContractVersion(major: contractMajor, minor: 0),
             requestedCapabilities: [WellKnownCapability.sessionObservation]
         )
+    }
+
+    /// AB-124 read-only discovery evidence.  The fixture never scans the
+    /// filesystem or writes Product configuration; callers explicitly choose
+    /// a returned candidate before activation.
+    public static func discoveryCandidates(observedAt: Date? = nil) -> [IntegrationDiscoveryCandidate] {
+        let evidence = DiscoveryVersionEvidence(
+            productVersion: "fixture-product-1.0",
+            interfaceVersion: "hooks-v1",
+            adapterVersion: "0.1.0-fixture",
+            observedAt: observedAt
+        )
+        return [
+            IntegrationDiscoveryCandidate(
+                id: "fixture.claude-code.default",
+                product: ProductNamespace("claude-code"),
+                versionEvidence: evidence,
+                availableModes: ["fixtureObservation"],
+                compatibility: .compatible,
+                probeState: .verified,
+                setup: .manifestLoaded,
+                requiredPermissions: [DiscoveryPermission(identifier: "events", granted: true)],
+                probePlan: NonMutatingProbePlan(surfaces: ["documented.fixture.surface"])
+            )
+        ]
+    }
+
+    public static func discoverReadOnly(observedAt: Date? = nil) -> DiscoveryResult {
+        ReadOnlyAdapterDiscovery.discover(DiscoveryRequest(candidates: discoveryCandidates(observedAt: observedAt), observedAt: observedAt))
+    }
+
+    public func negotiateInterfaceChanged() async -> NegotiationOutcome {
+        await port.negotiate(
+            NegotiationRequest(
+                integrationInstanceID: integrationInstanceID,
+                adapterKind: "fixture.first-party",
+                adapterBuildVersion: "0.1.0-fixture",
+                productNamespace: productNamespace,
+                integrationMode: "fixtureObservation",
+                offeredContractVersion: ContractVersion(major: SessionDomainValidator.supportedContractMajor, minor: 1),
+                requestedCapabilities: [WellKnownCapability.sessionObservation, WellKnownCapability.sessionAction],
+                productVersion: "fixture-product-2.0",
+                interfaceVersion: "hooks-v2",
+                probeEvidence: NegotiationProbeEvidence(compatibility: .interfaceChanged, productVersion: "fixture-product-2.0", interfaceVersion: "hooks-v2"),
+                requestedCapabilityRecords: [
+                    CapabilityRecord(id: WellKnownCapability.sessionObservation, direction: .observe, availability: .available),
+                    CapabilityRecord(id: WellKnownCapability.sessionAction, direction: .act, availability: .available)
+                ],
+                compatibility: .interfaceChanged
+            )
+        )
+    }
+
+    public func negotiateUnknownInterface() async -> NegotiationOutcome {
+        await port.negotiate(
+            NegotiationRequest(
+                integrationInstanceID: integrationInstanceID,
+                adapterKind: "fixture.first-party",
+                adapterBuildVersion: "0.1.0-fixture",
+                productNamespace: productNamespace,
+                integrationMode: "fixtureObservation",
+                offeredContractVersion: ContractVersion(major: SessionDomainValidator.supportedContractMajor, minor: 99),
+                requestedCapabilities: [WellKnownCapability.sessionObservation, WellKnownCapability.sessionAction],
+                compatibility: .unknown
+            )
+        )
+    }
+
+    public func close(_ direction: CapabilityRecord.Direction, for snapshot: NegotiationSnapshot) -> NegotiationSnapshot {
+        snapshot.applying(killSwitches: snapshot.killSwitches.closing(direction))
     }
 
     public func negotiateCompatible() async -> NegotiationSnapshot? {

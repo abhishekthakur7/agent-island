@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
+import SessionDomain
 
 struct AtlasSettingsDetail: View {
     @ObservedObject var model: AtlasSettingsModel
+    @ObservedObject var notificationSettings: NotificationPolicySettingsModel
     let destination: AtlasSettingsDestination
     let liveDisplayControls: AnyView
 
@@ -13,7 +16,7 @@ struct AtlasSettingsDetail: View {
             case .integrations: AtlasIntegrationsSection(model: model)
             case .notifications: AtlasNotificationsSection(preview: model.preview, send: model.sendPreview)
             case .display: AtlasDisplaySection(preview: model.preview, send: model.sendPreview, liveDisplayControls: liveDisplayControls)
-            case .sound: AtlasPlaceholderSection(title: "Sound", icon: "speaker.wave.2", message: "Sound policy stays local. Event routing and audible previews arrive in the Notification Policy slice.")
+            case .sound: AtlasSoundSection(model: notificationSettings)
             case .usage: AtlasPlaceholderSection(title: "Usage", icon: "chart.bar", message: "Usage Snapshots are display-only source evidence. Agent Island never estimates unavailable usage.")
             case .shortcuts: AtlasPlaceholderSection(title: "Shortcuts", icon: "command", message: "Global and focused shortcuts will expose collisions and can be disabled without changing Agent Product state.")
             case .labs: AtlasPlaceholderSection(title: "Labs", icon: "flask", message: "Experimental capabilities remain opt-in and clearly separate from stable settings.")
@@ -252,11 +255,66 @@ private struct AtlasDiagnosticsSection: View {
                 let record = AtlasDiagnosticsSanitizer.render(integration: integration)
                 LabeledContent(integration.kind.title, value: "\(record.outcome.title) · \(record.reason.title)")
             }
-            Button("Prepare Diagnostic Bundle…") {}
-                .disabled(true)
-                .help("Diagnostic Bundle export arrives in a later slice")
+            Button("Create Diagnostic Bundle…", action: createBundle)
+                .help("Choose a local folder for redacted Markdown and JSON artifacts")
         }
         .accessibilityIdentifier("atlas.diagnostics.redacted")
+    }
+
+    private func createBundle() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Diagnostic Bundle Folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        do {
+            let evidence = integrations.map { AtlasDiagnosticsSanitizer.evidence(integration: $0) }
+            let bundle = try DiagnosticBundle(records: evidence)
+            let destination = try DiagnosticBundleDestination(directory: directory)
+            let artifacts = try DiagnosticBundleWriter.write(bundle, to: destination)
+            showResult(
+                title: "Diagnostic Bundle Created",
+                message: "Created \(artifacts.markdown.lastPathComponent) and \(artifacts.machineReadableJSON.lastPathComponent)."
+            )
+        } catch {
+            showResult(
+                title: "Diagnostic Bundle Not Created",
+                message: "Choose an empty writable local folder and try again. No partial bundle was retained."
+            )
+        }
+    }
+
+    private func showResult(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+}
+
+private struct AtlasSoundSection: View {
+    @ObservedObject var model: NotificationPolicySettingsModel
+
+    var body: some View {
+        AtlasCard(title: "Local sound policy") {
+            Toggle("Sound enabled", isOn: binding(\.masterEnabled))
+            Toggle("Mute now", isOn: binding(\.immediateMute))
+            Toggle("Quiet hours", isOn: binding(\.quietHoursEnabled))
+            Slider(value: binding(\.volume), in: 0...1) {
+                Text("Volume")
+            }
+            LabeledContent("Volume", value: "\(Int(model.volume * 100))%")
+            Text("Quiet hours and immediate mute affect sound only. Preview and imported sounds stay local and create no Alert Candidate or Agent Product action.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("atlas.sound.policy")
+    }
+
+    private func binding<Value>(_ keyPath: ReferenceWritableKeyPath<NotificationPolicySettingsModel, Value>) -> Binding<Value> {
+        Binding(get: { model[keyPath: keyPath] }, set: { model[keyPath: keyPath] = $0 })
     }
 }
 

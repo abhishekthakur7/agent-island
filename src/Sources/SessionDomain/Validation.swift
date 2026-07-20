@@ -2,7 +2,7 @@ import Foundation
 
 /// Redacted rejection reasons only. No raw payload, path, or identifier is
 /// ever attached — these values are safe to place directly in diagnostics.
-public enum EnvelopeValidationError: String, Sendable, Equatable, Codable, CaseIterable {
+public enum EnvelopeValidationError: String, Sendable, Equatable, Codable, CaseIterable, Error {
     case unknownNegotiationSnapshot
     case incompatibleContractMajor
     case capabilityNotGranted
@@ -11,6 +11,9 @@ public enum EnvelopeValidationError: String, Sendable, Equatable, Codable, CaseI
     case malformedShape
     case payloadTooLarge
     case interactionContentUnsupported
+    case crossOwnerProvenance
+    case staleCapability
+    case killSwitchClosed
 }
 
 public enum ValidationResult: Sendable {
@@ -27,6 +30,7 @@ public enum ValidationResult: Sendable {
 public enum SessionDomainValidator {
     public static let supportedContractMajor = 1
     public static let maxPayloadBytes = 64 * 1024
+    public static let maxMetadataStringBytes = 4 * 1024
 
     public static func validate(
         _ envelope: RawEventEnvelope,
@@ -48,6 +52,11 @@ public enum SessionDomainValidator {
         guard envelope.payloadByteSize >= 0, envelope.payloadByteSize <= maxPayloadBytes else {
             return .rejected(.payloadTooLarge)
         }
+        guard envelope.sourceVariant.utf8.count <= maxMetadataStringBytes,
+              envelope.displayTitle?.utf8.count ?? 0 <= maxMetadataStringBytes,
+              envelope.hostLabel?.utf8.count ?? 0 <= maxMetadataStringBytes else {
+            return .rejected(.payloadTooLarge)
+        }
         guard envelope.classification == .operationalMetadata else {
             return .rejected(.interactionContentUnsupported)
         }
@@ -61,6 +70,31 @@ public enum SessionDomainValidator {
         }
         guard negotiation.productNamespace.rawValue == rawNamespace else {
             return .rejected(.missingOrAmbiguousOwnerIdentity)
+        }
+        guard negotiation.integrationInstanceID == envelope.integrationInstanceID else {
+            return .rejected(.crossOwnerProvenance)
+        }
+        if let mode = envelope.integrationMode, mode != negotiation.integrationMode {
+            return .rejected(.crossOwnerProvenance)
+        }
+        if let capabilityID = envelope.capabilityID {
+            let direction = envelope.capabilityDirection ?? .observe
+            guard let capability = negotiation.capabilities.first(where: { $0.id == capabilityID && $0.direction == direction }) else {
+                return .rejected(.capabilityNotGranted)
+            }
+            guard capability.availability == .available else {
+                return .rejected(capability.freshness == .stale ? .staleCapability : .capabilityNotGranted)
+            }
+            if let revision = envelope.capabilityRevision, revision != capability.revision {
+                return .rejected(.crossOwnerProvenance)
+            }
+            guard negotiation.grants(capabilityID, direction: direction) else {
+                return .rejected(negotiation.killSwitches.isEnabled(direction) ? .capabilityNotGranted : .killSwitchClosed)
+            }
+        } else {
+            guard negotiation.grants(WellKnownCapability.sessionObservation, direction: .observe) else {
+                return .rejected(negotiation.killSwitches.isEnabled(.observe) ? .capabilityNotGranted : .killSwitchClosed)
+            }
         }
         guard let eventIdentity = envelope.eventIdentity, !eventIdentity.isBlank else {
             return .rejected(.missingEventIdentity)
@@ -110,5 +144,30 @@ public enum SessionDomainValidator {
             reconciliationScope: envelope.reconciliationScope
         )
         return .accepted(fact)
+    }
+
+    public static func validateCapability(
+        _ capability: CapabilityRecord,
+        in negotiation: NegotiationSnapshot?,
+        at date: Date = Date()
+    ) -> Result<Void, EnvelopeValidationError> {
+        guard let negotiation, negotiation.id == capability.provenance?.snapshotID else {
+            return .failure(.unknownNegotiationSnapshot)
+        }
+        guard capability.provenance?.integrationInstanceID == negotiation.integrationInstanceID,
+              capability.provenance?.productNamespace == negotiation.productNamespace,
+              capability.provenance?.integrationMode == negotiation.integrationMode else {
+            return .failure(.crossOwnerProvenance)
+        }
+        guard capability.availability == .available else {
+            return .failure(capability.freshness == .stale ? .staleCapability : .capabilityNotGranted)
+        }
+        guard capability.freshness == .current else {
+            return .failure(.staleCapability)
+        }
+        guard negotiation.grants(capability, at: date) else {
+            return .failure(negotiation.killSwitches.isEnabled(capability.direction) ? .capabilityNotGranted : .killSwitchClosed)
+        }
+        return .success(())
     }
 }

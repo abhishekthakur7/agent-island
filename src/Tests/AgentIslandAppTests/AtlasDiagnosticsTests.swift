@@ -1,5 +1,6 @@
 import XCTest
 @testable import AgentIslandApp
+@testable import SessionDomain
 
 final class AtlasDiagnosticsTests: XCTestCase {
     func testRenderedDiagnosticsAreClosedAndAllowlisted() {
@@ -37,5 +38,28 @@ final class AtlasDiagnosticsTests: XCTestCase {
         )
         XCTAssertEqual(record.outcome, .filtered)
         XCTAssertEqual(record.reason, .intentDisabled)
+    }
+
+    func testSnapshotDiagnosticRedactsIdentityAndReportsInterfaceChange() {
+        let snapshot = NegotiationSnapshot(
+            id: NegotiationSnapshotID("raw-external-id-must-not-render"),
+            contractVersion: ContractVersion(major: 1, minor: 0),
+            adapterKind: "fixture",
+            adapterBuildVersion: "1",
+            productNamespace: ProductNamespace("claude-code"),
+            integrationInstanceID: IntegrationInstanceID("instance-secret"),
+            integrationMode: "hooks",
+            capabilities: [CapabilityRecord(id: WellKnownCapability.sessionAction, direction: .act, availability: .interfaceChanged)],
+            negotiatedAt: Date(timeIntervalSince1970: 200),
+            probeEvidence: NegotiationProbeEvidence(compatibility: .interfaceChanged, setup: .loaded, observedAt: Date(timeIntervalSince1970: 200)),
+            compatibility: .interfaceChanged
+        )
+        let record = AtlasDiagnostics.render(snapshot: snapshot)
+        XCTAssertEqual(record.reason, .interfaceChanged)
+        XCTAssertEqual(record.outcome, .failed)
+        XCTAssertEqual(record.affectedCapability, .action)
+        let mirrorLabels = Mirror(reflecting: record).children.compactMap(\.label)
+        XCTAssertFalse(mirrorLabels.contains("snapshotID"))
+        XCTAssertFalse(mirrorLabels.contains("instance-secret"))
     }
 }

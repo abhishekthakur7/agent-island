@@ -126,6 +126,13 @@ public struct RawEventEnvelope: Sendable {
     public let turnLineage: TurnLineageKind?
     public let attentionKind: AttentionRequestKind?
     public let reconciliationScope: ReconciliationScope?
+    /// Optional explicit capability provenance. Legacy observation fixtures
+    /// omit these fields and are validated against the snapshot's observation
+    /// claim; new adapters should always provide them.
+    public let integrationMode: String?
+    public let capabilityID: String?
+    public let capabilityDirection: CapabilityRecord.Direction?
+    public let capabilityRevision: Int?
 
     public init(
         negotiationSnapshotID: NegotiationSnapshotID,
@@ -147,7 +154,11 @@ public struct RawEventEnvelope: Sendable {
         ownership: LifecycleOwnership? = nil,
         turnLineage: TurnLineageKind? = nil,
         attentionKind: AttentionRequestKind? = nil,
-        reconciliationScope: ReconciliationScope? = nil
+        reconciliationScope: ReconciliationScope? = nil,
+        integrationMode: String? = nil,
+        capabilityID: String? = nil,
+        capabilityDirection: CapabilityRecord.Direction? = nil,
+        capabilityRevision: Int? = nil
     ) {
         self.negotiationSnapshotID = negotiationSnapshotID
         self.integrationInstanceID = integrationInstanceID
@@ -169,6 +180,10 @@ public struct RawEventEnvelope: Sendable {
         self.turnLineage = turnLineage
         self.attentionKind = attentionKind
         self.reconciliationScope = reconciliationScope
+        self.integrationMode = integrationMode
+        self.capabilityID = capabilityID
+        self.capabilityDirection = capabilityDirection
+        self.capabilityRevision = capabilityRevision
     }
 }
 

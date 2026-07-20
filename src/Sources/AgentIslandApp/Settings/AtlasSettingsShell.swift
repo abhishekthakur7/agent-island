@@ -5,6 +5,7 @@ import SwiftUI
 /// service, so selecting a destination cannot manufacture an external action.
 struct AgentIslandSettingsView: View {
     @ObservedObject var model: AtlasSettingsModel
+    @ObservedObject var notificationSettings: NotificationPolicySettingsModel
     let liveDisplayControls: AnyView
 
     var body: some View {
@@ -24,7 +25,12 @@ struct AgentIslandSettingsView: View {
             .accessibilityLabel("Settings destinations")
         } detail: {
             ScrollView {
-                AtlasSettingsDetail(model: model, destination: model.selectedDestination, liveDisplayControls: liveDisplayControls)
+                AtlasSettingsDetail(
+                    model: model,
+                    notificationSettings: notificationSettings,
+                    destination: model.selectedDestination,
+                    liveDisplayControls: liveDisplayControls
+                )
                     .frame(maxWidth: 860, alignment: .topLeading)
                     .padding(24)
             }
