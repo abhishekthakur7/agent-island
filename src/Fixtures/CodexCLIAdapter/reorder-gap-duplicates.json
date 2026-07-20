@@ -1,0 +1,6 @@
+[
+  {"hook_event_name":"SessionStart","session_id":"concurrent-a","event_id":"a-1","sequence":1},
+  {"hook_event_name":"Stop","session_id":"concurrent-a","event_id":"a-3","sequence":3,"status":"completed"},
+  {"hook_event_name":"SessionStart","session_id":"concurrent-b","event_id":"b-2","sequence":2},
+  {"hook_event_name":"SessionStart","session_id":"concurrent-a","event_id":"a-1","sequence":1}
+]

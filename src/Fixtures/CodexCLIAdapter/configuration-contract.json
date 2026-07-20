@@ -1,0 +1,7 @@
+{
+  "reviewed_interface_version": "hooks-v1",
+  "installation_scope": "one explicitly selected TOML file",
+  "entries": ["hooks.SessionStart", "hooks.UserPromptSubmit", "hooks.PreToolUse", "hooks.PostToolUse", "hooks.PreCompact", "hooks.PostCompact", "hooks.Stop", "hooks.SubagentStart", "hooks.SubagentStop", "hooks.PermissionRequest", "hooks.Activity"],
+  "generic_notify_is_lifecycle_hook": false,
+  "live_product_validation": "required before mutation"
+}

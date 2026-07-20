@@ -1,0 +1,13 @@
+[
+  {"hook_event_name":"SessionStart","session_id":"independent-session","event_id":"start","sequence":1},
+  {"hook_event_name":"UserPromptSubmit","session_id":"independent-session","event_id":"prompt","turn_id":"turn-1","sequence":2,"prompt":"private prompt"},
+  {"hook_event_name":"PreToolUse","session_id":"independent-session","event_id":"pre-tool","turn_id":"turn-1","sequence":3,"command":"private command"},
+  {"hook_event_name":"PostToolUse","session_id":"independent-session","event_id":"post-tool","turn_id":"turn-1","sequence":4},
+  {"hook_event_name":"PreCompact","session_id":"independent-session","event_id":"pre-compact","turn_id":"turn-1","sequence":5},
+  {"hook_event_name":"PostCompact","session_id":"independent-session","event_id":"post-compact","turn_id":"turn-1","sequence":6},
+  {"hook_event_name":"Activity","session_id":"independent-session","event_id":"activity","turn_id":"turn-1","sequence":7},
+  {"hook_event_name":"PermissionRequest","session_id":"independent-session","event_id":"permission","turn_id":"turn-1","sequence":8},
+  {"hook_event_name":"SubagentStart","session_id":"independent-session","event_id":"child-start","parent_turn_id":"turn-1","subagent_id":"child-1","sequence":9},
+  {"hook_event_name":"SubagentStop","session_id":"independent-session","event_id":"child-stop","parent_turn_id":"turn-1","subagent_id":"child-1","sequence":10,"status":"completed"},
+  {"hook_event_name":"Stop","session_id":"independent-session","event_id":"stop","turn_id":"turn-1","sequence":11,"status":"completed"}
+]

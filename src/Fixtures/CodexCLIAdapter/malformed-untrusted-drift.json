@@ -1,0 +1,7 @@
+[
+  "{",
+  {"hook_event_name":"Unknown","session_id":"s","event_id":"bad","sequence":1},
+  {"hook_event_name":"SessionStart","session_id":"s","event_id":"cross-owner","product_namespace":"other","sequence":1},
+  {"configuration":"duplicate owned marker","expected_health":"duplicateDefinition"},
+  {"configuration":"changed exact receipt","expected_health":"configurationDrift"}
+]
