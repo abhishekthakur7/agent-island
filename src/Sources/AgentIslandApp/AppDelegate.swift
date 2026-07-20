@@ -11,6 +11,7 @@ import PresentationRuntime
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let presentation: PresentationRuntime
     private let fixtureController: FixtureController
+    private let claudeActionComposition: ClaudeActionApplicationComposition
     private let atlasSettings: AtlasSettingsModel
     private let notificationSettings = NotificationPolicySettingsModel()
     private lazy var settingsCoordinator = AtlasSettingsWindowCoordinator { [unowned self] in
@@ -29,9 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shortcutStatusCancellable: AnyCancellable?
     private var shortcutFeedbackCancellable: AnyCancellable?
 
-    init(presentation: PresentationRuntime, fixtureController: FixtureController) {
+    init(presentation: PresentationRuntime, fixtureController: FixtureController, claudeActionComposition: ClaudeActionApplicationComposition) {
         self.presentation = presentation
         self.fixtureController = fixtureController
+        self.claudeActionComposition = claudeActionComposition
         let atlasSettings = AtlasSettingsModel(shortcutInputSourceResolver: {
             NativeShortcutInputSourceResolver.current()
         })
@@ -85,11 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         overlay.terminate()
+        claudeActionComposition.retire()
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         overlay.terminate()
+        claudeActionComposition.retire()
         return .terminateNow
     }
 

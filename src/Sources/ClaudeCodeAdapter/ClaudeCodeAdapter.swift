@@ -440,6 +440,46 @@ public struct ClaudeIPCAuthenticator: Sendable {
         for (lhs, rhs) in zip(supplied, expected) { difference |= lhs ^ rhs }
         return difference == 0
     }
+
+    /// Action callbacks bind the fields that determine their live authority.
+    /// Observation envelopes intentionally keep their older, one-way format.
+    public func actionRequestTag(installationID: IntegrationInstanceID, helperID: String, nonce: String, callbackFingerprint: String, payload: Data, issuedAt: Date, deadline: Date) -> String {
+        var data = Data("action-request\0".utf8)
+        data.append(Data(installationID.rawValue.utf8)); data.append(0)
+        data.append(Data(helperID.utf8)); data.append(0)
+        data.append(Data(nonce.utf8)); data.append(0)
+        data.append(Data(callbackFingerprint.utf8)); data.append(0)
+        data.append(Data(String(format: "%.6f", issuedAt.timeIntervalSince1970).utf8)); data.append(0)
+        data.append(Data(String(format: "%.6f", deadline.timeIntervalSince1970).utf8)); data.append(0)
+        data.append(payload)
+        let mac = HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: secret))
+        return Data(mac).base64EncodedString()
+    }
+
+    public func verifyActionRequest(tag: String, installationID: IntegrationInstanceID, helperID: String, nonce: String, callbackFingerprint: String, payload: Data, issuedAt: Date, deadline: Date) -> Bool {
+        constantTimeEquals(tag, actionRequestTag(installationID: installationID, helperID: helperID, nonce: nonce, callbackFingerprint: callbackFingerprint, payload: payload, issuedAt: issuedAt, deadline: deadline))
+    }
+
+    public func actionResponseTag(nonce: String, callbackFingerprint: String, response: ClaudeHelperNativeResponse?, applied: Bool, superseded: Bool) -> String {
+        let body = (try? JSONEncoder().encode(response)) ?? Data()
+        var data = Data("action-response\0".utf8)
+        data.append(Data(nonce.utf8)); data.append(0)
+        data.append(Data(callbackFingerprint.utf8)); data.append(0)
+        data.append(applied ? 1 : 0); data.append(superseded ? 1 : 0); data.append(body)
+        let mac = HMAC<SHA256>.authenticationCode(for: data, using: SymmetricKey(data: secret))
+        return Data(mac).base64EncodedString()
+    }
+
+    public func verifyActionResponse(tag: String, nonce: String, callbackFingerprint: String, response: ClaudeHelperNativeResponse?, applied: Bool, superseded: Bool) -> Bool {
+        constantTimeEquals(tag, actionResponseTag(nonce: nonce, callbackFingerprint: callbackFingerprint, response: response, applied: applied, superseded: superseded))
+    }
+
+    private func constantTimeEquals(_ suppliedTag: String, _ expectedTag: String) -> Bool {
+        guard isUsable, let supplied = Data(base64Encoded: suppliedTag), let expected = Data(base64Encoded: expectedTag), supplied.count == expected.count else { return false }
+        var difference: UInt8 = 0
+        for (lhs, rhs) in zip(supplied, expected) { difference |= lhs ^ rhs }
+        return difference == 0
+    }
 }
 
 /// The boundary transport carries an untrusted, bounded hook payload. It has

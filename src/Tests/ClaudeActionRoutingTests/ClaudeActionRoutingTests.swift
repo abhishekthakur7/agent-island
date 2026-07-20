@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import ClaudeActionRouting
 @testable import ClaudeCodeAdapter
 @testable import SessionDomain
@@ -118,5 +119,47 @@ final class ClaudeActionRoutingTests: XCTestCase {
         _ = await router.open(live, at: now)
         guard case .rejected(let attempt?, .helperUnavailable) = await router.submit(callbackIdentity: live.identity, submission: ClaudeActionSubmission(action: .allow, deliberateConfirmation: true), attemptID: "helper-refusal", at: now) else { return XCTFail("explicit helper refusal") }
         XCTAssertEqual(attempt.outcome, .rejected); XCTAssertEqual(attempt.dispatchCount, 0); XCTAssertEqual(await dispatch.count(), 1)
+    }
+
+    func testAuthenticatedActionListenerCreatesOneDurableRequestAndReturnsOneTypedReply() async throws {
+        let secret = ClaudeIPCAuthenticator(secret: "listener-secret")
+        let configuration = ClaudeActionRequestListener.Configuration(installationID: instance, helperID: "helper", authenticator: secret, snapshot: snapshot(), maximumFutureDeadline: 2)
+        let listener = ClaudeActionRequestListener(configuration: configuration)
+        let store = ActionAttemptStore()
+        let router = ClaudeGuidedActionRouter(store: store, dispatchPort: listener)
+        await listener.attach(router: router)
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\",\"permission_mode\":\"default\"}".utf8)
+        let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let nonce = UUID().uuidString
+        let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: nonce, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: secret)
+        let channel = ClaudeInMemoryActionReplyChannel()
+        XCTAssertTrue(await listener.receive(request, channel: channel, at: now))
+        XCTAssertEqual((await store.requests()).count, 1)
+
+        let identity = ClaudeLiveCallbackIdentity(nativeSessionID: NativeSessionID("session-a"), promptID: nil, hook: .permissionRequest, toolUseID: nil, callbackInputFingerprint: fingerprint, nonce: try XCTUnwrap(UUID(uuidString: nonce)))
+        guard case .dispatched = await router.submit(callbackIdentity: identity, submission: ClaudeActionSubmission(action: .allow, deliberateConfirmation: true), attemptID: "listener-allow", at: now) else { return XCTFail("one live callback should dispatch") }
+        let reply = try XCTUnwrap(await channel.response)
+        XCTAssertEqual(reply.response, .permission(.allow, suggestionJSON: nil))
+        XCTAssertTrue(reply.isAuthenticated(using: secret))
+        XCTAssertEqual(await listener.liveWaiterCount, 0)
+        guard case .rejected(_, .staleCallback) = await router.submit(callbackIdentity: identity, submission: ClaudeActionSubmission(action: .allow, deliberateConfirmation: true), attemptID: "listener-repeat", at: now) else { return XCTFail("responder is single use") }
+    }
+
+    func testListenerRejectsReplayCrossOwnerMismatchAndExpiredBeforeCreatingRequest() async {
+        let secret = ClaudeIPCAuthenticator(secret: "listener-secret")
+        let configuration = ClaudeActionRequestListener.Configuration(installationID: instance, helperID: "helper", authenticator: secret, snapshot: snapshot(), maximumFutureDeadline: 2)
+        let listener = ClaudeActionRequestListener(configuration: configuration)
+        let store = ActionAttemptStore(); let router = ClaudeGuidedActionRouter(store: store, dispatchPort: listener)
+        await listener.attach(router: router)
+        let payload = Data("{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"session-a\",\"event_id\":\"event-a\",\"request_id\":\"request-a\"}".utf8)
+        let fingerprint = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let request = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: secret)
+        XCTAssertTrue(await listener.receive(request, channel: ClaudeInMemoryActionReplyChannel(), at: now))
+        XCTAssertFalse(await listener.receive(request, channel: ClaudeInMemoryActionReplyChannel(), at: now))
+        let crossOwner = ClaudeHelperActionRequest(installationID: IntegrationInstanceID("other"), helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(1), authenticator: secret)
+        XCTAssertFalse(await listener.receive(crossOwner, channel: ClaudeInMemoryActionReplyChannel(), at: now))
+        let expired = ClaudeHelperActionRequest(installationID: instance, helperID: "helper", nonce: UUID().uuidString, callbackFingerprint: fingerprint, payload: payload, issuedAt: now, deadline: now.addingTimeInterval(-1), authenticator: secret)
+        XCTAssertFalse(await listener.receive(expired, channel: ClaudeInMemoryActionReplyChannel(), at: now))
+        XCTAssertEqual((await store.requests()).count, 1)
     }
 }

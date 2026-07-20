@@ -100,6 +100,8 @@ let package = Package(
                 "AdapterFixtureKit",
                 "PresentationRuntime",
                 "ProtectedStore",
+                "ClaudeActionRouting",
+                "ClaudeCodeAdapter",
             ]
         ),
 

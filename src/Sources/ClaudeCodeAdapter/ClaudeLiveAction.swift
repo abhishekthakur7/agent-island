@@ -128,7 +128,7 @@ public enum ClaudeLiveActionRejection: String, Sendable, Equatable, Error {
 /// Strict construction from documented Hook fields. It rejects unsupported
 /// combinations instead of guessing from command text or later observations.
 public enum ClaudeLiveCallbackFactory {
-    public static func make(hook: ClaudeHookEnvelope, snapshot: NegotiationSnapshot, integrationInstanceID: IntegrationInstanceID, deadline: Date) -> Result<ClaudeLiveCallback, ClaudeLiveActionRejection> {
+    public static func make(hook: ClaudeHookEnvelope, snapshot: NegotiationSnapshot, integrationInstanceID: IntegrationInstanceID, deadline: Date, nonce: UUID = UUID()) -> Result<ClaudeLiveCallback, ClaudeLiveActionRejection> {
         guard snapshot.productNamespace == ClaudeCodeIntegration.productNamespace,
               snapshot.integrationInstanceID == integrationInstanceID,
               let root = try? JSONSerialization.jsonObject(with: hook.payload) as? [String: Any] else { return .failure(.malformedCallback) }
@@ -139,7 +139,7 @@ public enum ClaudeLiveCallbackFactory {
         func callback(requestID: String, capabilityID: String, semantic: ClaudeLiveActionSemantic, shape: GuidedSemanticShape, suggestion: ClaudeOfferedPermissionSuggestion? = nil, groups: [ClaudeQuestionGroup] = []) -> Result<ClaudeLiveCallback, ClaudeLiveActionRejection> {
             guard let capability = snapshot.capabilities.first(where: { $0.id == capabilityID && $0.direction == .act }), capability.availability == .available, capability.freshness == .current else { return .failure(.capabilityUnavailable) }
             let owner = GuidedAttentionOwner(productNamespace: ClaudeCodeIntegration.productNamespace, nativeSessionID: session, nativeAttentionRequestID: requestID, nativeTurnID: hook.nativeTurnID, integrationInstanceID: integrationInstanceID, negotiationSnapshotID: snapshot.id)
-            return .success(ClaudeLiveCallback(identity: ClaudeLiveCallbackIdentity(nativeSessionID: session, promptID: hook.promptID, hook: hook.name, toolUseID: hook.nativeToolUseID, callbackInputFingerprint: fingerprint), owner: owner, capability: capability, semantic: semantic, semanticShape: shape, deadline: deadline, nativeInput: hook.payload, offeredSuggestion: suggestion, questionGroups: groups))
+            return .success(ClaudeLiveCallback(identity: ClaudeLiveCallbackIdentity(nativeSessionID: session, promptID: hook.promptID, hook: hook.name, toolUseID: hook.nativeToolUseID, callbackInputFingerprint: fingerprint, nonce: nonce), owner: owner, capability: capability, semantic: semantic, semanticShape: shape, deadline: deadline, nativeInput: hook.payload, offeredSuggestion: suggestion, questionGroups: groups))
         }
         switch hook.name {
         case .permissionRequest:

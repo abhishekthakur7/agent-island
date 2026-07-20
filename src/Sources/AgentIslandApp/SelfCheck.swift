@@ -114,6 +114,14 @@ enum SelfCheck {
             }
         }
 
+        do {
+            let results = await AB135Evidence.run()
+            for (name, passed) in results {
+                print("[\(passed ? "PASS" : "FAIL")] \(name)")
+                if !passed { allPassed = false }
+            }
+        }
+
         print(allPassed ? "SELF-CHECK PASSED" : "SELF-CHECK FAILED")
         return allPassed ? 0 : 1
     }

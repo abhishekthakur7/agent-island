@@ -42,8 +42,12 @@ private func launchGUI() async {
     let runtime = ApplicationRuntime(store: store)
     let presentation = PresentationRuntime(port: runtime)
     let fixtureController = FixtureController(port: runtime)
+    // The app retains the real action-server composition for the lifetime of
+    // its GUI. Integration setup installs a current negotiated configuration;
+    // until then it remains deliberately fail-closed and Claude stays native.
+    let claudeActionComposition = ClaudeActionApplicationComposition()
 
-    let delegate = AppDelegate(presentation: presentation, fixtureController: fixtureController)
+    let delegate = AppDelegate(presentation: presentation, fixtureController: fixtureController, claudeActionComposition: claudeActionComposition)
     let app = NSApplication.shared
     app.delegate = delegate
     // Ambient Island presentation is an accessory surface. Settings explicitly

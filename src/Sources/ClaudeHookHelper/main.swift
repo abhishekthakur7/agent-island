@@ -17,9 +17,11 @@ struct ClaudeHookHelperMain {
         // application-owned and intentionally has no environment override.
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
-        let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-hooks.sock"), appOwnedRoot: root)
+        let observationEndpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-hooks.sock"), appOwnedRoot: root)
+        let actionEndpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-actions.sock"), appOwnedRoot: root)
         #if canImport(Security)
-        guard let runtime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: KeychainClaudeHookCredentialStore(), endpoint: endpoint) else { exit(77) }
+        guard let runtime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: KeychainClaudeHookCredentialStore(), endpoint: observationEndpoint),
+              let actionRuntime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: KeychainClaudeHookCredentialStore(), endpoint: actionEndpoint) else { exit(77) }
         #else
         exit(69)
         #endif
@@ -35,11 +37,11 @@ struct ClaudeHookHelperMain {
                 // The Product-controlled environment supplies neither endpoint
                 // nor timeout. Bound waiting by the helper's provisioned safe
                 // timeout and write one native response only on exact success.
-                let transport = ClaudeUnixDomainActionIPCTransport(endpoint: endpoint)
-                let response = try await runtime.respondToAction(stdin: body, deadline: Date().addingTimeInterval(runtime.timeout), transport: transport)
+                let transport = ClaudeUnixDomainActionIPCTransport(endpoint: actionEndpoint)
+                let response = try await actionRuntime.respondToAction(stdin: body, deadline: Date().addingTimeInterval(actionRuntime.timeout), transport: transport)
                 try FileHandle.standardOutput.write(contentsOf: response)
             } else {
-                let transport = ClaudeUnixDomainHookIPCTransport(endpoint: endpoint)
+                let transport = ClaudeUnixDomainHookIPCTransport(endpoint: observationEndpoint)
                 _ = try await runtime.forward(stdin: body, transport: transport)
             }
             exit(0)

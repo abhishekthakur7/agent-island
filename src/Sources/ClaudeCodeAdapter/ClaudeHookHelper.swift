@@ -140,7 +140,23 @@ public struct ClaudeHelperActionRequest: Codable, Sendable, Hashable {
 
     public init(installationID: IntegrationInstanceID, helperID: String, nonce: String, callbackFingerprint: String, payload: Data, issuedAt: Date, deadline: Date, authenticator: ClaudeIPCAuthenticator) {
         self.installationID = installationID; self.helperID = helperID; self.nonce = nonce; self.callbackFingerprint = callbackFingerprint; self.payload = payload; self.issuedAt = issuedAt; self.deadline = deadline
-        self.authenticationTag = authenticator.tag(installationID: installationID, helperID: helperID, nonce: nonce, payload: payload, issuedAt: issuedAt)
+        self.authenticationTag = authenticator.actionRequestTag(installationID: installationID, helperID: helperID, nonce: nonce, callbackFingerprint: callbackFingerprint, payload: payload, issuedAt: issuedAt, deadline: deadline)
+    }
+
+    public func isAuthenticated(using authenticator: ClaudeIPCAuthenticator, expectedInstallationID: IntegrationInstanceID, expectedHelperID: String, receivedAt: Date, maxClockSkew: TimeInterval = 120) -> Bool {
+        guard payload.count <= SessionDomainValidator.maxPayloadBytes,
+              installationID == expectedInstallationID,
+              helperID == expectedHelperID,
+              nonce.utf8.count <= 128,
+              UUID(uuidString: nonce) != nil,
+              callbackFingerprint.count == 64,
+              issuedAt.timeIntervalSince1970.isFinite,
+              deadline.timeIntervalSince1970.isFinite,
+              deadline >= issuedAt,
+              abs(receivedAt.timeIntervalSince(issuedAt)) <= maxClockSkew,
+              authenticator.verifyActionRequest(tag: authenticationTag, installationID: installationID, helperID: helperID, nonce: nonce, callbackFingerprint: callbackFingerprint, payload: payload, issuedAt: issuedAt, deadline: deadline)
+        else { return false }
+        return true
     }
 }
 
@@ -155,9 +171,18 @@ public struct ClaudeHelperActionResponse: Codable, Sendable, Hashable {
     public let response: ClaudeHelperNativeResponse?
     public let applied: Bool
     public let superseded: Bool
+    public let authenticationTag: String
 
-    public init(nonce: String, callbackFingerprint: String, response: ClaudeHelperNativeResponse?, applied: Bool = false, superseded: Bool = false) {
-        self.nonce = nonce; self.callbackFingerprint = callbackFingerprint; self.response = response; self.applied = applied; self.superseded = superseded
+    public init(nonce: String, callbackFingerprint: String, response: ClaudeHelperNativeResponse?, applied: Bool = false, superseded: Bool = false, authenticationTag: String = "") {
+        self.nonce = nonce; self.callbackFingerprint = callbackFingerprint; self.response = response; self.applied = applied; self.superseded = superseded; self.authenticationTag = authenticationTag
+    }
+
+    public init(nonce: String, callbackFingerprint: String, response: ClaudeHelperNativeResponse?, applied: Bool = false, superseded: Bool = false, authenticator: ClaudeIPCAuthenticator) {
+        self.init(nonce: nonce, callbackFingerprint: callbackFingerprint, response: response, applied: applied, superseded: superseded, authenticationTag: authenticator.actionResponseTag(nonce: nonce, callbackFingerprint: callbackFingerprint, response: response, applied: applied, superseded: superseded))
+    }
+
+    public func isAuthenticated(using authenticator: ClaudeIPCAuthenticator) -> Bool {
+        authenticator.verifyActionResponse(tag: authenticationTag, nonce: nonce, callbackFingerprint: callbackFingerprint, response: response, applied: applied, superseded: superseded)
     }
 }
 
@@ -169,10 +194,14 @@ public actor ClaudeInMemoryHookActionIPCTransport: ClaudeHookActionIPCTransport 
     public private(set) var requests: [ClaudeHelperActionRequest] = []
     public var nextResponse: ClaudeHelperActionResponse?
     public var echoedResponse: ClaudeHelperNativeResponse?
-    public init(nextResponse: ClaudeHelperActionResponse? = nil, echoedResponse: ClaudeHelperNativeResponse? = nil) { self.nextResponse = nextResponse; self.echoedResponse = echoedResponse }
+    private let authenticator: ClaudeIPCAuthenticator?
+    public init(nextResponse: ClaudeHelperActionResponse? = nil, echoedResponse: ClaudeHelperNativeResponse? = nil, authenticator: ClaudeIPCAuthenticator? = nil) { self.nextResponse = nextResponse; self.echoedResponse = echoedResponse; self.authenticator = authenticator }
     public func request(_ request: ClaudeHelperActionRequest, timeout: TimeInterval) async throws -> ClaudeHelperActionResponse {
         requests.append(request)
-        if let echoedResponse { return ClaudeHelperActionResponse(nonce: request.nonce, callbackFingerprint: request.callbackFingerprint, response: echoedResponse) }
+        if let echoedResponse {
+            if let authenticator { return ClaudeHelperActionResponse(nonce: request.nonce, callbackFingerprint: request.callbackFingerprint, response: echoedResponse, authenticator: authenticator) }
+            return ClaudeHelperActionResponse(nonce: request.nonce, callbackFingerprint: request.callbackFingerprint, response: echoedResponse)
+        }
         guard let nextResponse else { throw ClaudeHookHelperError.transportTimeout }
         return nextResponse
     }
@@ -415,7 +444,7 @@ public struct ClaudeHookHelperRuntime: Sendable {
         let remaining = max(0, min(timeout, deadline.timeIntervalSince(now)))
         guard remaining > 0 else { throw ClaudeHookHelperError.transportTimeout }
         let reply = try await transport.request(request, timeout: remaining)
-        guard Date() <= deadline, reply.nonce == nonce, reply.callbackFingerprint == fingerprint, !reply.superseded, let response = reply.response else { throw ClaudeHookHelperError.transportFailure }
+        guard Date() <= deadline, reply.nonce == nonce, reply.callbackFingerprint == fingerprint, reply.isAuthenticated(using: authenticator), !reply.superseded, let response = reply.response else { throw ClaudeHookHelperError.transportFailure }
         return try nativeJSON(response, for: hook)
     }
 
