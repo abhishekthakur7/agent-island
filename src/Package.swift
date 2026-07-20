@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "ApplicationRuntime", targets: ["ApplicationRuntime"]),
         .library(name: "AdapterFixtureKit", targets: ["AdapterFixtureKit"]),
         .library(name: "ClaudeCodeAdapter", targets: ["ClaudeCodeAdapter"]),
+        .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
@@ -72,6 +73,10 @@ let package = Package(
         // transcript reader.
         .target(name: "ClaudeCodeAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
 
+        // Composition bridge; the adapter itself remains unable to reach the
+        // canonical store or keep callback data durably.
+        .target(name: "ClaudeActionRouting", dependencies: ["ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
+
         // Application-owned documented-hook helper. It has no Product action,
         // transcript, or store dependency; it only validates stdin and sends
         // authenticated bounded frames through the local IPC abstraction.
@@ -118,5 +123,6 @@ let package = Package(
             name: "ClaudeCodeAdapterTests",
             dependencies: ["ClaudeCodeAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime"]
         ),
+        .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
     ]
 )

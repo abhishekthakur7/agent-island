@@ -214,6 +214,13 @@ public actor ActionAttemptStore {
     public func attempts() -> [ActionAttempt] { attemptsByID.values.sorted { $0.reservedAt < $1.reservedAt || ($0.reservedAt == $1.reservedAt && $0.id < $1.id) } }
     public func redactedDiagnostics() -> [RedactedActionAttemptDiagnostic] { attempts().map(RedactedActionAttemptDiagnostic.init) }
 
+    /// Records a failed local dispatch gate without minting a lease. It keeps
+    /// explicit intent auditable at zero native dispatches and never retries.
+    public func recordRejectedAttempt(id: String, requestID: GuidedAttentionRequestID, owner: GuidedAttentionOwner, action: GuidedAction, at date: Date, reason: ActionAttemptRejectionReason) -> ActionAttempt {
+        if let existing = attemptsByID[id] { return existing }
+        return recordRejected(id: id, requestID: requestID, owner: owner, action: action, leaseID: nil, at: date, reason: reason)
+    }
+
     public func invalidateForSourceChange() async { await invalidate(.sourceChanged, lease: { await self.leaseAuthority.invalidateForSourceChange() }) }
     public func invalidateForReconnect() async { await invalidate(.disconnected, lease: { await self.leaseAuthority.invalidateForReconnect() }) }
     public func invalidateForWake() async { await invalidate(.wake, lease: { await self.leaseAuthority.invalidateForWake() }) }

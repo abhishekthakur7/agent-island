@@ -21,6 +21,10 @@ public enum ClaudeCodeIntegration {
     public static let planCapability = "claude.hooks.planObservation"
     public static let subagentCapability = "claude.hooks.subagentObservation"
     public static let configurationCapability = WellKnownCapability.configuration
+    public static let permissionCapability = "claude.hooks.permissionAction"
+    public static let permissionSuggestionCapability = "claude.hooks.permissionSuggestionAction"
+    public static let questionActionCapability = "claude.hooks.questionAction"
+    public static let planApprovalCapability = "claude.hooks.planApprovalAction"
 
     public static let allObservationCapabilities = [
         observationCapability,
@@ -29,6 +33,7 @@ public enum ClaudeCodeIntegration {
         planCapability,
         subagentCapability
     ]
+    public static let allActionCapabilities = [permissionCapability, permissionSuggestionCapability, questionActionCapability, planApprovalCapability]
 
     /// A functional, non-secret launcher. The application-owned executable
     /// performs bounded stdin intake and authenticated local IPC; this file
@@ -481,6 +486,7 @@ public struct ClaudeHookEnvelope: Sendable {
     public let nativeSessionID: String
     public let nativeTurnID: String?
     public let nativeAttentionRequestID: String?
+    public let nativeToolUseID: String?
     public let nativeSubagentRunID: String?
     public let parentTurnID: String?
     public let parentSessionID: String?
@@ -494,8 +500,8 @@ public struct ClaudeHookEnvelope: Sendable {
     public let scheduledWakeup: Bool?
     public let stopEvidencePresent: Bool
 
-    private init(name: ClaudeHookName, eventIdentity: EventIdentity, nativeSessionID: String, nativeTurnID: String?, nativeAttentionRequestID: String?, nativeSubagentRunID: String?, parentTurnID: String?, parentSessionID: String?, sourceSequence: Int64?, occurrenceTime: Date?, model: String?, workingDirectory: String?, promptID: String?, payload: Data, backgroundTaskCount: Int?, scheduledWakeup: Bool?, stopEvidencePresent: Bool) {
-        self.name = name; self.eventIdentity = eventIdentity; self.nativeSessionID = nativeSessionID; self.nativeTurnID = nativeTurnID; self.nativeAttentionRequestID = nativeAttentionRequestID; self.nativeSubagentRunID = nativeSubagentRunID; self.parentTurnID = parentTurnID; self.parentSessionID = parentSessionID; self.sourceSequence = sourceSequence; self.occurrenceTime = occurrenceTime; self.model = model; self.workingDirectory = workingDirectory; self.promptID = promptID; self.payload = payload; self.backgroundTaskCount = backgroundTaskCount; self.scheduledWakeup = scheduledWakeup; self.stopEvidencePresent = stopEvidencePresent
+    private init(name: ClaudeHookName, eventIdentity: EventIdentity, nativeSessionID: String, nativeTurnID: String?, nativeAttentionRequestID: String?, nativeToolUseID: String?, nativeSubagentRunID: String?, parentTurnID: String?, parentSessionID: String?, sourceSequence: Int64?, occurrenceTime: Date?, model: String?, workingDirectory: String?, promptID: String?, payload: Data, backgroundTaskCount: Int?, scheduledWakeup: Bool?, stopEvidencePresent: Bool) {
+        self.name = name; self.eventIdentity = eventIdentity; self.nativeSessionID = nativeSessionID; self.nativeTurnID = nativeTurnID; self.nativeAttentionRequestID = nativeAttentionRequestID; self.nativeToolUseID = nativeToolUseID; self.nativeSubagentRunID = nativeSubagentRunID; self.parentTurnID = parentTurnID; self.parentSessionID = parentSessionID; self.sourceSequence = sourceSequence; self.occurrenceTime = occurrenceTime; self.model = model; self.workingDirectory = workingDirectory; self.promptID = promptID; self.payload = payload; self.backgroundTaskCount = backgroundTaskCount; self.scheduledWakeup = scheduledWakeup; self.stopEvidencePresent = stopEvidencePresent
     }
 
     public static func decode(_ data: Data, maxBytes: Int = SessionDomainValidator.maxPayloadBytes) throws -> Self {
@@ -517,7 +523,7 @@ public struct ClaudeHookEnvelope: Sendable {
         let wake = (object["scheduled_wakeup"] as? NSNumber)?.boolValue ?? (object["scheduledWakeup"] as? NSNumber)?.boolValue
         let stopEvidence = string(["stop_reason", "stopReason", "result", "result_status"]) != nil || object["result"] != nil || object["stop_reason"] != nil
         let identity: EventIdentity = .stable(sourceID)
-        return Self(name: name, eventIdentity: identity, nativeSessionID: session, nativeTurnID: string(["turn_id", "turnId", "nativeTurnID"]), nativeAttentionRequestID: string(["request_id", "requestId", "attention_request_id"]), nativeSubagentRunID: string(["subagent_run_id", "subagentRunId", "child_id"]), parentTurnID: string(["parent_turn_id", "parentTurnId"]), parentSessionID: string(["parent_session_id", "parentSessionId"]), sourceSequence: sequence, occurrenceTime: timestamp, model: string(["model"]), workingDirectory: string(["cwd", "working_directory", "workingDirectory"]), promptID: string(["prompt_id", "promptId"]), payload: data, backgroundTaskCount: count, scheduledWakeup: wake, stopEvidencePresent: stopEvidence)
+        return Self(name: name, eventIdentity: identity, nativeSessionID: session, nativeTurnID: string(["turn_id", "turnId", "nativeTurnID"]), nativeAttentionRequestID: string(["request_id", "requestId", "attention_request_id"]), nativeToolUseID: string(["tool_use_id", "toolUseId"]), nativeSubagentRunID: string(["subagent_run_id", "subagentRunId", "child_id"]), parentTurnID: string(["parent_turn_id", "parentTurnId"]), parentSessionID: string(["parent_session_id", "parentSessionId"]), sourceSequence: sequence, occurrenceTime: timestamp, model: string(["model"]), workingDirectory: string(["cwd", "working_directory", "workingDirectory"]), promptID: string(["prompt_id", "promptId"]), payload: data, backgroundTaskCount: count, scheduledWakeup: wake, stopEvidencePresent: stopEvidence)
     }
 }
 
@@ -901,7 +907,8 @@ public actor ClaudeCodeAdapter {
         // RawEventEnvelope validation, while retaining Claude-specific
         // version/evidence-scoped capabilities for each semantic variant.
         let genericObservation = CapabilityRecord(id: WellKnownCapability.sessionObservation, direction: .observe, availability: availability, scope: .mode, fallback: known ? .nativeHost : .retryProbe)
-        let records = [genericObservation] + ClaudeCodeIntegration.allObservationCapabilities.map { CapabilityRecord(id: $0, direction: .observe, availability: availability, scope: .mode, fallback: known ? .nativeHost : .retryProbe) } + [CapabilityRecord(id: ClaudeCodeIntegration.configurationCapability, direction: .configure, availability: known ? .available : .unavailable, scope: .installation, fallback: .manualSetup)]
+        let actionRecords = ClaudeCodeIntegration.allActionCapabilities.map { CapabilityRecord(id: $0, direction: .act, availability: availability, scope: .request, fallback: .nativeHost, semanticVariant: $0) }
+        let records = [genericObservation] + ClaudeCodeIntegration.allObservationCapabilities.map { CapabilityRecord(id: $0, direction: .observe, availability: availability, scope: .mode, fallback: known ? .nativeHost : .retryProbe) } + actionRecords + [CapabilityRecord(id: ClaudeCodeIntegration.configurationCapability, direction: .configure, availability: known ? .available : .unavailable, scope: .installation, fallback: .manualSetup)]
         let request = NegotiationRequest(integrationInstanceID: integrationInstanceID, adapterKind: ClaudeCodeIntegration.adapterKind, adapterBuildVersion: ClaudeCodeIntegration.adapterBuildVersion, productNamespace: ClaudeCodeIntegration.productNamespace, integrationMode: ClaudeCodeIntegration.integrationMode, offeredContractVersion: ContractVersion(major: SessionDomainValidator.supportedContractMajor, minor: 0), requestedCapabilities: records.map(\.id), catalogRevision: ClaudeCodeIntegration.catalogRevision, productVersion: version.productVersion, interfaceVersion: version.interfaceVersion, probeEvidence: NegotiationProbeEvidence(compatibility: probeCompatibility, productVersion: version.productVersion, interfaceVersion: version.interfaceVersion, setup: .loaded, observedAt: version.observedAt), requestedCapabilityRecords: records, compatibility: .compatible)
         let outcome = await port.negotiate(request)
         if case .compatible(let negotiated) = outcome {
