@@ -47,8 +47,13 @@ enum POSIXFileSafety {
                 let value = try lstat(cursor)
                 guard !isSymlink(value), isDirectory(value) else { throw DurableInstallationError.unsafePath(cursor.path) }
             }
+            // Terminate at the filesystem root. `deletingLastPathComponent()`
+            // no longer reports a fixpoint at "/" (it yields "/.." and would
+            // walk an unbounded "/../.." chain forever), so root must be the
+            // explicit stop after it has been validated above.
+            if cursor.path == "/" { break }
             let parent = cursor.deletingLastPathComponent()
-            if parent.path == cursor.path { break }
+            if parent.path == cursor.path || parent.path.hasSuffix("/..") { break }
             cursor = parent
         }
     }

@@ -217,6 +217,7 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     @Published public private(set) var onboarding: AtlasOnboardingState
     @Published public private(set) var integrations: [AtlasIntegrationState]
     @Published private(set) var productInstallations: [ProductCLI: AtlasProductInstallationState]
+    @Published private(set) var verificationResults: [AtlasIntegrationKind: IntegrationVerificationResult] = [:]
     @Published public private(set) var preview: AtlasPreviewState
 
     private let previewRouter: AtlasPreviewRouter
@@ -224,15 +225,19 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     private var productInstallationTask: Task<Void, Never>?
     private var productInstallationGeneration: UInt64 = 0
     private var didLoadProductInstallations = false
+    private let sessionVerifier: (any IntegrationSessionVerifying)?
+    private var verificationTasks: [AtlasIntegrationKind: Task<Void, Never>] = [:]
 
     public init(
         repository: AtlasSettingsRepository = AtlasSettingsRepository(),
         shortcutInputSourceResolver: @escaping ShortcutInputSourceResolver = { ShortcutInputSource() },
-        productInstallationDetector: any ProductInstallationDetecting = LocalProductInstallationDetector()
+        productInstallationDetector: any ProductInstallationDetecting = LocalProductInstallationDetector(),
+        sessionVerifier: (any IntegrationSessionVerifying)? = nil
     ) {
         self.repository = repository
         self.shortcutInputSourceResolver = shortcutInputSourceResolver
         self.productInstallationDetector = productInstallationDetector
+        self.sessionVerifier = sessionVerifier
         let loaded = repository.loadSnapshot()
         self.snapshot = loaded
         self.selectedDestination = loaded.selectedDestination
@@ -423,6 +428,36 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
 
     public func setIntegrationIntent(_ kind: AtlasIntegrationKind, enabled: Bool) {
         updateIntegration(kind) { $0.enabledIntent = enabled }
+    }
+
+    /// Person-initiated end-to-end check: launch the real Product CLI and
+    /// confirm a genuine session registers through the installed hook. Gated
+    /// on a verified executable and enabled intent so it never spawns a
+    /// (billable) CLI run that has no chance of registering.
+    func verifyIntegration(_ kind: AtlasIntegrationKind) {
+        let now = Date()
+        guard let verifier = sessionVerifier else {
+            verificationResults[kind] = IntegrationVerificationResult(state: .failed, message: "Verification is unavailable in this build.", observedAt: now)
+            return
+        }
+        let product = kind.productCLI
+        guard let executablePath = productInstallations[product]?.verifiedExecutablePath,
+              FileManager.default.isExecutableFile(atPath: executablePath) else {
+            verificationResults[kind] = IntegrationVerificationResult(state: .failed, message: "No verified \(product.executableName) executable. Run a scan first.", observedAt: now)
+            return
+        }
+        guard integrations.first(where: { $0.kind == kind })?.enabledIntent == true else {
+            verificationResults[kind] = IntegrationVerificationResult(state: .failed, message: "Enable the integration first so its hook is installed and active.", observedAt: now)
+            return
+        }
+        verificationTasks[kind]?.cancel()
+        verificationResults[kind] = IntegrationVerificationResult(state: .running, message: "Starting \(product.executableName) and waiting for a session to register…", observedAt: now)
+        verificationTasks[kind] = Task { [weak self] in
+            let outcome = await verifier.verify(product: product, executablePath: executablePath)
+            guard !Task.isCancelled, let self else { return }
+            self.verificationResults[kind] = IntegrationVerificationResult(outcome: outcome, observedAt: Date())
+            self.verificationTasks[kind] = nil
+        }
     }
 
     public func updateIntegrationEvidence(_ kind: AtlasIntegrationKind, evidence: AtlasIntegrationEvidence, capabilities: Set<AtlasIntegrationCapability>? = nil, affectedCapability: AtlasIntegrationCapability? = nil) {

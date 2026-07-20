@@ -111,9 +111,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.warpHostComposition = warpHostComposition
         self.orcaHostComposition = orcaHostComposition
         self.orcaHostCapture = orcaHostCapture
-        let atlasSettings = AtlasSettingsModel(shortcutInputSourceResolver: {
-            NativeShortcutInputSourceResolver.current()
-        })
+        let atlasSettings = AtlasSettingsModel(
+            shortcutInputSourceResolver: {
+                NativeShortcutInputSourceResolver.current()
+            },
+            sessionVerifier: IntegrationSessionVerifier(port: applicationRuntime)
+        )
         self.atlasSettings = atlasSettings
         self.launchIntegrationAutoInstaller = LaunchIntegrationAutoInstaller(
             port: applicationRuntime,

@@ -37,19 +37,58 @@ private func makeCursorHostSetup() -> CursorExtensionLocalEndpoint {
     return CursorExtensionLocalEndpoint(socketPath: root.appendingPathComponent("extension.sock").path, credential: Data(UUID().uuidString.utf8))
 }
 
+/// A one-shot box used only to hand a background task's result back to a
+/// launch-time thread that is waiting on a semaphore. `@unchecked` because the
+/// producer signals the semaphore before the consumer reads, so the access is
+/// already ordered.
+private final class LaunchResultBox<Value>: @unchecked Sendable {
+    var value: Value?
+}
+
+/// The Sendable result of the off-main store bootstrap. A non-store error is
+/// reported as `.failed(nil)`, matching the previous generic-diagnostic path.
+private enum StoreBootstrapOutcome: Sendable {
+    case opened(SessionStore)
+    case failed(ProtectedStoreFailure?)
+}
+
+/// Runs an async operation to completion while the calling thread waits.
+///
+/// This is used ONLY at cold launch, before `NSApplication.run()` starts the
+/// AppKit run loop. It must never be called once the app is running: the app
+/// must reach `app.run()` from a synchronous top-level context so the main
+/// thread's run loop — not an occupied main-actor async task — is what drives
+/// the concurrency executor. Otherwise every later `Task { @MainActor … }`
+/// (product discovery, launch hook installation) is enqueued behind an
+/// `app.run()` that never returns and can never run.
+private func runToCompletion<Value: Sendable>(_ operation: @escaping @Sendable () async -> Value) -> Value {
+    let semaphore = DispatchSemaphore(value: 0)
+    let box = LaunchResultBox<Value>()
+    Task.detached(priority: .userInitiated) {
+        box.value = await operation()
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return box.value!
+}
+
 @MainActor
-private func launchGUI() async {
+private func launchGUI() {
     let store: SessionStore
-    do {
-        // Opening/bootstrapping the encrypted store does real disk I/O and
-        // SQLCipher pragma/integrity work — never block the main thread with
-        // it, on first launch or on a post-discard relaunch.
-        let protectedStore = makeProtectedStore()
-        store = try await Task.detached(priority: .userInitiated) {
-            try SessionStore(protectedStore: protectedStore)
-        }.value
-    } catch {
-        await presentStorageUnavailable(error)
+    // Opening/bootstrapping the encrypted store does real disk I/O and
+    // SQLCipher pragma/integrity work; it runs on a background task so the
+    // SQLCipher work stays off the main thread. The main thread waits for it
+    // here — this is cold launch, before the run loop exists — rather than
+    // suspending an async main-actor task that would then own `app.run()`.
+    let protectedStore = makeProtectedStore()
+    switch runToCompletion({ () -> StoreBootstrapOutcome in
+        do { return .opened(try SessionStore(protectedStore: protectedStore)) }
+        catch { return .failed(error as? ProtectedStoreFailure) }
+    }) {
+    case .opened(let opened):
+        store = opened
+    case .failed(let failure):
+        presentStorageUnavailable(failure)
         return
     }
 
@@ -110,8 +149,7 @@ private func launchGUI() async {
 /// false`) never offers the destructive discard/purge choice, since the key
 /// was never actually shown to be lost.
 @MainActor
-private func presentStorageUnavailable(_ error: Error) async {
-    let failure = error as? ProtectedStoreFailure
+private func presentStorageUnavailable(_ failure: ProtectedStoreFailure?) {
     let diagnosticCode = failure?.diagnosticCode ?? "storage.unavailable"
     let canOfferDiscard = failure?.isSafeToOfferDestructivePurge ?? true
 
@@ -141,7 +179,7 @@ private func presentStorageUnavailable(_ error: Error) async {
             exit(EXIT_FAILURE)
         }
         discardLocalProtectedStore()
-        await launchGUI()
+        launchGUI()
 
     default:
         exit(EXIT_FAILURE)
@@ -163,9 +201,14 @@ private func discardLocalProtectedStore() {
     makeProtectedStore().discardAllLocalDataAfterPersonConfirmedPurge()
 }
 
+// The top level is deliberately synchronous: `launchGUI()` must reach
+// `NSApplication.run()` from here, not from inside an `await`-ing main-actor
+// task. A top-level `await` turns this entry point into an async main task
+// that then *owns* `app.run()` for the process lifetime, starving every
+// main-actor `Task { … }` scheduled afterwards (product discovery, launch hook
+// installation). See `runToCompletion`.
 if CommandLine.arguments.contains("--self-check") {
-    let exitCode = await SelfCheck.run()
-    exit(exitCode)
+    exit(runToCompletion { await SelfCheck.run() })
 } else {
-    await launchGUI()
+    launchGUI()
 }

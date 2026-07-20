@@ -153,4 +153,29 @@ final class DurableInstallationFoundationTests: XCTestCase {
             XCTAssertEqual(error as? DurableInstallationError, .invalidFileType(config.path))
         }
     }
+
+    /// Regression: the ancestor walk must terminate at the filesystem root.
+    /// `URL.deletingLastPathComponent()` no longer reports a fixpoint at "/"
+    /// (it yields "/.."), so an unbounded loop pegged a core at launch and the
+    /// installer never wrote any hooks. This runs on a background queue with a
+    /// timeout so a regression fails cleanly instead of hanging the suite.
+    func testAncestorWalkTerminatesAtFilesystemRoot() {
+        let targets: [(URL, Bool)] = [
+            (URL(fileURLWithPath: "/Users/nobody/.claude/settings.json"), false),
+            (URL(fileURLWithPath: "/"), true),
+            (temporaryDirectory.appendingPathComponent(".codex/hooks.json"), false),
+        ]
+        for (target, includingTarget) in targets {
+            let completed = expectation(description: "walk terminates for \(target.path)")
+            DispatchQueue.global().async {
+                do {
+                    try POSIXFileSafety.requireSafeAncestors(of: target, includingTarget: includingTarget)
+                } catch {
+                    // A thrown validation error is still termination, not a hang.
+                }
+                completed.fulfill()
+            }
+            wait(for: [completed], timeout: 5)
+        }
+    }
 }

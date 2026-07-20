@@ -242,6 +242,24 @@ private struct AtlasIntegrationsSection: View {
                     LabeledContent("Safe next step", value: integration.safeNextStep.title)
                     Text("Changing enabled intent does not write Agent Product configuration. Setup and repair require a later reviewable plan.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if integration.kind != .cursor {
+                        Divider()
+                        let verification = model.verificationResults[integration.kind]
+                        HStack {
+                            Button("Verify session registration") { model.verifyIntegration(integration.kind) }
+                                .disabled(verification?.state == .running)
+                                .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue).verify")
+                            if verification?.state == .running { ProgressView().controlSize(.small) }
+                            Spacer()
+                        }
+                        Text("Launches \(integration.kind.productCLI.executableName) with a throwaway prompt and confirms a real session registers through the installed hook.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let verification {
+                            LabeledContent("Verification", value: verification.message)
+                                .foregroundStyle(verification.state == .passed ? Color.green : verification.state == .failed ? Color.red : Color.secondary)
+                                .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue).verify.result")
+                        }
+                    }
                 }
                 .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue)")
             }
