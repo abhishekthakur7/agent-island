@@ -1,0 +1,17 @@
+{
+  "contract": "Warp has no supported local exact window, tab, pane, block, or custom destination API.",
+  "forbiddenIdentityInputs": ["url", "title", "tabText", "paneText", "blockText", "terminalContent", "path", "frame", "space", "accessibilityLabel"],
+  "forbiddenAutomation": ["sendKeys", "click", "textEntry", "pointerInjection", "terminalInput"],
+  "scenarios": [
+    {"name": "app-present-no-election", "application": "running", "permission": "notDetermined", "election": "none", "expectedLevel": "appOnly", "permissionPromptCount": 0},
+    {"name": "permission-absent", "application": "running", "permission": "notDetermined", "election": "person-requested", "expectedElection": "permissionNotGranted", "expectedLevel": "appOnly"},
+    {"name": "permission-denied", "application": "running", "permission": "denied", "election": "person-requested", "expectedElection": "permissionNotGranted", "expectedLevel": "appOnly"},
+    {"name": "unique-current-elected-window", "application": "running", "permission": "granted", "election": "person-requested", "currentMatchingWindows": 1, "expectedLevel": "windowBestEffort", "paneAndTabVerified": false},
+    {"name": "no-current-window", "application": "running", "permission": "granted", "election": "person-requested", "currentMatchingWindows": 0, "expectedLevel": "appOnly"},
+    {"name": "multiple-current-windows", "application": "running", "permission": "granted", "election": "person-requested", "currentMatchingWindows": 2, "expectedLevel": "appOnly"},
+    {"name": "stale-election-after-adapter-recreation", "application": "running", "permission": "granted", "election": "stale-token", "expectedLevel": "appOnly"},
+    {"name": "warp-absent", "application": "absent", "permission": "notDetermined", "election": "none", "expectedLevel": "unavailable"},
+    {"name": "same-title-or-fullscreen-space-change", "application": "running", "permission": "granted", "election": "person-requested", "currentMatchingWindows": 2, "ignoredPresentationSignals": ["title", "fullScreen", "space"], "expectedLevel": "appOnly"},
+    {"name": "custom-url-available", "application": "running", "urlSchemeAvailable": true, "election": "none", "expectedLevel": "appOnly", "urlSchemeUsed": false}
+  ]
+}

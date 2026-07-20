@@ -24,6 +24,10 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var displayStatus = "Looking for a selected display…"
     @Published private(set) var selectionAvailability: IslandDisplayAvailability = .selectionUnavailable
     @Published private(set) var lastClickOutcome: PresentationClickOutcome?
+    /// Kept separately from the generic click disposition so visual and
+    /// VoiceOver feedback retain the actual achieved Host level and redacted
+    /// revalidation reason.
+    @Published private(set) var jumpBackAnnouncement: String?
     @Published private(set) var focusedSessionIndex: Int? = nil
     @Published private(set) var shortcutRegistrationStatus: ShortcutRegistrationStatus = .unavailable("Native global registration is not configured.")
     /// Invocation feedback is separate from registration status: a native
@@ -35,6 +39,8 @@ final class IslandOverlayController: NSObject, ObservableObject {
     /// visible Overlay and is also posted as a VoiceOver announcement. It is
     /// withdrawn with the panel so hidden state never leaves a stale AX node.
     @Published private(set) var shortcutInvocationAnnouncement: String?
+    private var usagePresentation: UsagePresentationModel?
+    private var usageCancellable: AnyCancellable?
 
     private let presentation: PresentationRuntime
     private let shortcutRegistrar: ShortcutRegistrationCoordinator
@@ -72,6 +78,17 @@ final class IslandOverlayController: NSObject, ObservableObject {
         self.shortcutRegistrationStatus = self.shortcutRegistrar.status
         self.shortcutInvocationFeedback = nil
         self.shortcutInvocationAnnouncement = nil
+    }
+
+    /// Composition injects only display-ready Usage Snapshot state. The
+    /// Overlay never reaches into an Agent Adapter, session store, or source
+    /// configuration, and this has no effect on monitoring or interaction.
+    func setUsagePresentation(_ model: UsagePresentationModel) {
+        usagePresentation = model
+        usageCancellable = model.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.renderIfVisible() }
+        }
+        renderIfVisible()
     }
 
     /// A live Guided source is not composed in the current application shell:
@@ -196,7 +213,21 @@ final class IslandOverlayController: NSObject, ObservableObject {
             lastClickOutcome = .inspectedOrExpanded
             toggleOverlay()
         case .jumpBack:
-            lastClickOutcome = PresentationClickPolicy.resolve(action: .jumpBack, jumpBackOutcome: jumpBackAction?())
+            let outcome = jumpBackAction?()
+            lastClickOutcome = PresentationClickPolicy.resolve(action: .jumpBack, jumpBackOutcome: outcome)
+            jumpBackAnnouncement = outcome?.presentationLabel ?? "Jump Back: unavailable. No Host navigation route is installed."
+            // Announce exactly the same redacted achieved-level wording shown
+            // in the expanded Overlay. This is local presentation only.
+            NSAccessibility.post(
+                element: NSApp as Any,
+                notification: .announcementRequested,
+                userInfo: [.announcement: jumpBackAnnouncement ?? "Jump Back unavailable"]
+            )
+            // The result contains the achieved Host level and redacted reason;
+            // immediately redraw so the visible and VoiceOver feedback agree.
+            stateMachine.reduce(.hoverEntered)
+            applyState()
+            renderIfVisible()
         }
     }
 
@@ -376,10 +407,35 @@ final class IslandOverlayController: NSObject, ObservableObject {
         presentationCancellable?.cancel()
         shortcutRegistrar.unregisterAll()
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-        observers.forEach(NotificationCenter.default.removeObserver)
+        // Tokens in this collection come from both the application-default
+        // center and NSWorkspace's distinct center. Removing from both is
+        // idempotent and guarantees that sleep/Space callbacks cannot outlive
+        // terminate-later cleanup.
+        observers.forEach {
+            NotificationCenter.default.removeObserver($0)
+            NSWorkspace.shared.notificationCenter.removeObserver($0)
+        }
         observers.removeAll()
         stateMachine.reduce(.terminate)
         removeOverlayRegionsAndWindow()
+    }
+
+    /// First phase of wake recovery: remove all presentation and interaction
+    /// before protected-state verification or any durable rebuild begins.
+    func prepareForWakeRecovery() {
+        hoverWork?.cancel()
+        dismissalWork?.cancel()
+        releaseKeyboard()
+        exactForegroundEvidence = nil
+        removeOverlayRegionsAndWindow()
+    }
+
+    /// Second phase of wake recovery. Composition calls this only after the
+    /// protected store passed verification and volatile action authority was
+    /// expired. It never engages keyboard input, reveals automatically,
+    /// sounds, notifies, replays an Action Attempt, or touches a Host.
+    func recoverAfterWake() {
+        refreshDisplays(coldResume: true)
     }
 
     private var isFullscreenActive: Bool {
@@ -396,9 +452,6 @@ final class IslandOverlayController: NSObject, ObservableObject {
         let workspace = NSWorkspace.shared.notificationCenter
         observers.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.handleSleep() }
-        })
-        observers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refreshDisplays(coldResume: true) }
         })
         observers.append(workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.reconcilePresentation() }
@@ -640,6 +693,10 @@ final class IslandOverlayController: NSObject, ObservableObject {
             settings: displayPreferences,
             shortcutAnnouncement: shortcutInvocationAnnouncement
         )
+        let selectedUsageSession: AgentSessionIdentity? = presentation.cards.count == 1 ? AgentSessionIdentity(productNamespace: ProductNamespace(presentation.cards[0].productNamespace), nativeSessionID: NativeSessionID(presentation.cards[0].nativeSessionID)) : nil
+        usagePresentation?.selectActiveSession(selectedUsageSession)
+        usagePresentation?.refresh()
+        let usage = usagePresentation?.rendered ?? UsagePresentationModel.Rendered(state: .unavailable, snapshot: nil, valueKind: .remaining, unavailableReason: "No Usage Snapshot source is connected.")
         let root = IslandOverlayView(
             presentation: stateMachine.state.presentation,
             geometry: geometry,
@@ -650,6 +707,8 @@ final class IslandOverlayController: NSObject, ObservableObject {
             clickBehavior: clickBehavior,
             displayPreferences: displayPreferences,
             shortcutInvocationAnnouncement: shortcutInvocationAnnouncement,
+            jumpBackAnnouncement: jumpBackAnnouncement,
+            usage: usage,
             onPrimaryClick: { [weak self] in self?.primaryClick() },
             lastClickOutcome: lastClickOutcome,
             onExpand: { [weak self] in self?.toggleOverlay() },

@@ -1,0 +1,5 @@
+{
+  "restart": {"runtimeId": "runtime-b", "runtimeVersion": "2026.08", "sameHandle": "term-opaque", "sameTabId": "tab-opaque"},
+  "disconnected": {"handle": "term-opaque", "tabId": "tab-opaque", "connected": false},
+  "duplicateMetadata": {"handle": "term-opaque", "tabId": "tab-opaque", "candidateCount": 2}
+}

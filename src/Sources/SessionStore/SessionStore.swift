@@ -23,6 +23,8 @@ public actor SessionStore {
     private var historyRecaps: [AgentSessionIdentity: SourcedSessionRecap] = [:]
     private var deletionBoundaries: [AgentSessionIdentity: SessionHistoryDeletionBoundary] = [:]
     private var stoppedObservation: Set<AgentSessionIdentity> = []
+    private var cursorACPControlledSessions: Set<CursorACPRecordedSession> = []
+    private var cursorACPActionState: ActionAttemptStoreSnapshot?
     private var continuations: [UUID: AsyncStream<ProjectionRevision>.Continuation] = [:]
     private let protectedStore: ProtectedStore?
 
@@ -58,6 +60,8 @@ public actor SessionStore {
         for boundary in loaded.historyBoundaries {
             deletionBoundaries[boundary.identity] = boundary
         }
+        cursorACPControlledSessions = Set(loaded.cursorACPControlledSessions)
+        cursorACPActionState = loaded.cursorACPActionState
         for fact in facts where seenFactsByKey[fact.deduplicationKey] == nil {
             seenFactsByKey[fact.deduplicationKey] = fact
         }
@@ -98,6 +102,63 @@ public actor SessionStore {
             return reason
         }
         negotiations[snapshot.id] = snapshot
+        return nil
+    }
+
+    /// Canonical ACP allowlist: an exact source-returned native ID is useful
+    /// only after its protected write succeeds. An ID from Cursor IDE/CLI/SDK
+    /// resemblance cannot enter because no discovery path writes this set.
+    public func recordCursorACPControlledSession(_ session: CursorACPRecordedSession) -> CursorACPControlledSessionStoreOutcome {
+        if cursorACPControlledSessions.contains(where: { $0.integrationInstanceID == session.integrationInstanceID && $0.identity == session.identity }) { return .alreadyRecorded }
+        if let protectedStore {
+            do { try protectedStore.recordCursorACPControlledSession(session) }
+            catch {
+                let reason = (error as? ProtectedStoreFailure)?.redacted ?? .unavailable
+                record(.init(kind: .storageFault, reason: nil, ledgerRevision: currentRevision, at: Date(), storageReason: reason))
+                return .storageUnavailable(reason)
+            }
+        }
+        cursorACPControlledSessions.insert(session)
+        return .recorded
+    }
+
+    public func hasCursorACPControlledSession(_ session: CursorACPRecordedSession) -> Bool {
+        // A new negotiation snapshot is expected after process restart; the
+        // allowlist remains scoped to adapter installation + exact native
+        // identity, never to a lookalike Cursor surface.
+        cursorACPControlledSessions.contains { $0.integrationInstanceID == session.integrationInstanceID && $0.identity == session.identity }
+    }
+
+    public func loadedCursorACPActionState() -> ActionAttemptStoreSnapshot? { cursorACPActionState }
+
+    /// Re-check encrypted bytes at a lifecycle boundary without rebuilding
+    /// from, repairing, or overwriting them. The caller must withdraw
+    /// presentation on failure; only a later explicit recovery may proceed.
+    public func verifyProtectedStateForRecovery() -> StorageFailureReason? {
+        guard let protectedStore else { return nil }
+        do {
+            try protectedStore.verifyForRecovery()
+            return nil
+        } catch {
+            let reason = (error as? ProtectedStoreFailure)?.redacted ?? .unavailable
+            record(.init(kind: .storageFault, reason: nil, ledgerRevision: currentRevision, at: Date(), storageReason: reason))
+            return reason
+        }
+    }
+
+    /// The caller has already mutated its isolated ActionAttemptStore. This
+    /// commits the complete no-lease snapshot before any native dispatch.
+    @discardableResult
+    public func persistCursorACPActionState(_ state: ActionAttemptStoreSnapshot) -> StorageFailureReason? {
+        if let protectedStore {
+            do { try protectedStore.commitCursorACPActionState(state) }
+            catch {
+                let reason = (error as? ProtectedStoreFailure)?.redacted ?? .unavailable
+                record(.init(kind: .storageFault, reason: nil, ledgerRevision: currentRevision, at: Date(), storageReason: reason))
+                return reason
+            }
+        }
+        cursorACPActionState = state
         return nil
     }
 

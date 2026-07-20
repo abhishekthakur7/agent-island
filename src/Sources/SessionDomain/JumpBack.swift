@@ -129,7 +129,26 @@ public struct JumpBackOutcome: Hashable, Sendable, Codable {
 
     /// Keep UI/VoiceOver wording aligned and explicit about fallback level.
     public var presentationLabel: String {
-        "Jump Back: \(hostName), \(qualifier.label). \(reasonText)"
+        if host == .warp {
+            let achievement: String
+            switch qualifier {
+            case .windowBestEffort: achievement = "Brought forward one elected Warp window best-effort; the original Warp pane and tab were not verified."
+            case .appOnly: achievement = "Opened Warp; the original Warp pane and tab were not verified."
+            case .unavailable: achievement = "No supported Warp navigation was performed; the original Warp pane and tab were not verified."
+            case .exactSurface, .exactTab, .workspaceOrFile: achievement = "Warp does not support this claimed Jump Back level."
+            }
+            return "Jump Back: Warp, \(qualifier.label). \(achievement) \(reasonText)"
+        }
+        let achievement: String
+        switch qualifier {
+        case .exactSurface: achievement = "Opened the exact Host surface."
+        case .exactTab: achievement = "Opened the exact tab; select the pane."
+        case .appOnly: achievement = "Opened the Host application; the original context was not verified."
+        case .workspaceOrFile: achievement = "Opened the separately proven workspace or file; the original context was not verified."
+        case .windowBestEffort: achievement = "Brought forward a best-effort Host window; the original context was not verified."
+        case .unavailable: achievement = "No supported Host navigation was performed."
+        }
+        return "Jump Back: \(hostName), \(qualifier.label). \(achievement) \(reasonText)"
     }
 
     public var voiceOverLabel: String { presentationLabel }
@@ -225,7 +244,12 @@ public struct JumpBackCoordinator: Sendable {
                 negotiation: request.negotiation,
                 at: request.requestedAt
             )
-            guard fresh.isReady, fresh.provenLevels.contains(level), fresh.candidateCount == 1 else {
+            // App activation is an independently observed, deliberately
+            // non-targeted fallback. It remains safe when multiple panes or
+            // tabs share a stale/duplicate locator; every more-specific level
+            // still requires exactly one current documented candidate.
+            let requiresUniqueCandidate = level != .appOnly
+            guard fresh.isReady, fresh.provenLevels.contains(level), !requiresUniqueCandidate || fresh.candidateCount == 1 else {
                 strongestFailed = strongestFailed ?? level
                 continue
             }

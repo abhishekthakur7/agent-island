@@ -15,6 +15,8 @@ struct IslandOverlayView: View {
     let clickBehavior: AtlasClickBehavior
     let displayPreferences: AtlasDisplayPreferences
     let shortcutInvocationAnnouncement: String?
+    let jumpBackAnnouncement: String?
+    let usage: UsagePresentationModel.Rendered
     let onPrimaryClick: () -> Void
     let lastClickOutcome: PresentationClickOutcome?
     let onExpand: () -> Void
@@ -114,6 +116,11 @@ struct IslandOverlayView: View {
                         overlayControls
                     }
                     .padding(14 * contentScale)
+                    if usage.canAppearInExpandedHeader {
+                        UsageSnapshotHeader(rendered: usage, contentScale: contentScale)
+                            .padding(.horizontal, 14 * contentScale)
+                            .padding(.bottom, 10 * contentScale)
+                    }
                     Divider()
                     HorizonMonitorView(
                         cards: cards,
@@ -211,7 +218,53 @@ struct IslandOverlayView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(lastClickOutcome.presentationLabel)
             }
+            if let jumpBackAnnouncement {
+                Text(jumpBackAnnouncement)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Jump Back result: \(jumpBackAnnouncement)")
+            }
         }
+    }
+}
+
+private struct UsageSnapshotHeader: View {
+    let rendered: UsagePresentationModel.Rendered
+    let contentScale: CGFloat
+
+    var body: some View {
+        guard let snapshot = rendered.snapshot else { return AnyView(EmptyView()) }
+        let value = rendered.valueKind.value(in: snapshot)
+        return AnyView(
+            HStack(spacing: 8 * contentScale) {
+                Image(systemName: rendered.state == .stale ? "clock.badge.exclamationmark" : "chart.bar")
+                    .foregroundStyle(rendered.state == .stale ? .orange : .secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Usage Snapshot · \(snapshot.provider)")
+                        .font(.system(size: 12 * contentScale, weight: .semibold))
+                    Text(detail(snapshot: snapshot, value: value))
+                        .font(.system(size: 11 * contentScale))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                Text(rendered.state.rawValue.capitalized)
+                    .font(.system(size: 11 * contentScale, weight: .medium))
+                    .foregroundStyle(rendered.state == .stale ? .orange : .secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Usage Snapshot from \(snapshot.provider). \(detail(snapshot: snapshot, value: value)). \(rendered.state.rawValue).")
+        )
+    }
+
+    private func detail(snapshot: UsageSnapshot, value: Double?) -> String {
+        let amount = value.map { "\(rendered.valueKind.title): \($0.formatted(.number.precision(.fractionLength(0))))%" } ?? "\(rendered.valueKind.title) unavailable"
+        var text = "\(amount) · observed \(snapshot.observedAt.formatted(date: .abbreviated, time: .shortened))"
+        if let resetsAt = snapshot.resetsAt { text += " · resets \(resetsAt.formatted(date: .abbreviated, time: .shortened))" }
+        return text
     }
 }
 

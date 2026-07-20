@@ -1,0 +1,4 @@
+{
+  "incompatibleNegotiation": {"hostNavigation": "unavailable"},
+  "workspaceFallback": {"runtimeId": "runtime-b", "runtimeVersion": "2026.08", "worktreeId": "worktree-opaque", "fileId": "Sources/App.swift", "independentlyProven": true}
+}

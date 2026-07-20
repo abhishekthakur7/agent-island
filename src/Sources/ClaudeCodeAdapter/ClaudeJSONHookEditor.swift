@@ -146,7 +146,7 @@ public enum ClaudeJSONHookEditor {
         value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    private static func write(_ data: Data, to path: URL, preserving source: ExactEntryFileSnapshot) throws {
+    fileprivate static func write(_ data: Data, to path: URL, preserving source: ExactEntryFileSnapshot) throws {
         let destination = URL(fileURLWithPath: source.resolvedPath ?? path.path)
         let parent = destination.deletingLastPathComponent()
         guard FileManager.default.fileExists(atPath: parent.path) else { throw EditorError.unavailable }
@@ -164,6 +164,63 @@ public enum ClaudeJSONHookEditor {
     }
 }
 
+/// Exact-entry editor for Claude's documented top-level Status Line setting.
+/// It refuses to replace an existing Status Line: preserving a person's
+/// visible output takes precedence over installation convenience. The bridge
+/// therefore has one reversible, marked entry only when the setting is absent.
+public enum ClaudeStatusLineBridgeEditor {
+    public static let marker = "agent-island:claude-status-line-usage"
+
+    public static func selector() -> ExactEntrySelector {
+        let command = "/Applications/Agent Island.app/Contents/MacOS/AgentIslandUsageStatusLine # \(marker)"
+        let rendered = "{\"type\":\"command\",\"command\":\"\(command)\"}"
+        return ExactEntrySelector(key: "claude-status-line", renderedLine: rendered, marker: marker)
+    }
+
+    public static func inspect(at path: URL, selector: ExactEntrySelector = selector()) -> ExactEntryInspection {
+        let source = ExactEntryEditor.snapshot(at: path)
+        let ext = path.pathExtension.lowercased()
+        guard source.symlinkTarget == nil, (ext == "json" || ext == "jsonc"), let data = source.content,
+              let parsed = try? ParsedSource(data: data, jsonc: ext == "jsonc"), parsed.root.kind == .object
+        else { return ExactEntryInspection(state: .unsupported, source: source, matchingEntryCount: 0, reason: .unsupported) }
+        guard let member = parsed.rootMember(named: "statusLine") else {
+            return ExactEntryInspection(state: .notConfigured, source: source, matchingEntryCount: 0)
+        }
+        let raw = parsed.raw(member.value)
+        let matches = raw.contains(selector.marker) ? 1 : 0
+        if matches == 0 { return ExactEntryInspection(state: .externalCandidate, source: source, matchingEntryCount: 1) }
+        return ExactEntryInspection(state: raw == selector.renderedLine ? .ownedIntact : .ownedDrifted, source: source, matchingEntryCount: matches, reason: raw == selector.renderedLine ? nil : .sourceChanged)
+    }
+
+    public static func add(selector: ExactEntrySelector = selector(), at path: URL, expected: ExactEntrySourceFingerprint, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) throws -> ExactEntryReceipt {
+        guard policy.allowsMutation else { throw ClaudeJSONHookEditor.EditorError.policyDenied }
+        let source = ExactEntryEditor.snapshot(at: path)
+        guard source.fingerprint == expected else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
+        guard source.symlinkTarget == nil, let data = source.content else { throw ClaudeJSONHookEditor.EditorError.unavailable }
+        let ext = path.pathExtension.lowercased(); guard ext == "json" || ext == "jsonc" else { throw ClaudeJSONHookEditor.EditorError.unsupported }
+        let parsed = try ParsedSource(data: data, jsonc: ext == "jsonc")
+        guard parsed.root.kind == .object, parsed.rootMember(named: "statusLine") == nil else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
+        try ClaudeJSONHookEditor.write(parsed.insertingProperty("\"statusLine\": \(selector.renderedLine)", into: parsed.root), to: path, preserving: source)
+        let verified = ExactEntryEditor.snapshot(at: path)
+        guard inspect(at: path, selector: selector).state == .ownedIntact else { throw ClaudeJSONHookEditor.EditorError.verificationFailed }
+        return ExactEntryReceipt(selector: selector, path: path.path, sourceFingerprint: verified.fingerprint, createdAt: now)
+    }
+
+    public static func remove(receipt: ExactEntryReceipt, at path: URL, expected: ExactEntrySourceFingerprint, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) throws -> ExactEntryReceipt {
+        guard policy.allowsMutation else { throw ClaudeJSONHookEditor.EditorError.policyDenied }
+        let source = ExactEntryEditor.snapshot(at: path)
+        guard source.fingerprint == expected else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
+        guard source.symlinkTarget == nil, let data = source.content else { throw ClaudeJSONHookEditor.EditorError.unavailable }
+        let ext = path.pathExtension.lowercased(); guard ext == "json" || ext == "jsonc" else { throw ClaudeJSONHookEditor.EditorError.unsupported }
+        let parsed = try ParsedSource(data: data, jsonc: ext == "jsonc")
+        guard let member = parsed.rootMember(named: "statusLine"), parsed.raw(member.value).contains(receipt.selector.marker), ExactEntryDigest.value(Data(parsed.raw(member.value).utf8)) == receipt.entryFingerprint.rawValue else { throw ClaudeJSONHookEditor.EditorError.notManifestProven }
+        try ClaudeJSONHookEditor.write(try parsed.removingMember(member, from: parsed.root, jsonc: ext == "jsonc"), to: path, preserving: source)
+        let verified = ExactEntryEditor.snapshot(at: path)
+        guard inspect(at: path, selector: receipt.selector).state == .notConfigured else { throw ClaudeJSONHookEditor.EditorError.verificationFailed }
+        return ExactEntryReceipt(selector: receipt.selector, path: path.path, sourceFingerprint: verified.fingerprint, createdAt: now)
+    }
+}
+
 private final class JSONNode: @unchecked Sendable {
     enum Kind { case object, array, scalar }
     let kind: Kind
@@ -171,7 +228,7 @@ private final class JSONNode: @unchecked Sendable {
     let end: Int
     let open: Int?
     let close: Int?
-    var members: [(key: String, value: JSONNode)] = []
+    var members: [(key: String, value: JSONNode, start: Int)] = []
     var elements: [JSONNode] = []
     init(kind: Kind, start: Int, end: Int, open: Int? = nil, close: Int? = nil) { self.kind = kind; self.start = start; self.end = end; self.open = open; self.close = close }
 }
@@ -210,6 +267,10 @@ private struct ParsedSource: @unchecked Sendable {
         guard root.kind == .object else { return nil }
         guard let member = root.members.first(where: { $0.key == key }) else { return nil }
         return member.value.kind == .object ? member.value : nil
+    }
+
+    func rootMember(named key: String) -> (key: String, value: JSONNode, start: Int)? {
+        root.members.first(where: { $0.key == key })
     }
 
     func hasRootMember(_ key: String) -> Bool { root.kind == .object && root.members.contains(where: { $0.key == key }) }
@@ -260,6 +321,20 @@ private struct ParsedSource: @unchecked Sendable {
         for ranges in candidates {
             var result = data
             for (start, end) in ranges.sorted(by: { $0.0 > $1.0 }) { result.removeSubrange(start..<end) }
+            if (try? ParsedSource(data: result, jsonc: jsonc)) != nil { return result }
+        }
+        throw ClaudeJSONHookEditor.EditorError.unsupported
+    }
+
+    func removingMember(_ member: (key: String, value: JSONNode, start: Int), from container: JSONNode, jsonc: Bool) throws -> Data {
+        let start = member.start; let end = member.value.end
+        var candidates: [[(Int, Int)]] = []
+        if let comma = token(after: end), comma.kind.isComma { candidates.append([(start, end), (comma.start, comma.end)]) }
+        if let comma = token(before: start), comma.kind.isComma { candidates.append([(comma.start, comma.end), (start, end)]) }
+        if candidates.isEmpty { candidates.append([(start, end)]) }
+        for ranges in candidates {
+            var result = data
+            for (rangeStart, rangeEnd) in ranges.sorted(by: { $0.0 > $1.0 }) { result.removeSubrange(rangeStart..<rangeEnd) }
             if (try? ParsedSource(data: result, jsonc: jsonc)) != nil { return result }
         }
         throw ClaudeJSONHookEditor.EditorError.unsupported
@@ -351,10 +426,11 @@ private struct JSONParser {
             var keys = Set<String>()
             if peek(.rightBrace) { let close = tokens[index]; index += 1; return JSONNode(kind: .object, start: node.start, end: close.end, open: node.start, close: close.start) }
             while true {
+                let keyStart = tokens[index].start
                 guard case .string(let key) = tokens[index].kind else { throw ClaudeJSONHookEditor.EditorError.malformed }
                 guard keys.insert(key).inserted else { throw ClaudeJSONHookEditor.EditorError.ambiguous }
                 index += 1; guard peek(.colon) else { throw ClaudeJSONHookEditor.EditorError.malformed }; index += 1
-                let value = try parseValue(); node.members.append((key, value))
+                let value = try parseValue(); node.members.append((key, value, keyStart))
                 if peek(.rightBrace) { let close = tokens[index]; index += 1; let finished = JSONNode(kind: .object, start: node.start, end: close.end, open: node.start, close: close.start); finished.members = node.members; return finished }
                 guard peek(.comma) else { throw ClaudeJSONHookEditor.EditorError.malformed }; index += 1
                 if peek(.rightBrace) { if allowTrailingComma { let close = tokens[index]; index += 1; let finished = JSONNode(kind: .object, start: node.start, end: close.end, open: node.start, close: close.start); finished.members = node.members; return finished }; throw ClaudeJSONHookEditor.EditorError.malformed }

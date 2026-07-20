@@ -1,0 +1,9 @@
+{
+  "name": "agent-island-cursor-host",
+  "displayName": "Agent Island Cursor Host",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": { "commands": [{ "command": "agentIsland.cursorHost.install", "title": "Agent Island: Configure Cursor Host endpoint" }] }
+}

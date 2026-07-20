@@ -1,0 +1,12 @@
+[
+  {"jsonrpc":"2.0","id":"cursor-acp-1","result":{"protocolVersion":"1.0","authenticated":true,"capabilities":["sessions","permissions","questions","plans"]}},
+  {"jsonrpc":"2.0","id":"cursor-acp-2","result":{"sessionId":"acp-session-001"}},
+  {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session-001","eventId":"update-1","status":"working"}},
+  {"jsonrpc":"2.0","method":"permission/request","params":{"sessionId":"acp-session-001","eventId":"permission-1","requestId":"permission-1","permissions":["allow-once","allow-always","reject-once"]}},
+  {"jsonrpc":"2.0","method":"question/request","params":{"sessionId":"acp-session-001","eventId":"question-1","requestId":"question-1","multiSelect":true,"choices":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}},
+  {"jsonrpc":"2.0","method":"plan/request","params":{"sessionId":"acp-session-001","eventId":"plan-1","requestId":"plan-1"}},
+  {"jsonrpc":"2.0","method":"todo/updated","params":{"sessionId":"acp-session-001","eventId":"todo-1"}},
+  {"jsonrpc":"2.0","method":"child/started","params":{"sessionId":"acp-session-001","eventId":"child-start-1","turnId":"turn-1","childSessionId":"child-1"}},
+  {"jsonrpc":"2.0","method":"child/completed","params":{"sessionId":"acp-session-001","eventId":"child-complete-1","turnId":"turn-1","childSessionId":"child-1"}},
+  {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session-001","eventId":"terminal-1","status":"completed"}}
+]

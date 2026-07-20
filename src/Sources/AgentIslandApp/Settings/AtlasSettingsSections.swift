@@ -5,19 +5,24 @@ import SessionDomain
 struct AtlasSettingsDetail: View {
     @ObservedObject var model: AtlasSettingsModel
     @ObservedObject var notificationSettings: NotificationPolicySettingsModel
+    @ObservedObject var usageSettings: UsageSettingsModel
     let destination: AtlasSettingsDestination
     let liveDisplayControls: AnyView
+    let cursorACPComposition: CursorACPApplicationComposition
+    let iterm2HostControls: AnyView
+    let warpHostControls: AnyView
+    let orcaHostControls: AnyView
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             switch destination {
             case .general: AtlasGeneralSection(model: model)
-            case .integrations: AtlasIntegrationsSection(model: model)
+            case .integrations: AtlasIntegrationsSection(model: model, cursorACPComposition: cursorACPComposition, iterm2HostControls: iterm2HostControls, warpHostControls: warpHostControls, orcaHostControls: orcaHostControls)
             case .notifications: AtlasNotificationsSection(preview: model.preview, send: model.sendPreview)
             case .display: AtlasDisplaySection(model: model, preview: model.preview, send: model.sendPreview, liveDisplayControls: liveDisplayControls)
             case .sound: AtlasSoundSection(model: notificationSettings)
-            case .usage: AtlasPlaceholderSection(title: "Usage", icon: "chart.bar", message: "Usage Snapshots are display-only source evidence. Agent Island never estimates unavailable usage.")
+            case .usage: AtlasUsageSection(model: usageSettings)
             case .shortcuts: AtlasShortcutsSection(model: model)
             case .labs: AtlasPlaceholderSection(title: "Labs", icon: "flask", message: "Experimental capabilities remain opt-in and clearly separate from stable settings.")
             case .diagnostics: AtlasDiagnosticsSection(integrations: model.integrations)
@@ -33,6 +38,55 @@ struct AtlasSettingsDetail: View {
             Text(destination.subtitle).foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct AtlasUsageSection: View {
+    @ObservedObject var model: UsageSettingsModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            AtlasCard(title: "Usage Snapshot display") {
+                Toggle("Show Usage Snapshots", isOn: Binding(get: { model.preferences.isVisible }, set: { value in model.update { $0.isVisible = value } }))
+                    .accessibilityIdentifier("atlas.usage.visibility")
+                Picker("Display", selection: Binding(get: { model.preferences.valueKind }, set: { value in model.update { $0.valueKind = value } })) {
+                    ForEach(UsageValueKind.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .accessibilityIdentifier("atlas.usage.valueKind")
+                Picker("Provider", selection: providerBinding) {
+                    Text("Follow selected active Agent Session").tag(UsageProviderSelection.followSelectedActiveSession)
+                    ForEach(model.presentation.availableProviders, id: \.self) { provider in
+                        Text("Preferred: \(provider)").tag(UsageProviderSelection.preferred(provider))
+                    }
+                    if let provider = model.preferences.providerSelection.preferredProvider,
+                       !model.presentation.availableProviders.contains(provider) {
+                        Text("Preferred: \(provider) (unavailable)").tag(UsageProviderSelection.preferred(provider))
+                    }
+                }
+                .accessibilityIdentifier("atlas.usage.provider")
+                usageEvidence
+                Text("Usage Snapshots are display-only source evidence, not billing or an estimate. Missing and unavailable values are never filled in.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { model.presentation.refresh() }
+    }
+
+    private var providerBinding: Binding<UsageProviderSelection> {
+        Binding(get: { model.preferences.providerSelection }, set: { value in model.update { $0.providerSelection = value } })
+    }
+
+    @ViewBuilder private var usageEvidence: some View {
+        let rendered = model.presentation.rendered
+        LabeledContent("State", value: rendered.state.rawValue.capitalized)
+        if let snapshot = rendered.snapshot {
+            LabeledContent("Provider", value: snapshot.provider)
+            LabeledContent("Observed", value: snapshot.observedAt.formatted(date: .abbreviated, time: .shortened))
+            if let reset = snapshot.resetsAt { LabeledContent("Reset", value: reset.formatted(date: .abbreviated, time: .shortened)) }
+            if let value = rendered.valueKind.value(in: snapshot) { LabeledContent(rendered.valueKind.title, value: "\(value.formatted(.number.precision(.fractionLength(0))))%") }
+        } else if let reason = rendered.unavailableReason {
+            Text(reason).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -141,6 +195,10 @@ private struct AtlasOnboardingCard: View {
 
 private struct AtlasIntegrationsSection: View {
     @ObservedObject var model: AtlasSettingsModel
+    let cursorACPComposition: CursorACPApplicationComposition
+    let iterm2HostControls: AnyView
+    let warpHostControls: AnyView
+    let orcaHostControls: AnyView
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -164,6 +222,10 @@ private struct AtlasIntegrationsSection: View {
                 }
                 .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue)")
             }
+            CursorACPSettingsControls(composition: cursorACPComposition)
+            iterm2HostControls
+            warpHostControls
+            orcaHostControls
         }
     }
 }

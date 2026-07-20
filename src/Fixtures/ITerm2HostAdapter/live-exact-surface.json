@@ -1,0 +1,9 @@
+{
+  "hostVersion": "3.5",
+  "endpointID": "iterm2-python-api",
+  "connectionID": "fixture-api-connection-a",
+  "apiConnected": true,
+  "appAvailable": true,
+  "sessionIDs": ["fixture-pane-a"],
+  "tabIDs": ["fixture-tab-a"]
+}

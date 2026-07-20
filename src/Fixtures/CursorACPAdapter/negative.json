@@ -1,0 +1,11 @@
+[
+  {"case":"protocol-drift","result":{"protocolVersion":"2.0","authenticated":true}},
+  {"case":"authentication","result":{"protocolVersion":"1.0","authenticated":false}},
+  {"case":"stdio-loss","eof":true},
+  {"case":"unrecorded-load","sessionId":"cursor-ide-session"},
+  {"case":"unrelated-cursor-session","sessionId":"cursor-cli-session"},
+  {"case":"source-resolution","method":"request/resolved"},
+  {"case":"indeterminate-dispatch","writeFailure":true},
+  {"case":"reopen-unrelated-native-id","sessionId":"cursor-ide-session"},
+  {"case":"reopen-inflight-attempt","expectedOutcome":"indeterminate","dispatchReplay":false}
+]

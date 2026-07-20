@@ -1,0 +1,7 @@
+{
+  "closure": { "apiConnected": true, "appAvailable": true, "sessionIDs": [], "tabIDs": [] },
+  "relaunch": { "connectionID": "fixture-api-connection-b", "apiConnected": true, "appAvailable": true, "sessionIDs": ["similar-looking-pane"] },
+  "disconnect": { "apiConnected": false, "appAvailable": false },
+  "duplicate": { "apiConnected": true, "appAvailable": true, "sessionIDs": ["fixture-pane-a", "fixture-pane-a"] },
+  "fuzzySignalsExcluded": ["title", "cwd", "pid", "tabOrdinal", "windowGeometry", "space", "visibleText"]
+}

@@ -1,0 +1,4 @@
+{
+  "status": {"ok": true, "result": {"app": {"running": true, "desktopWindowStatus": "available"}, "runtime": {"state": "ready", "reachable": true, "runtimeId": "runtime-a", "runtimeVersion": "2026.07"}}, "_meta": {"runtimeId": "runtime-a"}},
+  "terminalShow": {"ok": true, "result": {"terminal": {"handle": "term-opaque", "tabId": "tab-opaque", "connected": true, "exactChildSurfaceSelected": true}}, "_meta": {"runtimeId": "runtime-a"}}
+}

@@ -6,7 +6,12 @@ import SwiftUI
 struct AgentIslandSettingsView: View {
     @ObservedObject var model: AtlasSettingsModel
     @ObservedObject var notificationSettings: NotificationPolicySettingsModel
+    @ObservedObject var usageSettings: UsageSettingsModel
     let liveDisplayControls: AnyView
+    let cursorACPComposition: CursorACPApplicationComposition
+    let iterm2HostControls: AnyView
+    let warpHostControls: AnyView
+    let orcaHostControls: AnyView
 
     var body: some View {
         NavigationSplitView {
@@ -28,8 +33,13 @@ struct AgentIslandSettingsView: View {
                 AtlasSettingsDetail(
                     model: model,
                     notificationSettings: notificationSettings,
+                    usageSettings: usageSettings,
                     destination: model.selectedDestination,
-                    liveDisplayControls: liveDisplayControls
+                    liveDisplayControls: liveDisplayControls,
+                    cursorACPComposition: cursorACPComposition,
+                    iterm2HostControls: iterm2HostControls,
+                    warpHostControls: warpHostControls,
+                    orcaHostControls: orcaHostControls
                 )
                     .frame(maxWidth: 860, alignment: .topLeading)
                     .padding(24)

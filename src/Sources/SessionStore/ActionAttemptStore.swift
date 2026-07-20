@@ -1,19 +1,6 @@
 import Foundation
 import SessionDomain
 
-/// Durable local portion of the Guided workflow.  Requests, drafts, and
-/// Action Attempts are snapshot-able; Action Leases are deliberately absent
-/// from the snapshot and are recreated only after a fresh negotiation.
-public struct ActionAttemptStoreSnapshot: Codable, Hashable, Sendable, Equatable {
-    public let queue: GuidedAttentionQueue
-    public let attempts: [ActionAttempt]
-
-    public init(queue: GuidedAttentionQueue = GuidedAttentionQueue(), attempts: [ActionAttempt] = []) {
-        self.queue = queue
-        self.attempts = attempts
-    }
-}
-
 public actor ActionAttemptStore {
     private var queue: GuidedAttentionQueue
     private var attemptsByID: [String: ActionAttempt]
@@ -35,7 +22,13 @@ public actor ActionAttemptStore {
     }
 
     public func durableSnapshot() -> ActionAttemptStoreSnapshot {
-        ActionAttemptStoreSnapshot(queue: queue, attempts: attemptsByID.values.sorted { $0.id < $1.id })
+        // A lease ID is local operational authority, not durable evidence.
+        // Retaining it after restart could be mistaken for a live callback,
+        // so snapshots keep the Action Attempt but deliberately erase it.
+        let attempts = attemptsByID.values.sorted { $0.id < $1.id }.map {
+            ActionAttempt(id: $0.id, requestID: $0.requestID, owner: $0.owner, action: $0.action, leaseID: nil, reservedAt: $0.reservedAt, outcome: $0.outcome, rejectionReason: $0.rejectionReason, dispatchCount: $0.dispatchCount, completedAt: $0.completedAt, productEvidence: $0.productEvidence)
+        }
+        return ActionAttemptStoreSnapshot(queue: queue, attempts: attempts)
     }
 
     public func request(for id: GuidedAttentionRequestID) -> GuidedAttentionRequest? { queue.request(for: id) }

@@ -24,6 +24,8 @@ public struct LoadedState: Sendable {
     public let historyContent: [LoadedHistoryContent]
     public let historyRecaps: [LoadedHistoryRecap]
     public let historyBoundaries: [SessionHistoryDeletionBoundary]
+    public let cursorACPControlledSessions: [CursorACPRecordedSession]
+    public let cursorACPActionState: ActionAttemptStoreSnapshot?
 
     public init(
         facts: [NormalizedEventFact],
@@ -31,7 +33,9 @@ public struct LoadedState: Sendable {
         projectionCacheFault: RedactedStorageDiagnostic?,
         historyContent: [LoadedHistoryContent] = [],
         historyRecaps: [LoadedHistoryRecap] = [],
-        historyBoundaries: [SessionHistoryDeletionBoundary] = []
+        historyBoundaries: [SessionHistoryDeletionBoundary] = [],
+        cursorACPControlledSessions: [CursorACPRecordedSession] = [],
+        cursorACPActionState: ActionAttemptStoreSnapshot? = nil
     ) {
         self.facts = facts
         self.negotiations = negotiations
@@ -39,6 +43,8 @@ public struct LoadedState: Sendable {
         self.historyContent = historyContent
         self.historyRecaps = historyRecaps
         self.historyBoundaries = historyBoundaries
+        self.cursorACPControlledSessions = cursorACPControlledSessions
+        self.cursorACPActionState = cursorACPActionState
     }
 }
 
@@ -105,6 +111,20 @@ public final class ProtectedStore: @unchecked Sendable {
         return try loadState(from: database)
     }
 
+    /// A wake/cold-resume integrity boundary. This is read-only with respect
+    /// to evidence: it opens the existing encrypted bytes, checks SQLCipher,
+    /// SQLite, and schema compatibility, and never recreates or overwrites a
+    /// failed store.
+    public func verifyForRecovery() throws {
+        guard fileManager.fileExists(atPath: configuration.databaseURL.path) else {
+            throw ProtectedStoreFailure.corruptDatabase
+        }
+        try refuseInterruptedStage()
+        let database = try openVerifiedDatabase()
+        defer { database.close() }
+        try database.verify()
+    }
+
     /// Atomically commits one durable fact together with the projection
     /// snapshot it produces. An interruption before `COMMIT` (a thrown error
     /// or a process kill — SQLite rolls both back identically) leaves the
@@ -143,6 +163,37 @@ public final class ProtectedStore: @unchecked Sendable {
             try? database.execute("ROLLBACK;")
             throw error
         }
+    }
+
+    /// Writes only the source-returned ACP native identity, scoped to the
+    /// exact integration/snapshot. No external Cursor session is adopted.
+    public func recordCursorACPControlledSession(_ session: CursorACPRecordedSession) throws {
+        let database = try openVerifiedDatabase()
+        defer { database.close() }
+        let payload = try JSONEncoder.sorted.encode(session)
+        try database.execute("BEGIN IMMEDIATE;")
+        do {
+            try database.upsertCursorACPControlledSession(identity: identityKey(session.identity), payload: payload)
+            try database.execute("COMMIT;")
+        } catch { try? database.execute("ROLLBACK;"); throw error }
+    }
+
+    /// Replaces the ACP Guided snapshot atomically. The snapshot has no
+    /// Action Lease; it is persisted before a native response can be written.
+    public func commitCursorACPActionState(_ state: ActionAttemptStoreSnapshot) throws {
+        let database = try openVerifiedDatabase()
+        defer { database.close() }
+        // Defense in depth: even a future SessionStore caller cannot persist
+        // a live Action Lease/callback handle through this storage boundary.
+        let sanitized = ActionAttemptStoreSnapshot(queue: state.queue, attempts: state.attempts.map {
+            ActionAttempt(id: $0.id, requestID: $0.requestID, owner: $0.owner, action: $0.action, leaseID: nil, reservedAt: $0.reservedAt, outcome: $0.outcome, rejectionReason: $0.rejectionReason, dispatchCount: $0.dispatchCount, completedAt: $0.completedAt, productEvidence: $0.productEvidence)
+        })
+        let payload = try JSONEncoder.sorted.encode(sanitized)
+        try database.execute("BEGIN IMMEDIATE;")
+        do {
+            try database.upsertCursorACPActionState(payload: payload)
+            try database.execute("COMMIT;")
+        } catch { try? database.execute("ROLLBACK;"); throw error }
     }
 
     /// Persists one authorized piece of received Interaction Content. The
@@ -300,7 +351,9 @@ public final class ProtectedStore: @unchecked Sendable {
         let historyBoundaries = try database.readHistoryBoundaryPayloads().compactMap { _, payload in
             try? JSONDecoder.sorted.decode(SessionHistoryDeletionBoundary.self, from: payload)
         }
-        return LoadedState(facts: facts, negotiations: negotiations, projectionCacheFault: projectionCacheFault, historyContent: historyContent, historyRecaps: historyRecaps, historyBoundaries: historyBoundaries)
+        let cursorACPControlledSessions = try database.readCursorACPControlledSessionPayloads().compactMap { try? JSONDecoder.sorted.decode(CursorACPRecordedSession.self, from: $0) }
+        let cursorACPActionState = try database.readCursorACPActionStatePayload().flatMap { try? JSONDecoder.sorted.decode(ActionAttemptStoreSnapshot.self, from: $0) }
+        return LoadedState(facts: facts, negotiations: negotiations, projectionCacheFault: projectionCacheFault, historyContent: historyContent, historyRecaps: historyRecaps, historyBoundaries: historyBoundaries, cursorACPControlledSessions: cursorACPControlledSessions, cursorACPActionState: cursorACPActionState)
     }
 
     private func identityKey(_ identity: AgentSessionIdentity) -> String {

@@ -4,6 +4,10 @@ import ApplicationRuntime
 import SessionStore
 import ProtectedStore
 import PresentationRuntime
+import ITerm2HostAdapter
+import CursorHostAdapter
+import WarpHostAdapter
+import OrcaHostAdapter
 
 /// One stable per-installation Keychain account for this personal, single-
 /// user companion app (ADR 0008). Not a multi-account/multi-tenant marker.
@@ -23,6 +27,15 @@ private func makeProtectedStore() -> ProtectedStore {
     ))
 }
 
+private func makeCursorHostSetup() -> CursorExtensionLocalEndpoint {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("AgentIsland/cursor-host", isDirectory: true)
+    try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+    // This per-app-run credential is passed only through the explicit
+    // person-initiated setup sheet. It is never stored in diagnostics.
+    return CursorExtensionLocalEndpoint(socketPath: root.appendingPathComponent("extension.sock").path, credential: Data(UUID().uuidString.utf8))
+}
+
 @MainActor
 private func launchGUI() async {
     let store: SessionStore
@@ -40,14 +53,44 @@ private func launchGUI() async {
     }
 
     let runtime = ApplicationRuntime(store: store)
+    let recoveryCoordinator = RecoveryCoordinator(runtime: runtime)
     let presentation = PresentationRuntime(port: runtime)
     let fixtureController = FixtureController(port: runtime)
     // The app retains the real action-server composition for the lifetime of
     // its GUI. Integration setup installs a current negotiated configuration;
     // until then it remains deliberately fail-closed and Claude stays native.
     let claudeActionComposition = ClaudeActionApplicationComposition()
+    let cursorACPComposition = CursorACPApplicationComposition(runtime: runtime)
+    let iterm2APIClient = ITerm2PythonAPIClient()
+    let iterm2HostComposition = ITerm2HostNavigationComposition(port: ITerm2HostNavigationPort(client: iterm2APIClient))
+    let iterm2HostCapture = ITerm2HostContextCapture(client: iterm2APIClient)
+    let cursorHostSetup = makeCursorHostSetup()
+    let cursorEndpoint = CursorExtensionMessageClient(transport: CursorExtensionUnixSocketTransport(endpoint: cursorHostSetup))
+    let cursorHostPort = CursorHostNavigationPort(endpoint: cursorEndpoint)
+    let cursorHostComposition = CursorHostNavigationComposition(port: cursorHostPort)
+    let cursorHostCapture = CursorHostContextCapture(endpoint: cursorEndpoint)
+    let warpHostComposition = WarpHostNavigationComposition(port: WarpHostNavigationPort())
+    // Orca is kept as a separate Host-only composition. The CLI transport
+    // revalidates its runtime-issued terminal handle on every attempt.
+    let orcaRuntimeClient = OrcaCLIClient()
+    let orcaHostComposition = OrcaHostNavigationComposition(port: OrcaHostNavigationPort(client: orcaRuntimeClient))
+    let orcaHostCapture = OrcaHostContextCapture(client: orcaRuntimeClient)
 
-    let delegate = AppDelegate(presentation: presentation, fixtureController: fixtureController, claudeActionComposition: claudeActionComposition)
+    let delegate = AppDelegate(
+        presentation: presentation,
+        fixtureController: fixtureController,
+        claudeActionComposition: claudeActionComposition,
+        cursorACPComposition: cursorACPComposition,
+        recoveryCoordinator: recoveryCoordinator,
+        iterm2HostComposition: iterm2HostComposition,
+        iterm2HostCapture: iterm2HostCapture,
+        cursorHostComposition: cursorHostComposition,
+        cursorHostCapture: cursorHostCapture,
+        cursorHostSetup: cursorHostSetup,
+        warpHostComposition: warpHostComposition,
+        orcaHostComposition: orcaHostComposition,
+        orcaHostCapture: orcaHostCapture
+    )
     let app = NSApplication.shared
     app.delegate = delegate
     // Ambient Island presentation is an accessory surface. Settings explicitly

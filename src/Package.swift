@@ -17,11 +17,23 @@ let package = Package(
         .library(name: "CodexCLIAdapter", targets: ["CodexCLIAdapter"]),
         .library(name: "CodexAppServerAdapter", targets: ["CodexAppServerAdapter"]),
         .library(name: "CursorHooksAdapter", targets: ["CursorHooksAdapter"]),
+        .library(name: "CursorACPAdapter", targets: ["CursorACPAdapter"]),
+        .library(name: "ITerm2HostAdapter", targets: ["ITerm2HostAdapter"]),
+        .library(name: "CursorHostAdapter", targets: ["CursorHostAdapter"]),
+        .library(name: "WarpHostAdapter", targets: ["WarpHostAdapter"]),
+        .library(name: "OrcaHostAdapter", targets: ["OrcaHostAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
         .executable(name: "CursorHookHelper", targets: ["CursorHookHelper"]),
         .executable(name: "AB138SelfCheck", targets: ["AB138SelfCheck"]),
+        .executable(name: "AB139SelfCheck", targets: ["AB139SelfCheck"]),
+        .executable(name: "AB140SelfCheck", targets: ["AB140SelfCheck"]),
+        .executable(name: "AB141SelfCheck", targets: ["AB141SelfCheck"]),
+        .executable(name: "AB142SelfCheck", targets: ["AB142SelfCheck"]),
+        .executable(name: "AB143SelfCheck", targets: ["AB143SelfCheck"]),
+        .executable(name: "AB144SelfCheck", targets: ["AB144SelfCheck"]),
+        .executable(name: "AB145SelfCheck", targets: ["AB145SelfCheck"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -93,6 +105,34 @@ let package = Package(
         // reused without importing an action-routing target.
         .target(name: "CursorHooksAdapter", dependencies: ["SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
 
+        // AB-139's ACP client has only the typed inward port. In particular,
+        // it cannot import SessionStore or ProtectedStore.
+        .target(name: "CursorACPAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
+
+        // iTerm2 navigation is a Host-only outer boundary. It talks only to
+        // the documented iTerm2 Python API bridge and exposes the typed
+        // HostNavigationPort; it has no Product action or store dependency.
+        .target(
+            name: "ITerm2HostAdapter",
+            dependencies: ["SessionDomain"],
+            resources: [.process("Resources")]
+        ),
+
+        // Cursor exact navigation is available only through the connected
+        // extension-owned live-terminal endpoint; no terminal metadata or UI
+        // automation enters this Host boundary.
+        .target(name: "CursorHostAdapter", dependencies: ["SessionDomain"]),
+
+        // Warp provides only NSWorkspace application activation plus an
+        // explicit, transient Accessibility best-effort window election.
+        // It has no Product action, store, URL grammar, or input dependency.
+        .target(name: "WarpHostAdapter", dependencies: ["SessionDomain"]),
+
+        // Orca navigation uses only the documented CLI runtime's typed JSON
+        // status/show/switch and independently proven worktree/file routes.
+        // It cannot send input or perform terminal lifecycle/Product actions.
+        .target(name: "OrcaHostAdapter", dependencies: ["SessionDomain"]),
+
         // Composition bridge; the adapter itself remains unable to reach the
         // canonical store or keep callback data durably.
         .target(name: "ClaudeActionRouting", dependencies: ["ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
@@ -108,6 +148,13 @@ let package = Package(
 
         .executableTarget(name: "CursorHookHelper", dependencies: ["CursorHooksAdapter", "ClaudeCodeAdapter", "SessionDomain"]),
         .executableTarget(name: "AB138SelfCheck", dependencies: ["CursorHooksAdapter", "ClaudeCodeAdapter", "ApplicationRuntime", "SessionStore", "SessionDomain"]),
+        .executableTarget(name: "AB139SelfCheck", dependencies: ["CursorACPAdapter", "ApplicationRuntime", "SessionStore", "SessionDomain", "ProtectedStore"]),
+        .executableTarget(name: "AB140SelfCheck", dependencies: ["ITerm2HostAdapter", "SessionDomain"]),
+        .executableTarget(name: "AB141SelfCheck", dependencies: ["CursorHostAdapter", "SessionDomain"]),
+        .executableTarget(name: "AB142SelfCheck", dependencies: ["WarpHostAdapter", "SessionDomain"]),
+        .executableTarget(name: "AB143SelfCheck", dependencies: ["OrcaHostAdapter", "SessionDomain"]),
+        .executableTarget(name: "AB144SelfCheck", dependencies: ["SessionDomain", "ClaudeCodeAdapter"]),
+        .executableTarget(name: "AB145SelfCheck", dependencies: ["SessionDomain", "ApplicationRuntime", "SessionStore", "ProtectedStore", "AdapterFixtureKit"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
@@ -129,6 +176,11 @@ let package = Package(
                 "ProtectedStore",
                 "ClaudeActionRouting",
                 "ClaudeCodeAdapter",
+                "CursorACPAdapter",
+                "ITerm2HostAdapter",
+                "CursorHostAdapter",
+                "WarpHostAdapter",
+                "OrcaHostAdapter",
             ]
         ),
 
@@ -155,6 +207,11 @@ let package = Package(
         .testTarget(name: "CodexCLIAdapterTests", dependencies: ["CodexCLIAdapter", "SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
         .testTarget(name: "CodexAppServerAdapterTests", dependencies: ["CodexAppServerAdapter", "SessionDomain", "AdapterPort", "SessionStore"]),
         .testTarget(name: "CursorHooksAdapterTests", dependencies: ["CursorHooksAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime", "ClaudeCodeAdapter"]),
+        .testTarget(name: "CursorACPAdapterTests", dependencies: ["CursorACPAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime"]),
+        .testTarget(name: "ITerm2HostAdapterTests", dependencies: ["ITerm2HostAdapter", "SessionDomain"]),
+        .testTarget(name: "CursorHostAdapterTests", dependencies: ["CursorHostAdapter", "SessionDomain"]),
+        .testTarget(name: "WarpHostAdapterTests", dependencies: ["WarpHostAdapter", "SessionDomain"]),
+        .testTarget(name: "OrcaHostAdapterTests", dependencies: ["OrcaHostAdapter", "SessionDomain"]),
         .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
     ]
 )

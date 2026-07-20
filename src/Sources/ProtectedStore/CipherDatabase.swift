@@ -79,6 +79,8 @@ final class CipherDatabase {
         try execute("CREATE TABLE IF NOT EXISTS session_history_content (identity TEXT NOT NULL, content_id TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY(identity, content_id)) WITHOUT ROWID;")
         try execute("CREATE TABLE IF NOT EXISTS session_history_recaps (identity TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) WITHOUT ROWID;")
         try execute("CREATE TABLE IF NOT EXISTS session_history_boundaries (identity TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) WITHOUT ROWID;")
+        try execute("CREATE TABLE IF NOT EXISTS cursor_acp_controlled_sessions (identity TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) WITHOUT ROWID;")
+        try execute("CREATE TABLE IF NOT EXISTS cursor_acp_action_state (state_key TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) WITHOUT ROWID;")
     }
 
     func writeSchemaVersion(_ version: Int) throws {
@@ -147,6 +149,24 @@ final class CipherDatabase {
     /// failing the whole reopen.
     func readProjectionCachePayloads() throws -> [Data] {
         try readBlobs(sql: "SELECT payload FROM projection_cache;")
+    }
+
+    func upsertCursorACPControlledSession(identity: String, payload: Data) throws {
+        try insertBlob(sql: "INSERT OR REPLACE INTO cursor_acp_controlled_sessions(identity, payload) VALUES (?, ?);") { statement in
+            guard sqlite3_bind_text(statement, 1, identity, -1, SQLITE_TRANSIENT) == SQLITE_OK else { throw ProtectedStoreFailure.corruptDatabase }
+        } payload: { payload }
+    }
+
+    func readCursorACPControlledSessionPayloads() throws -> [Data] {
+        try readBlobs(sql: "SELECT payload FROM cursor_acp_controlled_sessions ORDER BY identity;")
+    }
+
+    func upsertCursorACPActionState(payload: Data) throws {
+        try insertBlob(sql: "INSERT OR REPLACE INTO cursor_acp_action_state(state_key, payload) VALUES ('cursor.acp', ?);") { _ in } payload: { payload }
+    }
+
+    func readCursorACPActionStatePayload() throws -> Data? {
+        try readBlobs(sql: "SELECT payload FROM cursor_acp_action_state WHERE state_key = 'cursor.acp';").first
     }
 
     func upsertHistoryContent(identity: String, contentID: String, payload: Data) throws {

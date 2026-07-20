@@ -167,6 +167,10 @@ public typealias CapabilityAvailability = CapabilityRecord.Availability
 /// tickets' concern.
 public enum WellKnownCapability {
     public static let sessionObservation = "session.observation"
+    /// Display-only usage evidence. A Product-specific Agent Adapter may
+    /// offer it only when it can supply source/provider/time-bound snapshots;
+    /// it never authorizes billing, actions, or session inference.
+    public static let usageObservation = "usage.observation"
     public static let sessionAction = "session.action"
     public static let configuration = "integration.configuration"
     public static let hostNavigation = "host.navigation"

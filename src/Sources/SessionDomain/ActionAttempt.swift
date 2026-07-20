@@ -1,5 +1,32 @@
 import Foundation
 
+/// Persisted local Guided state deliberately excludes Action Leases.  On a
+/// reopen, an in-flight handoff becomes indeterminate and no authority is
+/// restored; only the durable person intent/evidence survives.
+public struct ActionAttemptStoreSnapshot: Codable, Hashable, Sendable, Equatable {
+    public let queue: GuidedAttentionQueue
+    public let attempts: [ActionAttempt]
+
+    public init(queue: GuidedAttentionQueue = GuidedAttentionQueue(), attempts: [ActionAttempt] = []) {
+        self.queue = queue
+        self.attempts = attempts
+    }
+}
+
+/// Exact source-returned native Session ID recorded for this one ACP adapter
+/// installation. It has no title, PID, path, or resemblance field.
+public struct CursorACPRecordedSession: Codable, Hashable, Sendable, Equatable {
+    public let integrationInstanceID: IntegrationInstanceID
+    public let negotiationSnapshotID: NegotiationSnapshotID
+    public let identity: AgentSessionIdentity
+
+    public init(integrationInstanceID: IntegrationInstanceID, negotiationSnapshotID: NegotiationSnapshotID, identity: AgentSessionIdentity) {
+        self.integrationInstanceID = integrationInstanceID
+        self.negotiationSnapshotID = negotiationSnapshotID
+        self.identity = identity
+    }
+}
+
 public struct GuidedStructuredResponse: Codable, Hashable, Sendable, Equatable {
     public let selectedChoiceIDs: [String]
     public let freeText: String?
@@ -13,6 +40,7 @@ public struct GuidedStructuredResponse: Codable, Hashable, Sendable, Equatable {
 public enum GuidedPlanDecision: String, Codable, Hashable, Sendable, CaseIterable {
     case accept
     case reject
+    case cancel
 }
 
 public struct GuidedProductExtensionAction: Codable, Hashable, Sendable, Equatable {
@@ -80,7 +108,7 @@ public extension GuidedAction {
         case .structuredResponse(let response):
             return GuidedAttentionDraft(selectedChoiceIDs: response.selectedChoiceIDs, freeText: response.freeText).validating(against: request.semanticShape)
         case .planReview(let decision, let reason):
-            if decision == .reject, reason?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            if decision == .reject, reason?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
                 return .failure(.incompleteResponse)
             }
             return .success(())

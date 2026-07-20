@@ -180,4 +180,20 @@ final class ProtectedStoreTests: XCTestCase {
         let loaded = try store.openOrBootstrap()
         XCTAssertEqual(loaded.negotiations, [snapshot])
     }
+
+    func testCursorACPIdentityAndActionSnapshotSurviveReopen() throws {
+        let configuration = ProtectedStoreConfiguration(databaseURL: root.appendingPathComponent("acp.sqlite"), keychainAccount: "ab139-acp-\(UUID().uuidString)")
+        let store = ProtectedStore(configuration: configuration)
+        _ = try store.openOrBootstrap()
+        let session = CursorACPRecordedSession(integrationInstanceID: .init("acp-installation"), negotiationSnapshotID: .init("acp-snapshot"), identity: .init(productNamespace: .init("cursor.acp"), nativeSessionID: .init("source-returned-id")))
+        let owner = GuidedAttentionOwner(productNamespace: .init("cursor.acp"), nativeSessionID: .init("source-returned-id"), nativeAttentionRequestID: "source-request", integrationInstanceID: .init("acp-installation"), negotiationSnapshotID: .init("acp-snapshot"))
+        let attempt = ActionAttempt(id: "one", requestID: .init(productNamespace: owner.productNamespace, nativeSessionID: owner.nativeSessionID, nativeAttentionRequestID: owner.nativeAttentionRequestID), owner: owner, action: .allow, leaseID: "volatile-not-restored", reservedAt: Date(timeIntervalSince1970: 1), outcome: .dispatching, dispatchCount: 1)
+        try store.recordCursorACPControlledSession(session)
+        try store.commitCursorACPActionState(.init(attempts: [attempt]))
+
+        let reopened = try ProtectedStore(configuration: configuration).openOrBootstrap()
+        XCTAssertEqual(reopened.cursorACPControlledSessions, [session])
+        XCTAssertEqual(reopened.cursorACPActionState?.attempts.first?.leaseID, nil)
+        XCTAssertEqual(reopened.cursorACPActionState?.attempts.first?.outcome, .dispatching)
+    }
 }
