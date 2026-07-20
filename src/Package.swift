@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "ApplicationRuntime", targets: ["ApplicationRuntime"]),
         .library(name: "AdapterFixtureKit", targets: ["AdapterFixtureKit"]),
         .library(name: "ClaudeCodeAdapter", targets: ["ClaudeCodeAdapter"]),
+        .library(name: "CodexCLIAdapter", targets: ["CodexCLIAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
@@ -73,6 +74,11 @@ let package = Package(
         // transcript reader.
         .target(name: "ClaudeCodeAdapter", dependencies: ["SessionDomain", "AdapterPort"]),
 
+        // Codex CLI documented-hook observation is a separate Product
+        // boundary. It reuses only the authenticated one-way hook transport
+        // and exact-entry ownership primitives, never Claude action routing.
+        .target(name: "CodexCLIAdapter", dependencies: ["SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
+
         // Composition bridge; the adapter itself remains unable to reach the
         // canonical store or keep callback data durably.
         .target(name: "ClaudeActionRouting", dependencies: ["ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
@@ -125,6 +131,7 @@ let package = Package(
             name: "ClaudeCodeAdapterTests",
             dependencies: ["ClaudeCodeAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime"]
         ),
+        .testTarget(name: "CodexCLIAdapterTests", dependencies: ["CodexCLIAdapter", "SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
         .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
     ]
 )
