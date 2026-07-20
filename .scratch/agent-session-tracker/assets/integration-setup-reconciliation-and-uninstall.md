@@ -1,6 +1,7 @@
 # Integration setup, reconciliation, and uninstall
 
 **Decision date:** 2026-07-18  
+**Launch-install amendment:** 2026-07-20
 **Applies to:** explicit local setup and removal of first-class Claude Code,
 Codex CLI, Cursor, and Host integration surfaces.  
 **Does not authorize:** editing a repository or Worktree by default, scanning a
@@ -11,9 +12,10 @@ unrelated extensions or hooks, or deleting Agent Product data.
 
 An **Integration Installation** is one explicit, reversible configuration of
 one Agent Adapter integration mode at one selected configuration scope. Agent
-Island discovers possible setup surfaces read-only, but never enables a
-discovered Agent Product or modifies configuration without a person approving a
-concrete plan.
+Island discovers possible setup surfaces read-only. At application launch it
+may automatically create one pristine, compatible user-scope Integration
+Installation under the bounded rules in ADR 0009. Every other configuration
+mutation requires a person to approve a concrete plan.
 
 Every write is backed by an **Ownership Manifest** created before mutation. It
 proves the exact logical configuration entry and application-owned artifact
@@ -93,6 +95,15 @@ shows incomplete setup/removal and uses the same exact-entry rules; it never
 guesses that a write succeeded.
 
 ### Plan, approve, apply, verify
+
+The initial automatic launch installation is the sole exception to the
+person-approval step below. It still creates a fresh transaction plan and must
+prove an unambiguous approved Product identity, reviewed current hook contract,
+pristine source, app-owned authenticated helper runtime, write-ahead journal,
+and exact rollback receipts before mutation. Unsupported versions, external
+candidates, ambiguity, drift, or any missing prerequisite cause zero Product
+configuration writes. Automatic repair, recreation, adoption, migration,
+disablement, and removal remain forbidden.
 
 Enable, repair, migrate, disable, and remove are all plan-producing actions.
 The plan names selected scope, logical/canonical location, each exact
@@ -253,4 +264,3 @@ The persistence, application architecture, extension contract, Settings, and
 quality decisions must use the Integration Installation, Ownership Manifest,
 health-vector, and residual-removal terms and preserve these exact-entry
 boundaries.
-

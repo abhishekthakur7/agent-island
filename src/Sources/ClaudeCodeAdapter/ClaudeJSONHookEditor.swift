@@ -157,7 +157,15 @@ public enum ClaudeJSONHookEditor {
             try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: bits)], ofItemAtPath: temporary.path)
             guard ExactEntryEditor.snapshot(at: temporary).fingerprint.permissionBits == bits else { throw EditorError.verificationFailed }
         }
-        if FileManager.default.fileExists(atPath: destination.path) { _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary) } else { try FileManager.default.moveItem(at: temporary, to: destination) }
+        // Recheck at the commit boundary. Parsing and rendering can race with
+        // another writer; never replace bytes or a symlink that were not the
+        // exact source inspected above.
+        let immediate = ExactEntryEditor.snapshot(at: destination)
+        guard immediate.symlinkTarget == nil, immediate.fingerprint == source.fingerprint else {
+            throw EditorError.sourceChanged
+        }
+        if source.exists { _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary) }
+        else { try FileManager.default.moveItem(at: temporary, to: destination) }
         if let bits = source.fingerprint.permissionBits {
             guard ExactEntryEditor.snapshot(at: destination).fingerprint.permissionBits == bits else { throw EditorError.verificationFailed }
         }

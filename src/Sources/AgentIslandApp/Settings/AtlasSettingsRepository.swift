@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SessionDomain
+import LocalProductDiscovery
 
 /// A typed, namespaced UserDefaults boundary for Atlas.  Callers never need
 /// to know a raw key and an isolated suite can be injected in tests.
@@ -215,16 +216,23 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     @Published public private(set) var shortcutInputSource: ShortcutInputSource
     @Published public private(set) var onboarding: AtlasOnboardingState
     @Published public private(set) var integrations: [AtlasIntegrationState]
+    @Published private(set) var productInstallations: [ProductCLI: AtlasProductInstallationState]
     @Published public private(set) var preview: AtlasPreviewState
 
     private let previewRouter: AtlasPreviewRouter
+    private let productInstallationDetector: any ProductInstallationDetecting
+    private var productInstallationTask: Task<Void, Never>?
+    private var productInstallationGeneration: UInt64 = 0
+    private var didLoadProductInstallations = false
 
     public init(
         repository: AtlasSettingsRepository = AtlasSettingsRepository(),
-        shortcutInputSourceResolver: @escaping ShortcutInputSourceResolver = { ShortcutInputSource() }
+        shortcutInputSourceResolver: @escaping ShortcutInputSourceResolver = { ShortcutInputSource() },
+        productInstallationDetector: any ProductInstallationDetecting = LocalProductInstallationDetector()
     ) {
         self.repository = repository
         self.shortcutInputSourceResolver = shortcutInputSourceResolver
+        self.productInstallationDetector = productInstallationDetector
         let loaded = repository.loadSnapshot()
         self.snapshot = loaded
         self.selectedDestination = loaded.selectedDestination
@@ -239,8 +247,55 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
         self.shortcutInputSource = shortcutInputSourceResolver()
         self.onboarding = loaded.onboarding
         self.integrations = loaded.integrations
+        self.productInstallations = [
+            .claudeCode: .unknown,
+            .codexCLI: .unknown,
+            .cursor: .unknown,
+        ]
         self.previewRouter = AtlasPreviewRouter(initialState: loaded.preview)
         self.preview = loaded.preview
+    }
+
+    /// Starts the one automatic current-run scan. Repeated appearances and
+    /// redraws coalesce and never launch another probe.
+    func loadProductInstallationsIfNeeded() {
+        guard !didLoadProductInstallations else { return }
+        didLoadProductInstallations = true
+        startProductInstallationScan()
+    }
+
+    /// A person-initiated refresh supersedes older work. Generation checks
+    /// prevent a cancelled or slow scan from overwriting newer evidence.
+    func refreshProductInstallations() {
+        didLoadProductInstallations = true
+        productInstallationTask?.cancel()
+        startProductInstallationScan()
+    }
+
+    private func startProductInstallationScan() {
+        productInstallationGeneration &+= 1
+        let generation = productInstallationGeneration
+        let products: [ProductCLI] = [.claudeCode, .codexCLI, .cursor]
+        for product in products {
+            productInstallations[product] = .checking(previous: productInstallations[product]?.result)
+        }
+        let detector = productInstallationDetector
+        productInstallationTask = Task { [weak self] in
+            let results = await detector.detectAll()
+            guard !Task.isCancelled, let self, generation == self.productInstallationGeneration else { return }
+            var byProduct: [ProductCLI: ProductInstallationResult] = [:]
+            for result in results where byProduct[result.product] == nil {
+                byProduct[result.product] = result
+            }
+            for product in products {
+                if let result = byProduct[product] {
+                    self.productInstallations[product] = .result(result)
+                } else {
+                    self.productInstallations[product] = .result(ProductInstallationResult(product: product, status: .notFound, evidence: nil))
+                }
+            }
+            self.productInstallationTask = nil
+        }
     }
 
     public func select(_ destination: AtlasSettingsDestination) {
@@ -373,6 +428,23 @@ public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvai
     public func updateIntegrationEvidence(_ kind: AtlasIntegrationKind, evidence: AtlasIntegrationEvidence, capabilities: Set<AtlasIntegrationCapability>? = nil, affectedCapability: AtlasIntegrationCapability? = nil) {
         updateIntegration(kind) { state in
             state.apply(evidence: evidence, capabilities: capabilities, affectedCapability: affectedCapability)
+        }
+    }
+
+    func applyLaunchInstallationReport(_ kind: AtlasIntegrationKind, report: LaunchInstallationReport) {
+        switch report {
+        case .installed(let snapshot, _):
+            updateIntegration(kind) { state in state = state.applying(snapshot: snapshot, enabledIntent: true) }
+        case .refused:
+            updateIntegration(kind) { state in
+                state.detected = true
+                state.apply(evidence: .init(health: .setupRequired, freshness: .current, observedAt: Date()), capabilities: [.configuration], affectedCapability: .configuration)
+            }
+        case .failed:
+            updateIntegration(kind) { state in
+                state.detected = true
+                state.apply(evidence: .init(health: .unavailable, freshness: .current, observedAt: Date()), affectedCapability: .configuration)
+            }
         }
     }
 

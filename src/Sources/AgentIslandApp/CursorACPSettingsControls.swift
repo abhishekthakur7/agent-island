@@ -9,10 +9,12 @@ import SessionDomain
 @MainActor
 struct CursorACPSettingsControls: View {
     let composition: CursorACPApplicationComposition
+    let detectedExecutablePath: String?
     @ObservedObject private var model: CursorACPSettingsModel
 
-    init(composition: CursorACPApplicationComposition) {
+    init(composition: CursorACPApplicationComposition, detectedExecutablePath: String? = nil) {
         self.composition = composition
+        self.detectedExecutablePath = detectedExecutablePath
         self.model = composition.settingsModel
     }
 
@@ -26,6 +28,16 @@ struct CursorACPSettingsControls: View {
                     .accessibilityLabel("Cursor ACP executable path")
                 Button("Choose…", action: chooseExecutable)
                     .accessibilityHint("Select the Cursor executable to use for one new ACP session")
+            }
+            if let detectedExecutablePath, detectedExecutablePath != model.executablePath {
+                HStack {
+                    Text("Detected: \(detectedExecutablePath)")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button("Use detected path") { model.executablePath = detectedExecutablePath }
+                        .accessibilityIdentifier("cursor-acp.use-detected")
+                }
             }
             Button("Start new controlled Cursor session") { Task { await start() } }
                 .buttonStyle(.borderedProminent)

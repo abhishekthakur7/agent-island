@@ -8,6 +8,7 @@ import ITerm2HostAdapter
 import CursorHostAdapter
 import WarpHostAdapter
 import OrcaHostAdapter
+import LocalProductDiscovery
 
 /// One stable per-installation Keychain account for this personal, single-
 /// user companion app (ADR 0008). Not a multi-account/multi-tenant marker.
@@ -89,7 +90,9 @@ private func launchGUI() async {
         cursorHostSetup: cursorHostSetup,
         warpHostComposition: warpHostComposition,
         orcaHostComposition: orcaHostComposition,
-        orcaHostCapture: orcaHostCapture
+        orcaHostCapture: orcaHostCapture,
+        applicationRuntime: runtime,
+        productInstallationIdentityVerifier: LocalProductInstallationDetector()
     )
     let app = NSApplication.shared
     app.delegate = delegate

@@ -2,6 +2,7 @@ import Foundation
 import CursorHooksAdapter
 import ClaudeCodeAdapter
 import SessionDomain
+import Darwin
 
 /// One bounded, authenticated, one-way observation envelope.  Cursor command
 /// hooks are fail-open by default; every local failure intentionally exits 0
@@ -10,6 +11,7 @@ import SessionDomain
 struct CursorHookHelperMain {
     static func main() async {
         let env = ProcessInfo.processInfo.environment
+        let isProbe = env["AGENT_ISLAND_HELPER_PROBE"] == "1"
         guard env["AGENT_ISLAND_CURSOR_OBSERVATION_ONLY"] == "1",
               let installation = env["AGENT_ISLAND_INSTALLATION_ID"],
               let helper = env["AGENT_ISLAND_HELPER_ID"] else { return }
@@ -25,12 +27,23 @@ struct CursorHookHelperMain {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
         let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("cursor-hooks.sock"), appOwnedRoot: root)
         let installationID = IntegrationInstanceID(installation)
-        guard let secret = KeychainClaudeHookCredentialStore().secret(for: installationID, helperID: helper), !secret.isEmpty else { return }
+        guard let secret = KeychainClaudeHookCredentialStore().secret(for: installationID, helperID: helper), !secret.isEmpty else {
+            if isProbe { exit(77) }
+            return
+        }
         let authenticator = ClaudeIPCAuthenticator(secret: secret)
         guard authenticator.isUsable else { return }
         let message = ClaudeHookIPCMessage(installationID: installationID, helperID: helper, nonce: UUID().uuidString, payload: body, issuedAt: Date(), authenticator: authenticator)
-        guard let frame = try? ClaudeHookIPCFrame.encode(message) else { return }
-        _ = try? await ClaudeUnixDomainHookIPCTransport(endpoint: endpoint).send(frame: frame, timeout: 2)
+        guard let frame = try? ClaudeHookIPCFrame.encode(message) else {
+            if isProbe { exit(65) }
+            return
+        }
+        do {
+            try await ClaudeUnixDomainHookIPCTransport(endpoint: endpoint).send(frame: frame, timeout: 2)
+            if isProbe { exit(0) }
+        } catch {
+            if isProbe { exit(75) }
+        }
         #endif
     }
 }

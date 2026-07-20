@@ -46,9 +46,9 @@ public enum ClaudeCodeIntegration {
 
     /// The launcher carries only non-secret owner labels. The helper resolves
     /// its credential from the app-owned Keychain service at runtime.
-    public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String) -> Data {
+    public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String, executablePath: String = helperExecutablePath) -> Data {
         let quote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexec \"\(helperExecutablePath)\"\n".utf8)
+        return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexec \(quote(executablePath))\n".utf8)
     }
 
     public static func helperID(for helperPath: URL) -> String { "helper-" + ExactEntryDigest.value(Data(helperPath.path.utf8)) }
@@ -681,8 +681,11 @@ public enum ClaudeHookNormalizer {
 /// hook entry, never the Claude settings file or Product data root.
 public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
     private let coordinator = IntegrationInstallationCoordinator()
+    private let helperExecutablePath: String
 
-    public init() {}
+    public init(helperExecutablePath: String = ClaudeCodeIntegration.helperExecutablePath) {
+        self.helperExecutablePath = helperExecutablePath
+    }
 
     public func selector(helperPath: URL) -> ExactEntrySelector {
         ClaudeJSONHookEditor.entry(helperPath: helperPath).selector
@@ -724,7 +727,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
     }
 
     public func makePlan(id: String, installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date(), expiresIn: TimeInterval = 300) -> IntegrationInstallationPlan {
-        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath), executablePath: helperExecutablePath)
         let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let base = coordinator.makePlan(id: id, installationID: installationID, action: .enable, product: ClaudeCodeIntegration.productNamespace, integrationMode: ClaudeCodeIntegration.integrationMode, scope: scope, selectors: selectors(helperPath: helperPath), snapshot: snapshot, policy: policy, now: now, expiresIn: expiresIn)
         let compatibility = supportsLosslessHookSource(scope.url) ? base.compatibility : .interfaceChanged
@@ -738,7 +741,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             return applyJSON(approval, currentSnapshot: currentSnapshot, helperPath: helperPath, policy: policy, now: now)
         }
         guard supportsLosslessHookSource(URL(fileURLWithPath: approval.plan.sourcePath)) else { return IntegrationInstallationApplyResult(status: .blocked, reason: .unsupported) }
-        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: approval.plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: approval.plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath), executablePath: helperExecutablePath)
         let helper = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let helperBefore = ExactEntryEditor.snapshot(at: helperPath)
         guard helperBefore.symlinkTarget == nil else { return IntegrationInstallationApplyResult(status: .blocked, reason: .symlinkChanged) }
@@ -820,7 +823,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
                 guard helperSource.fingerprint.content == plan.artifacts[0].fingerprint, helperSource.fingerprint.permissionBits == 0o700 else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
             } else {
                 guard FileManager.default.fileExists(atPath: helperPath.deletingLastPathComponent().path) else { throw ClaudeJSONHookEditor.EditorError.unavailable }
-                let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+                let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath), executablePath: helperExecutablePath)
                 try writePrivateHelper(bootstrap, to: helperPath)
             }
         } catch let error as ClaudeJSONHookEditor.EditorError {
@@ -832,7 +835,7 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             if !helperExisted { try? FileManager.default.removeItem(at: helperPath) }
             return IntegrationInstallationApplyResult(status: .unavailable, reason: .unavailable)
         }
-        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath))
+        let bootstrap = ClaudeCodeIntegration.helperBootstrap(installationID: plan.installationID, helperID: ClaudeCodeIntegration.helperID(for: helperPath), executablePath: helperExecutablePath)
         let artifact = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let source = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: plan.sourcePath))
         let evidence = OwnershipManifestVerificationEvidence(verifiedAt: now, reread: true, probeSucceeded: true, sourceFingerprint: source.fingerprint, capabilityIDs: plan.affectedCapabilities)

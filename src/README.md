@@ -54,6 +54,7 @@ ServiceEgressPort ----> SessionDomain (one-way classified future copy only)
 | `ApplicationRuntime` | The only component holding `SessionStore`; implements both ports | `SessionDomain`, `AdapterPort`, `PresentationPort`, `SessionStore` |
 | `AdapterFixtureKit` | The controllable first-party Adapter fixture and its required-evidence scenarios | `SessionDomain`, `AdapterPort` **only** |
 | `PresentationRuntime` | Main-actor projection subscriber → `AgentSessionCardSnapshot` | `SessionDomain`, `PresentationPort` **only** |
+| `LocalProductDiscovery` | Read-only, bounded Claude Code/Codex/Cursor CLI installation and version evidence | Foundation **only** |
 | `AgentIslandApp` | AppKit `NSWindow`/`NSApplication` shell hosting SwiftUI content; composition root | all of the above |
 
 `AdapterFixtureKit` cannot import `SessionStore` — the target simply has no
@@ -75,8 +76,14 @@ skipped, resumed, and completed without removing normal Settings navigation.
 Settings restores its window frame, selected destination, local preference, and
 onboarding state across close/reopen and terminate/relaunch. Integration
 enabled intent is presented separately from observed health; previews are
-local and read-only; diagnostics are redacted by construction. The
-[AB-123 evidence template](Evidence/AB-123-REPORT-TEMPLATE.md)
+local and read-only; diagnostics are redacted by construction. The Integrations
+Application launch performs one bounded current-run scan for Claude Code,
+Codex, and Cursor and shows executable/version evidence. For the exact reviewed
+versions, it also installs Agent Island's user-scope observation hooks when the
+official binary, configuration, private runtime, and ownership checks all pass.
+Unreviewed, conflicting, drifted, or ambiguous state is reported without being
+rewritten; a manual refresh remains read-only.
+The [AB-123 evidence template](Evidence/AB-123-REPORT-TEMPLATE.md)
 covers the required lifecycle, onboarding, side-effect, redaction, state-model,
 keyboard, VoiceOver, and adaptive-layout observations.
 

@@ -1,5 +1,10 @@
 # Manifest-proven exact-entry configuration ownership
 
+> Superseded in part by ADR 0009 for the single bounded case of a pristine,
+> compatible user-scope Integration Installation performed automatically at
+> application launch. All repair, adoption, migration, removal, drift, and
+> ambiguous-state rules in this decision remain in force.
+
 Agent Island treats each explicitly enabled Agent Adapter mode at one selected
 scope as an Integration Installation with a local Ownership Manifest. The
 manifest proves only the exact marked configuration entry and application-owned

@@ -19,4 +19,13 @@ How should Agent Island discover, enable, configure, health-check, repair, migra
 
 The [integration setup, reconciliation, and uninstall decision](../assets/integration-setup-reconciliation-and-uninstall.md) defines an explicit, reviewable lifecycle for each Integration Installation. A local Ownership Manifest proves only exact marked entries and application-owned artifacts; discovery and reconciliation are read-only by default, and every supported configuration mutation is lossless, plan-approved, revalidated, and verified.
 
+### Amendment — 2026-07-20
+
+[ADR 0009](../../../docs/adr/0009-bounded-launch-time-integration-installation.md)
+permits one bounded exception: a pristine, reviewed, user-scope Integration
+Installation may be applied automatically after launch discovery. It retains
+exact ownership, journaling, prerequisite, and zero-write refusal rules; all
+repair, adoption, migration, removal, and ambiguous states remain explicitly
+reviewed.
+
 Runtime pause, disablement, setup removal, local-data deletion, and complete cleanup are distinct actions. External edits, unknown versions/syntax, policy precedence, symlink changes, and ambiguous entries cause a visible repair/manual-remedy or residual state rather than automatic repair, adoption, deletion, or a false successful-uninstall claim. The durable trade-off is recorded in [ADR 0003](../../../docs/adr/0003-manifest-proven-exact-entry-configuration-ownership.md).

@@ -1,5 +1,6 @@
 import Foundation
 import AdapterPort
+import LocalProductDiscovery
 import SessionDomain
 import SessionStore
 
@@ -32,15 +33,13 @@ public protocol CodexSchemaProbing: Sendable { func generateSchema(for executabl
 public struct UnavailableCodexExecutableDiscovery: CodexExecutableDiscovering { public init() {}; public func discoverCodexExecutable() async -> CodexExecutableEvidence? { nil } }
 
 public struct LocalCodexExecutableDiscovery: CodexExecutableDiscovering {
-    public init() {}
+    private let detector: any ProductInstallationDetecting
+    public init() { self.detector = LocalProductInstallationDetector(candidateProvider: LegacyCodexExecutableCandidates()) }
+    public init(detector: any ProductInstallationDetecting) { self.detector = detector }
     public func discoverCodexExecutable() async -> CodexExecutableEvidence? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        let candidates = ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"] + path.split(separator: ":").map { "\($0)/codex" }
-        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
-            guard let version = Self.run(candidate, ["--version"]), !version.isEmpty else { continue }
-            return .init(path: candidate, version: version)
-        }
-        return nil
+        let result = await detector.detect(product: .codexCLI, explicitPath: nil)
+        guard result.status == .verified, let evidence = result.evidence, let version = evidence.version else { return nil }
+        return .init(path: evidence.canonicalPath, version: "codex-cli \(version)")
     }
     fileprivate static func run(_ executable: String, _ arguments: [String]) -> String? {
         guard let data = runData(executable, arguments) else { return nil }
@@ -52,6 +51,23 @@ public struct LocalCodexExecutableDiscovery: CodexExecutableDiscovering {
         do { try process.run(); process.waitUntilExit() } catch { return nil }
         guard process.terminationStatus == 0 else { return nil }
         return output.fileHandleForReading.readDataToEndOfFile()
+    }
+}
+
+/// Preserves the app-server adapter's established fixed-location-before-PATH
+/// precedence while delegating inspection and probing to the shared detector.
+private struct LegacyCodexExecutableCandidates: ProductInstallationCandidateProviding {
+    func candidates(for product: ProductCLI) -> [ProductInstallationCandidate] {
+        guard product == .codexCLI else { return [] }
+        let fixed: [ProductInstallationCandidate] = [
+            .init(path: "/opt/homebrew/bin/codex", source: .homebrew),
+            .init(path: "/usr/local/bin/codex", source: .usrLocal),
+            .init(path: "/usr/bin/codex", source: .usrBin),
+        ]
+        let fromPath = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map { ProductInstallationCandidate(path: "\($0)/codex", source: .path) }
+        return fixed + fromPath
     }
 }
 

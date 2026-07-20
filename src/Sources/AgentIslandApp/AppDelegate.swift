@@ -11,6 +11,7 @@ import WarpHostAdapter
 import OrcaHostAdapter
 import SessionDomain
 import ApplicationRuntime
+import LocalProductDiscovery
 
 /// AppKit owns the two deliberately distinct presentation hosts: a normally
 /// non-activating Island Overlay and an independently activating Settings
@@ -37,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let warpCaptureSetup = WarpCaptureSetupModel()
     private let orcaCaptureSetup = OrcaCaptureSetupModel()
     private let atlasSettings: AtlasSettingsModel
+    private let launchIntegrationAutoInstaller: LaunchIntegrationAutoInstaller
     private let notificationSettings = NotificationPolicySettingsModel()
     private let usageSettings = UsageSettingsModel()
     private lazy var settingsCoordinator = AtlasSettingsWindowCoordinator { [unowned self] in
@@ -90,12 +92,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cursorHostSetup: CursorExtensionLocalEndpoint,
         warpHostComposition: WarpHostNavigationComposition,
         orcaHostComposition: OrcaHostNavigationComposition,
-        orcaHostCapture: OrcaHostContextCapture
+        orcaHostCapture: OrcaHostContextCapture,
+        applicationRuntime: ApplicationRuntime,
+        productInstallationIdentityVerifier: any ProductInstallationIdentityVerifying
     ) {
         self.presentation = presentation
         self.fixtureController = fixtureController
         self.claudeActionComposition = claudeActionComposition
-        self.claudeActionLifecycle = ClaudeActionIntegrationLifecycle(composition: claudeActionComposition)
+        let claudeActionLifecycle = ClaudeActionIntegrationLifecycle(composition: claudeActionComposition)
+        self.claudeActionLifecycle = claudeActionLifecycle
         self.cursorACPComposition = cursorACPComposition
         self.recoveryCoordinator = recoveryCoordinator
         self.iterm2HostComposition = iterm2HostComposition
@@ -110,6 +115,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NativeShortcutInputSourceResolver.current()
         })
         self.atlasSettings = atlasSettings
+        self.launchIntegrationAutoInstaller = LaunchIntegrationAutoInstaller(
+            port: applicationRuntime,
+            claudeActionLifecycle: claudeActionLifecycle,
+            detector: productInstallationIdentityVerifier
+        ) { [weak atlasSettings] kind, report in
+            atlasSettings?.applyLaunchInstallationReport(kind, report: report)
+        }
     }
 
     /// Explicit person-initiated production entry point. No startup scan or
@@ -495,6 +507,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Product discovery belongs to application launch, not to the first
+        // presentation of Settings. The model coalesces repeated requests, so
+        // restoration and a later Integrations view cannot start a second scan.
+        atlasSettings.loadProductInstallationsIfNeeded()
+        Task { await launchIntegrationAutoInstaller.start() }
         installMenu()
         overlay.showSettings = { [weak self] in self?.showSettings(nil) }
         // This is the production Overlay click path. It permits navigation
@@ -550,6 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Task { await launchIntegrationAutoInstaller.stop() }
         overlay.terminate()
         removeRecoveryObservers()
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
@@ -563,6 +581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         invalidateAllHostLocators(reason: .hostUnavailable)
         Task { [weak self] in
             guard let self else { return }
+            await self.launchIntegrationAutoInstaller.stop()
             await self.recoveryCoordinator.cross(.explicitQuit)
             // These components own only Agent Island helpers/routes. This
             // boundary never stops a Host or Agent Product process.

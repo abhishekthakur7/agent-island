@@ -204,8 +204,31 @@ private struct AtlasIntegrationsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Enabled intent and observed health are independent. Discovery never enables or configures an Integration Installation.")
                 .foregroundStyle(.secondary)
+            HStack {
+                Text("Agent Product installation")
+                    .font(.headline)
+                Spacer()
+                Button("Refresh") { model.refreshProductInstallations() }
+                    .accessibilityIdentifier("atlas.installations.refresh")
+            }
             ForEach(model.integrations, id: \.kind) { integration in
                 AtlasCard(title: integration.kind.title) {
+                    let installation = model.productInstallations[integration.kind.productCLI] ?? .unknown
+                    LabeledContent("CLI installation", value: installation.title)
+                        .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue).installation")
+                    if let evidence = installation.result?.evidence {
+                        if let version = evidence.version {
+                            LabeledContent("Detected version", value: version)
+                        }
+                        LabeledContent("Executable", value: evidence.path)
+                            .textSelection(.enabled)
+                        LabeledContent("Detected from", value: evidence.source.atlasTitle)
+                        if let reason = evidence.reason {
+                            LabeledContent("Probe evidence", value: reason.atlasTitle)
+                        }
+                    }
+                    Text("Installation detection does not mean an Agent Session is running. Sessions appear only from a configured Adapter with a Product-owned session identifier.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Enabled intent", isOn: Binding(
                         get: { integration.enabledIntent },
                         set: { model.setIntegrationIntent(integration.kind, enabled: $0) }
@@ -222,7 +245,10 @@ private struct AtlasIntegrationsSection: View {
                 }
                 .accessibilityIdentifier("atlas.integration.\(integration.kind.rawValue)")
             }
-            CursorACPSettingsControls(composition: cursorACPComposition)
+            CursorACPSettingsControls(
+                composition: cursorACPComposition,
+                detectedExecutablePath: model.productInstallations[.cursor]?.verifiedExecutablePath
+            )
             iterm2HostControls
             warpHostControls
             orcaHostControls

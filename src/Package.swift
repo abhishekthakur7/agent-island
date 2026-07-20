@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "WarpHostAdapter", targets: ["WarpHostAdapter"]),
         .library(name: "OrcaHostAdapter", targets: ["OrcaHostAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
+        .library(name: "LocalProductDiscovery", targets: ["LocalProductDiscovery"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
         .executable(name: "CursorHookHelper", targets: ["CursorHookHelper"]),
@@ -99,7 +100,7 @@ let package = Package(
 
         // AB-137 is a deliberately separate, child-process stdio boundary.
         // It has no dependency on Hooks or Claude action routing.
-        .target(name: "CodexAppServerAdapter", dependencies: ["SessionDomain", "AdapterPort", "SessionStore"]),
+        .target(name: "CodexAppServerAdapter", dependencies: ["SessionDomain", "AdapterPort", "SessionStore", "LocalProductDiscovery"]),
 
         // Cursor's documented v1 command hooks are observation-only here.
         // The shared lossless JSON/JSONC editor and one-way IPC primitives are
@@ -137,6 +138,10 @@ let package = Package(
         // Composition bridge; the adapter itself remains unable to reach the
         // canonical store or keep callback data durably.
         .target(name: "ClaudeActionRouting", dependencies: ["ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
+
+        // Read-only local evidence for documented Agent Product CLI locations.
+        // This target has no store, adapter, or presentation dependency.
+        .target(name: "LocalProductDiscovery"),
 
         // Application-owned documented-hook helper. It has no Product action,
         // transcript, or store dependency; it only validates stdin and sends
@@ -178,6 +183,9 @@ let package = Package(
                 "ProtectedStore",
                 "ClaudeActionRouting",
                 "ClaudeCodeAdapter",
+                "CodexCLIAdapter",
+                "CursorHooksAdapter",
+                "LocalProductDiscovery",
                 "CursorACPAdapter",
                 "ITerm2HostAdapter",
                 "CursorHostAdapter",
@@ -204,7 +212,7 @@ let package = Package(
         ),
         .testTarget(
             name: "AgentIslandAppTests",
-            dependencies: ["AgentIslandApp", "SessionDomain", "SessionStore", "ClaudeActionRouting", "ClaudeCodeAdapter"]
+            dependencies: ["AgentIslandApp", "SessionDomain", "SessionStore", "ClaudeActionRouting", "ClaudeCodeAdapter", "CodexCLIAdapter", "CursorHooksAdapter"]
         ),
         .testTarget(
             name: "ClaudeCodeAdapterTests",
@@ -219,5 +227,6 @@ let package = Package(
         .testTarget(name: "WarpHostAdapterTests", dependencies: ["WarpHostAdapter", "SessionDomain"]),
         .testTarget(name: "OrcaHostAdapterTests", dependencies: ["OrcaHostAdapter", "SessionDomain"]),
         .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
+        .testTarget(name: "LocalProductDiscoveryTests", dependencies: ["LocalProductDiscovery"]),
     ]
 )

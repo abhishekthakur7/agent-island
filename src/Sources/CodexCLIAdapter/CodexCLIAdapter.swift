@@ -24,9 +24,9 @@ public enum CodexCLIIntegration {
     /// This launcher carries only the installation/helper owner labels and an
     /// immutable observation-only mode. It has no secret, callback, or action
     /// endpoint; the dedicated helper refuses to start without this mode.
-    public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String) -> Data {
+    public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String, executablePath: String = helperExecutablePath) -> Data {
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexport AGENT_ISLAND_CODEX_OBSERVATION_ONLY=1\nexec \"\(helperExecutablePath)\"\n".utf8)
+        return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexport AGENT_ISLAND_CODEX_OBSERVATION_ONLY=1\nexec \(quote(executablePath))\n".utf8)
     }
     public static func helperID(for helperPath: URL) -> String { "codex-helper-" + ExactEntryDigest.value(Data(helperPath.path.utf8)) }
 }
@@ -349,7 +349,8 @@ public actor CodexCLIAdapter {
 public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
     private let coordinator = IntegrationInstallationCoordinator()
     private let runtimeContract: any CodexHookRuntimeContract
-    public init(runtimeContract: any CodexHookRuntimeContract = CodexUnprovenHookRuntimeContract()) { self.runtimeContract = runtimeContract }
+    private let helperExecutablePath: String
+    public init(runtimeContract: any CodexHookRuntimeContract = CodexUnprovenHookRuntimeContract(), helperExecutablePath: String = CodexCLIIntegration.helperExecutablePath) { self.runtimeContract = runtimeContract; self.helperExecutablePath = helperExecutablePath }
     public func selector(event: CodexHookName = .sessionStart, helperPath: URL) -> ExactEntrySelector {
         let path: String = helperPath.path
         let digest: String = ExactEntryDigest.value(Data((path + event.rawValue).utf8))
@@ -381,7 +382,7 @@ public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
     }
     public func makePlan(id: String, installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationPlan {
         let helperID = CodexCLIIntegration.helperID(for: helperPath)
-        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: installationID, helperID: helperID)
+        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: installationID, helperID: helperID, executablePath: helperExecutablePath)
         let artifact = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let plan = coordinator.makePlan(id: id, installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, selectors: selectors(helperPath: helperPath), snapshot: snapshot, policy: policy, now: now)
         guard CodexHooksConfigurationContract.accepts(snapshot), isTOMLSafeHelperPath(helperPath), runtimeContract.isProven(installationID: installationID, helperID: helperID) else { return copied(plan, artifacts: [artifact], entries: isTOMLSafeHelperPath(helperPath) ? plan.entries : [], compatibility: .interfaceChanged, manualRemedy: "Verify the reviewed hooks-v1 fixture, TOML-safe helper path, and provisioned Codex observation helper contract manually; no configuration was applied.") }
@@ -397,7 +398,7 @@ public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
         guard plan.artifacts.count == 1, let artifact = plan.artifacts.first,
               runtimeContract.isProven(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: URL(fileURLWithPath: artifact.path))) else { return .init(status: .blocked, reason: .notManifestProven) }
         let helperPath = URL(fileURLWithPath: artifact.path)
-        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: helperPath))
+        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: helperPath), executablePath: helperExecutablePath)
         let before = ExactEntryEditor.snapshot(at: helperPath)
         guard before.symlinkTarget == nil else { return .init(status: .blocked, reason: .symlinkChanged) }
         let existed = FileManager.default.fileExists(atPath: helperPath.path)
