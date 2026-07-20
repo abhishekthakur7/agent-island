@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "AdapterFixtureKit", targets: ["AdapterFixtureKit"]),
         .library(name: "ClaudeCodeAdapter", targets: ["ClaudeCodeAdapter"]),
         .library(name: "CodexCLIAdapter", targets: ["CodexCLIAdapter"]),
+        .library(name: "CodexAppServerAdapter", targets: ["CodexAppServerAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
@@ -80,6 +81,10 @@ let package = Package(
         // and exact-entry ownership primitives, never Claude action routing.
         .target(name: "CodexCLIAdapter", dependencies: ["SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
 
+        // AB-137 is a deliberately separate, child-process stdio boundary.
+        // It has no dependency on Hooks or Claude action routing.
+        .target(name: "CodexAppServerAdapter", dependencies: ["SessionDomain", "AdapterPort", "SessionStore"]),
+
         // Composition bridge; the adapter itself remains unable to reach the
         // canonical store or keep callback data durably.
         .target(name: "ClaudeActionRouting", dependencies: ["ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
@@ -137,6 +142,7 @@ let package = Package(
             dependencies: ["ClaudeCodeAdapter", "SessionDomain", "AdapterPort", "SessionStore", "ApplicationRuntime"]
         ),
         .testTarget(name: "CodexCLIAdapterTests", dependencies: ["CodexCLIAdapter", "SessionDomain", "AdapterPort", "ClaudeCodeAdapter"]),
+        .testTarget(name: "CodexAppServerAdapterTests", dependencies: ["CodexAppServerAdapter", "SessionDomain", "AdapterPort", "SessionStore"]),
         .testTarget(name: "ClaudeActionRoutingTests", dependencies: ["ClaudeActionRouting", "ClaudeCodeAdapter", "SessionDomain", "SessionStore"]),
     ]
 )

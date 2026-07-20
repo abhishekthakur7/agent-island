@@ -1,0 +1,5 @@
+{
+  "artifact": "stable-schema.json",
+  "validation": "captured 2026-07-20 from /opt/homebrew/bin/codex (codex-cli 0.144.6) using `codex app-server generate-json-schema --out <directory>` without --experimental or --enable; monolith SHA-256 5ff91672223f52bdaa35d882db98e7b6a6fccb6add36c96107e64f5fc03fed97. The Codex command is itself labelled experimental, so live capability remains pending unless this exact output is reproven; fixtures never enable live capabilities",
+  "fixtures": ["initialize-valid.json", "initialize-incompatible.json", "thread-turn-item.json", "approval.json"]
+}

@@ -1,0 +1,12 @@
+{
+  "generatedBy": "Scripts/generate-codex-app-server-schema.sh",
+  "interfaceVersion": "codex-cli-0.144.6-app-server-v2",
+  "codexVersion": "codex-cli 0.144.6",
+  "generatorCommand": "codex app-server generate-json-schema --out <directory>",
+  "generatorMaturity": "experimental-command; invoked without --experimental or --enable",
+  "digest": "5ff91672223f52bdaa35d882db98e7b6a6fccb6add36c96107e64f5fc03fed97",
+  "transport": "child-process-stdio",
+  "stableMethods": ["initialize", "thread/list", "thread/resume", "thread/fork", "thread/archive", "turn/start", "turn/steer", "turn/interrupt"],
+  "stableNotifications": ["thread/started", "thread/status/changed", "turn/started", "turn/completed", "turn/diff/updated", "turn/plan/updated", "item/started", "item/completed"],
+  "excluded": ["experimental", "websocket", "private-files", "terminal-scraping"]
+}
