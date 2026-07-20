@@ -287,20 +287,26 @@ private struct AtlasPreviewSurface: View {
     let preview: AtlasPreviewState
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+    private var contentScale: CGFloat { CGFloat(preview.presentationMetrics.contentScale) }
+
     var body: some View {
-        HStack {
+        HStack(spacing: 8 * contentScale) {
             Image(systemName: preview.isVisible ? "sparkles" : "circle.hexagongrid")
             VStack(alignment: .leading, spacing: 2) {
                 Text(preview.isExpanded ? "Expanded local preview" : "Compact local preview")
                 Text(preview.display.collapsedLayout == .detailed ? "Detailed sourced metadata" : "Clean summary")
-                    .font(.caption2)
+                    .font(.system(size: 11 * contentScale))
+                    .foregroundStyle(.secondary)
+                Text("Completion card \(Int(preview.presentationMetrics.completionCardHeight))pt · \(String(format: "%.2f×", preview.presentationMetrics.contentScale)) content")
+                    .font(.system(size: 11 * contentScale))
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Text(preview.selectedDisplayAvailable ? (preview.isVisible ? "Visible" : "Idle") : "Unavailable")
+                .font(.system(size: 13 * contentScale))
                 .foregroundStyle(preview.selectedDisplayAvailable ? Color.secondary : Color.orange)
         }
-        .padding()
+        .padding(12 * contentScale)
         .background(reduceTransparency ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor)) : AnyShapeStyle(.regularMaterial), in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("atlas.preview.surface")

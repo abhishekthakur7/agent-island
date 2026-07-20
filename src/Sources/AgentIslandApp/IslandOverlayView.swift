@@ -24,6 +24,7 @@ struct IslandOverlayView: View {
 
     private var attentionCount: Int { cards.filter { $0.attention == .pending }.count }
     private var isExpanded: Bool { presentation == .expanded || presentation == .focused }
+    private var contentScale: CGFloat { CGFloat(displayPreferences.contentScale) }
 
     var body: some View {
         Group {
@@ -49,23 +50,23 @@ struct IslandOverlayView: View {
 
     @ViewBuilder private var rightWing: some View {
         if isExpanded {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8 * contentScale) {
                 Text("Island Overlay")
-                    .font(.headline)
+                    .font(.system(size: 17 * contentScale, weight: .semibold))
                 Text("Selected display only")
-                    .font(.caption)
+                    .font(.system(size: 12 * contentScale))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 overlayControls
             }
-            .padding(14)
+            .padding(14 * contentScale)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .modifier(IslandSurface())
         } else {
             Button(action: onPrimaryClick) {
                 Label(clickBehavior == .jumpBack ? "Jump Back" : "Inspect / Expand", systemImage: "chevron.down")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity, minHeight: 56)
+                    .font(.system(size: 15 * contentScale, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 56 * contentScale)
             }
             .buttonStyle(.plain)
             .modifier(IslandSurface())
@@ -77,21 +78,27 @@ struct IslandOverlayView: View {
         Group {
             if isExpanded {
                 VStack(spacing: 0) {
-                    HStack(alignment: .top, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .top, spacing: 12 * contentScale) {
+                        VStack(alignment: .leading, spacing: 2 * contentScale) {
                             Text(presentation == .focused ? "Focused Agent Session" : "Agent Sessions")
-                                .font(.headline)
+                                .font(.system(size: 17 * contentScale, weight: .semibold))
                             Text("\(cards.count) current Agent Sessions on the selected display")
-                                .font(.caption)
+                                .font(.system(size: 12 * contentScale))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         overlayControls
                     }
-                    .padding(14)
+                    .padding(14 * contentScale)
                     Divider()
-                    HorizonMonitorView(cards: cards, ledgerRevision: ledgerRevision, controller: horizon)
-                        .padding(10)
+                    HorizonMonitorView(
+                        cards: cards,
+                        ledgerRevision: ledgerRevision,
+                        controller: horizon,
+                        contentScale: displayPreferences.contentScale,
+                        completionCardHeight: displayPreferences.completionCardHeight
+                    )
+                        .padding(10 * contentScale)
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
                 .modifier(IslandSurface())
@@ -103,11 +110,11 @@ struct IslandOverlayView: View {
 
     private var collapsedSummary: some View {
         Button(action: onPrimaryClick) {
-            HStack(spacing: 8) {
+            HStack(spacing: 8 * contentScale) {
                 Image(systemName: attentionCount > 0 ? "exclamationmark.circle.fill" : "sparkles")
                     .foregroundStyle(attentionCount > 0 ? .orange : .cyan)
                 Text(attentionCount > 0 ? "\(attentionCount) need attention" : "\(cards.count) Agent Sessions")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 15 * contentScale, weight: .semibold))
                 if displayPreferences.collapsedLayout == .detailed, let card = cards.first {
                     sourcedMetadata(for: card)
                 }
@@ -115,8 +122,8 @@ struct IslandOverlayView: View {
                 Image(systemName: "chevron.down")
                     .accessibilityHidden(true)
             }
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, minHeight: 56)
+            .padding(.horizontal, 16 * contentScale)
+            .frame(maxWidth: .infinity, minHeight: 56 * contentScale)
         }
         .buttonStyle(.plain)
         .modifier(IslandSurface())
@@ -130,8 +137,17 @@ struct IslandOverlayView: View {
 
     @ViewBuilder private func sourcedMetadata(for card: AgentSessionCardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 1) {
+            // These fields are not part of the current source projection. An
+            // explicit unavailable label keeps toggles observable without
+            // deriving metadata from paths or titles.
+            if displayPreferences.showProjectMetadata { Text("Project unavailable") }
+            if displayPreferences.showWorktreeMetadata { Text("Worktree unavailable") }
+            if displayPreferences.showModelMetadata { Text("Model unavailable") }
             if displayPreferences.showSubagentRunMetadata, !card.subagentRuns.isEmpty { Text("\(card.subagentRuns.count) Subagent Runs") }
-            if displayPreferences.showActivityMetadata, let updated = card.sourceLastUpdated { Text(updated, style: .relative) }
+            if displayPreferences.showActivityMetadata {
+                if let updated = card.sourceLastUpdated { Text(updated, style: .relative) }
+                else { Text("Activity time unavailable") }
+            }
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -139,10 +155,10 @@ struct IslandOverlayView: View {
     }
 
     private var overlayControls: some View {
-        VStack(alignment: .trailing, spacing: 5) {
+        VStack(alignment: .trailing, spacing: 5 * contentScale) {
             Button("Keyboard", action: onEngageKeyboard)
                 .accessibilityHint("Engages keyboard navigation in the visible Island Overlay")
-            HStack(spacing: 8) {
+            HStack(spacing: 8 * contentScale) {
                 Button("Settings", action: onSettings)
                 Button("Collapse", action: onCollapse)
             }

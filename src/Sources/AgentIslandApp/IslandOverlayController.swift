@@ -7,12 +7,16 @@ import PresentationRuntime
 @MainActor
 final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var displays: [IslandDisplay] = []
-    @Published var selectedDisplayID: String?
+    /// One explicit, stable display identity.  This remains nil until the
+    /// person selects a display; AppKit's main screen is never an implicit
+    /// fallback.
+    @Published private(set) var selectedDisplayID: String?
     @Published var hideInFullscreen = true
     @Published var hideWhenNoActiveSession = true
     @Published var suppressWhenExactHostForeground = true
     @Published var quietSceneActive = false
     @Published var hoverExpansionEnabled = true
+    @Published var collapseOnPointerExit = true
     @Published var revealOnCompletion = true
     @Published var revealOnAttention = true
     @Published var clickBehavior: AtlasClickBehavior = .inspectExpand
@@ -44,6 +48,17 @@ final class IslandOverlayController: NSObject, ObservableObject {
         return NSScreen.screens.first { Self.displayIdentity(for: $0) == selectedDisplayID }
     }
 
+    /// A read-only presentation value for Settings.  It contains no Overlay
+    /// or Host handle and is safe to forward to the local preview model.
+    var previewDisplayAvailability: (available: Bool, label: String?) {
+        switch selectionAvailability {
+        case .available:
+            return (true, nil)
+        case .selectionUnavailable, .needsRevalidation:
+            return (false, selectedDisplayID == nil ? "No display selected" : displayStatus)
+        }
+    }
+
     func start() {
         installObservers()
         presentationCancellable = presentation.objectWillChange.sink { [weak self] _ in
@@ -53,6 +68,8 @@ final class IslandOverlayController: NSObject, ObservableObject {
     }
 
     func selectDisplay(id: String?) {
+        let normalizedID = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitID = normalizedID?.isEmpty == true ? nil : normalizedID
         hoverWork?.cancel()
         dismissalWork?.cancel()
         releaseKeyboard()
@@ -60,8 +77,8 @@ final class IslandOverlayController: NSObject, ObservableObject {
         // the single atomic transition point: no second live panel is ever
         // created and no stale engagement/timer/frame survives the switch.
         removeOverlayRegionsAndWindow()
-        selectedDisplayID = id
-        displayPreferences.selectedDisplayID = id
+        selectedDisplayID = explicitID
+        displayPreferences.selectedDisplayID = explicitID
         stateMachine.reduce(.displayLost)
         if selectedScreen != nil { stateMachine.reduce(.displayRevalidated(available: true)) }
         updateStatus()
@@ -98,6 +115,34 @@ final class IslandOverlayController: NSObject, ObservableObject {
         }
         dismissalWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    /// Notification paths use these typed local presentation gates. The
+    /// generic menu action above remains an explicit person-requested reveal.
+    func revealCompletion() {
+        guard revealOnCompletion else { return }
+        autoReveal()
+    }
+
+    func revealAttention() {
+        guard revealOnAttention else { return }
+        autoReveal()
+    }
+
+    /// Pure policy used by the AppKit hover callback and deterministic tests.
+    nonisolated static func shouldCollapseAfterPointerExit(
+        collapseOnPointerExit: Bool,
+        interactionGuard: Bool,
+        keyboardEngaged: Bool
+    ) -> Bool {
+        collapseOnPointerExit && !interactionGuard && !keyboardEngaged
+    }
+
+    /// Selection validation is deliberately identity-only. No available
+    /// display is substituted when the persisted selection is nil or missing.
+    nonisolated static func validatedExplicitSelection(persistedID: String?, availableIDs: Set<String>) -> String? {
+        guard let persistedID, availableIDs.contains(persistedID) else { return nil }
+        return persistedID
     }
 
     func engageKeyboard() {
@@ -203,18 +248,24 @@ final class IslandOverlayController: NSObject, ObservableObject {
 
     private func refreshDisplays(coldResume: Bool) {
         displays = NSScreen.screens.compactMap(IslandDisplay.init(screen:))
-        if selectedDisplayID == nil, let main = NSScreen.main { selectedDisplayID = Self.displayIdentity(for: main) }
-        let available = selectedScreen != nil
+        let availableIDs = Set(displays.map(\.id))
+        let available = Self.validatedExplicitSelection(persistedID: selectedDisplayID, availableIDs: availableIDs) != nil
         if coldResume {
             stateMachine.reduce(.wake(displayAvailable: available))
             if available { stateMachine.reduce(.displayRevalidated(available: true)) }
+            if !available {
+                removeOverlayRegionsAndWindow()
+            }
         } else if available, stateMachine.state.presentation == .withdrawn {
             stateMachine.reduce(.displayRevalidated(available: true))
         } else if !available {
             hoverWork?.cancel()
             dismissalWork?.cancel()
-            releaseKeyboard()
             stateMachine.reduce(.displayLost)
+            releaseKeyboard()
+            // Withdraw visible, hit-testing, and accessibility regions before
+            // publishing selection-unavailable to the read-only preview.
+            removeOverlayRegionsAndWindow()
         }
         stateMachine.reduce(.setQuietSceneSuppressed((hideInFullscreen && isFullscreenActive) || quietSceneActive || (hideWhenNoActiveSession && presentation.cards.isEmpty)))
         updateStatus()
@@ -222,14 +273,18 @@ final class IslandOverlayController: NSObject, ObservableObject {
     }
 
     private func updateStatus() {
-        selectionAvailability = stateMachine.state.displayAvailability
+        let status: String
         if let display = displays.first(where: { $0.id == selectedDisplayID }) {
-            displayStatus = "Overlay is assigned to \(display.name)."
+            status = "Overlay is assigned to \(display.name)."
         } else if selectedDisplayID != nil {
-            displayStatus = "The selected display is unavailable. The overlay stays withdrawn until it reconnects or you select another display."
+            status = "The selected display is unavailable. The overlay stays withdrawn until it reconnects or you select another display."
         } else {
-            displayStatus = "Choose a display to show the overlay."
+            status = "Choose a display to show the overlay."
         }
+        // Publish the human-readable label first so the Settings bridge never
+        // observes a new availability paired with a stale status string.
+        displayStatus = status
+        selectionAvailability = stateMachine.state.displayAvailability
     }
 
     private func applyState() {
@@ -301,7 +356,11 @@ final class IslandOverlayController: NSObject, ObservableObject {
     }
 
     private func hoverExited() {
-        guard hoverExpansionEnabled, !stateMachine.state.interactionGuard, !stateMachine.state.keyboardEngaged else { return }
+        guard Self.shouldCollapseAfterPointerExit(
+            collapseOnPointerExit: collapseOnPointerExit,
+            interactionGuard: stateMachine.state.interactionGuard,
+            keyboardEngaged: stateMachine.state.keyboardEngaged
+        ) else { return }
         hoverWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.collapse() }
         hoverWork = work

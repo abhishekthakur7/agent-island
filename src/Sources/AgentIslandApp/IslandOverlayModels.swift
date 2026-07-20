@@ -173,9 +173,13 @@ struct IslandOverlayGeometry: Equatable {
         let expanded = presentation == .expanded || presentation == .focused
         let normalized = settings.normalized()
         let scale = normalized.contentSize.scale
+        // Expanded presentation reserves deterministic room for a sourced
+        // completion card while still respecting the user's maximum panel
+        // height. The card height therefore changes real live geometry.
+        let completionDrivenHeight = normalized.completionCardHeight + (120 * scale)
         let desired = CGSize(
             width: expanded ? normalized.maximumPanelWidth : min(normalized.maximumPanelWidth, 350 * scale),
-            height: expanded ? normalized.maximumPanelHeight : min(normalized.maximumPanelHeight, 56 * scale)
+            height: expanded ? min(normalized.maximumPanelHeight, max(320 * scale, completionDrivenHeight)) : min(normalized.maximumPanelHeight, 56 * scale)
         )
         let safe = usableFrame.insetBy(dx: 12, dy: 6)
         // Even unusually small visible frames win over readability minima:

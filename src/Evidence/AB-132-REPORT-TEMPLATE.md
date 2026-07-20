@@ -10,12 +10,18 @@ observations remain unchecked until captured on the target machine.
 | --- | --- | --- | --- |
 | General defaults and restart round-trip | `AtlasSettingsRepositoryTests` | ☐ | |
 | Display controls and restart round-trip | `AB132GeneralDisplaySettingsTests.testDisplayDefaultsRoundTripAndRestart` | ☐ | |
-| Exact owning Host foreground only | `PresentationSettingsTests.testExactForegroundRequiresCurrentOwningLiveContext` | ☐ | |
-| Disabled/enabled Jump Back outcome | `PresentationSettingsTests.testClickPolicyDisabledNeverNavigatesAndEnabledReportsAchievedLevel` | ☐ | |
+| Selected stable ID through Atlas model/repository | `AB132GeneralDisplaySettingsTests.testSelectedDisplayPersistsThroughAtlasModelAndRepository` | ☐ | |
+| Exact owning Host foreground only | `SessionDomainTests/PresentationSettingsTests.testExactForegroundRequiresCurrentOwningLiveContext` | ☐ | |
+| Disabled/enabled Jump Back outcome | `SessionDomainTests/PresentationSettingsTests.testClickPolicyDisabledNeverNavigatesAndEnabledReportsAchievedLevel` | ☐ | |
 | Display switch/disconnect/reconnect | `AB132GeneralDisplaySettingsTests.testSelectionSwitchEndsEngagementAndReconnectsCollapsedAfterRevalidation` | ☐ | |
+| Nil/unavailable explicit selection | `AB132GeneralDisplaySettingsTests.testNilOrUnavailableExplicitSelectionNeverMigratesToAnotherDisplay` | ☐ | |
+| Pointer-exit policy and guards | `AB132GeneralDisplaySettingsTests.testPointerExitPolicyPreservesInteractionAndKeyboardGuards` | ☐ | |
 | Built-in notch and external pill geometry | `AB132GeneralDisplaySettingsTests.testDisplayValidationAndGeometryClampForBuiltInAndExternalForms` | ☐ | |
 | Preview side-effect isolation/unavailable display | `AB132GeneralDisplaySettingsTests.testPreviewDisplayAndGeneralChangesOnlyClosedLocalTrace` | ☐ | |
-| No custom rule without documented grammar | `PresentationSettingsTests.testCustomRuleRequiresDocumentedGrammarAndNeverAcceptsBareURL` | ☐ | |
+| Live preview availability bridge | `AB132GeneralDisplaySettingsTests.testLiveAvailabilityBridgeUpdatesPreviewWithoutPersistingDisplaySettings` | ☐ | |
+| Preview starts unavailable without selection | `AB132GeneralDisplaySettingsTests.testPreviewStartsUnavailableUntilAnExplicitDisplayIsSelected` | ☐ | |
+| Completion height/content scale and metadata | `AB132GeneralDisplaySettingsTests.testCompletionHeightAndContentScaleAffectOverlayGeometryAndPreviewMetrics`; `testOptionalMetadataRemainsAbsentInCurrentProjection` | ☐ | |
+| No custom rule without documented grammar | `SessionDomainTests/PresentationSettingsTests.testCustomRuleRequiresDocumentedGrammarAndNeverAcceptsBareURL` | ☐ | |
 
 ## Architecture and safety review
 

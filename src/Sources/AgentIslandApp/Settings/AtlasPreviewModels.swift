@@ -1,5 +1,25 @@
 import Foundation
 
+/// Read-only display state crossing from the AppKit composition root into
+/// Settings. It carries no Overlay, Host, action, or configuration handle.
+@MainActor
+public protocol AtlasPreviewDisplayAvailabilitySink: AnyObject {
+    func updatePreviewDisplayAvailability(available: Bool, label: String?)
+}
+
+public struct AtlasPreviewPresentationMetrics: Equatable, Hashable, Sendable {
+    public let contentScale: Double
+    public let completionCardHeight: Double
+    public let collapsedLayout: AtlasCollapsedLayout
+
+    public init(display: AtlasDisplayPreferences) {
+        let normalized = display.normalized()
+        contentScale = normalized.contentScale
+        completionCardHeight = normalized.completionCardHeight
+        collapsedLayout = normalized.collapsedLayout
+    }
+}
+
 public struct AtlasPreviewState: Equatable, Hashable, Sendable {
     public var general: AtlasGeneralPreferences
     public var display: AtlasDisplayPreferences
@@ -10,6 +30,10 @@ public struct AtlasPreviewState: Equatable, Hashable, Sendable {
     public var includesAttention: Bool
     public var selectedDisplayAvailable: Bool
     public var unavailableDisplayLabel: String?
+
+    public var presentationMetrics: AtlasPreviewPresentationMetrics {
+        AtlasPreviewPresentationMetrics(display: display)
+    }
 
     public init(
         general: AtlasGeneralPreferences = .default,
@@ -64,7 +88,7 @@ public enum AtlasPreviewReducer {
             state.display = display
         case let .setSelectedDisplayAvailability(available, label):
             state.selectedDisplayAvailable = available
-            state.unavailableDisplayLabel = available ? nil : label
+            state.unavailableDisplayLabel = available ? nil : (label ?? "Selected display unavailable")
             if !available {
                 state.isVisible = false
                 state.isExpanded = false

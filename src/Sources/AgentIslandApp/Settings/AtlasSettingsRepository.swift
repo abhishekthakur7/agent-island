@@ -143,13 +143,19 @@ public struct AtlasSettingsRepository {
     public func loadSnapshot() -> AtlasSettingsSnapshot {
         let general = loadGeneral()
         let display = loadDisplay()
+        let preview = AtlasPreviewState(
+            general: general,
+            display: display,
+            selectedDisplayAvailable: display.selectedDisplayID != nil,
+            unavailableDisplayLabel: display.selectedDisplayID == nil ? "No display selected" : nil
+        )
         return AtlasSettingsSnapshot(
             selectedDestination: selectedDestination,
             general: general,
             display: display,
             onboarding: loadOnboarding(),
             integrations: loadIntegrations(),
-            preview: AtlasPreviewState(general: general, display: display)
+            preview: preview
         )
     }
 
@@ -166,7 +172,7 @@ public struct AtlasSettingsRepository {
 /// mutation has an explicit method; the preview action path remains local and
 /// ephemeral.
 @MainActor
-public final class AtlasSettingsModel: ObservableObject {
+public final class AtlasSettingsModel: ObservableObject, AtlasPreviewDisplayAvailabilitySink {
     private let repository: AtlasSettingsRepository
 
     @Published public private(set) var snapshot: AtlasSettingsSnapshot
@@ -279,6 +285,15 @@ public final class AtlasSettingsModel: ObservableObject {
 
     public func sendPreview(_ action: AtlasPreviewAction) {
         previewRouter.send(action)
+        preview = previewRouter.state
+        publishSnapshot()
+    }
+
+    /// AppKit forwards only the current selected-display availability and a
+    /// human-readable label. This updates the ephemeral read-only preview and
+    /// never writes Atlas preferences or moves the live Overlay.
+    public func updatePreviewDisplayAvailability(available: Bool, label: String?) {
+        previewRouter.send(.setSelectedDisplayAvailability(available: available, label: label))
         preview = previewRouter.state
         publishSnapshot()
     }

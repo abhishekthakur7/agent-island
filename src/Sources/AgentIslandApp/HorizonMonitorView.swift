@@ -16,6 +16,10 @@ struct HorizonMonitorView: View {
     let cards: [AgentSessionCardSnapshot]
     let ledgerRevision: Int64
     @ObservedObject var controller: HorizonController
+    /// Presentation-only metrics supplied by Display settings. These do not
+    /// alter the revisioned projection or any Product-owned state.
+    var contentScale: Double = 1
+    var completionCardHeight: Double = 220
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var attentionCount: Int {
@@ -90,7 +94,11 @@ struct HorizonMonitorView: View {
                             )
 
                             if controller.selectedID == card.id {
-                                HorizonSelectedDetail(card: card)
+                                HorizonSelectedDetail(
+                                    card: card,
+                                    completionCardHeight: completionCardHeight,
+                                    contentScale: contentScale
+                                )
                                     .padding(.leading, 36)
                                     .padding(.trailing, 12)
                                     .padding(.bottom, 8)
@@ -307,6 +315,8 @@ private struct HorizonStatusOwnershipLine: View {
 
 private struct HorizonSelectedDetail: View {
     let card: AgentSessionCardSnapshot
+    let completionCardHeight: Double
+    let contentScale: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -323,7 +333,7 @@ private struct HorizonSelectedDetail: View {
                 .foregroundStyle(.secondary)
 
             if card.visibleLifecycle == .completed {
-                HorizonCompletionRecap()
+                HorizonCompletionRecap(minHeight: completionCardHeight * contentScale)
             }
 
             if !card.subagentRuns.isEmpty {
@@ -340,6 +350,8 @@ private struct HorizonSelectedDetail: View {
 /// The current boundary supplies operational metadata only. Keep completion
 /// honest by reserving a recap slot instead of inventing Product result text.
 private struct HorizonCompletionRecap: View {
+    let minHeight: Double
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "text.alignleft")
@@ -347,6 +359,7 @@ private struct HorizonCompletionRecap: View {
             Text("No source-proven completion recap received")
                 .font(.caption)
         }
+        .frame(minHeight: minHeight)
         .foregroundStyle(.secondary)
         .accessibilityLabel("No source-proven completion recap received")
     }
