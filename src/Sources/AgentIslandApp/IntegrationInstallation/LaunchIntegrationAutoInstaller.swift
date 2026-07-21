@@ -129,22 +129,33 @@ actor LaunchIntegrationAutoInstaller {
 
             if let durable = try store.manifest(installationID: installationID.rawValue),
                let ownership = durable.ownershipManifest {
-                guard durable.configurationPath == configURL.path,
-                      ownership.installationID == installationID.rawValue,
-                      durable.verifiedProductIdentity == identity,
-                      launcherIsExact(product: product, installationID: installationID, helperID: helperID, executable: executable, at: helperPath) else {
+                // Adopt an existing, still-intact installation unchanged.
+                if durable.configurationPath == configURL.path,
+                   ownership.installationID == installationID.rawValue,
+                   durable.verifiedProductIdentity == identity,
+                   launcherIsExact(product: product, installationID: installationID, helperID: helperID, executable: executable, at: helperPath),
+                   verifyExisting(product: product, manifest: ownership, helperPath: helperPath, snapshot: snapshot).status == .applied {
+                    if product == .claude {
+                        let installation = IntegrationInstallation(id: installationID, product: ownership.product, integrationMode: ownership.integrationMode, scope: ownership.scope, manifestID: ownership.id, lifecycle: .enabled, enabledIntent: true, capabilities: ownership.verification?.capabilityIDs ?? [])
+                        guard await claudeActionLifecycle.activate(installation: installation, manifest: ownership, helperID: helperID, snapshot: snapshot, credentialStore: credentialStore) else {
+                            throw LaunchInstallationError.contractUnavailable
+                        }
+                    }
+                    await enable(product: product)
+                    return .installed(snapshot, alreadyInstalled: true)
+                }
+                // The manifest survived but its owned entries are no longer
+                // applied. Self-heal only when they are ENTIRELY ABSENT from the
+                // configuration — a person or another tool cleared them, or a
+                // hook-shape migration invalidated the previous entries. There,
+                // re-adding is safe and non-destructive, and (with no
+                // person-facing reconnect path) refusing would strand the app
+                // permanently, so fall through to the clean (re-)install below.
+                // Genuine drift (our marker present but altered), an external
+                // conflict, or an ambiguous/unsupported source keeps refusing.
+                guard ownedEntriesAbsent(product: product, configURL: configURL, helperPath: helperPath, snapshot: snapshot) else {
                     throw LaunchInstallationError.ownedStateDrifted
                 }
-                let exact = verifyExisting(product: product, manifest: ownership, helperPath: helperPath, snapshot: snapshot)
-                guard exact.status == .applied else { throw LaunchInstallationError.ownedStateDrifted }
-                if product == .claude {
-                    let installation = IntegrationInstallation(id: installationID, product: ownership.product, integrationMode: ownership.integrationMode, scope: ownership.scope, manifestID: ownership.id, lifecycle: .enabled, enabledIntent: true, capabilities: ownership.verification?.capabilityIDs ?? [])
-                    guard await claudeActionLifecycle.activate(installation: installation, manifest: ownership, helperID: helperID, snapshot: snapshot, credentialStore: credentialStore) else {
-                        throw LaunchInstallationError.contractUnavailable
-                    }
-                }
-                await enable(product: product)
-                return .installed(snapshot, alreadyInstalled: true)
             }
 
             let transactionID = UUID().uuidString
@@ -283,6 +294,31 @@ actor LaunchIntegrationAutoInstaller {
         }
     }
 
+    /// Whether the product's currently-selected configuration contains NONE of
+    /// our owned hook entries — i.e. they were removed or never re-applied after
+    /// a shape migration. Used to decide that a surviving manifest may be
+    /// safely re-installed rather than refused as drifted. It deliberately does
+    /// not treat an altered entry, an external conflict, or an ambiguous source
+    /// as absent, so those keep the conservative refusal.
+    private func ownedEntriesAbsent(product: DurableInstallationProduct, configURL: URL, helperPath: URL, snapshot: NegotiationSnapshot) -> Bool {
+        let scope = IntegrationInstallationScope(kind: .user, identifier: "user", path: configURL)
+        let installationID = IntegrationInstanceID("agent-island-\(product.rawValue)-user-v1")
+        switch product {
+        case .claude:
+            let discovery = ClaudeCodeInstallationCoordinator().discover(installationID: installationID, scope: scope, helperPath: helperPath, snapshot: snapshot)
+            return discovery.state == .notConfigured && discovery.safeToMutate
+        case .codex, .cursor:
+            // Deliberately NOT self-healed here. Codex is mid marker/shape
+            // migration: an old-marker entry is not matched by the current
+            // `codexEntries` marker, so a naive absent-check would ADD a new
+            // entry alongside the stale one instead of replacing it. A correct
+            // Codex re-install must first remove the old-marker entry, which is
+            // its own migration step. Cursor uses provisioned runtime hooks.
+            // Both keep the conservative refusal until that lands.
+            return false
+        }
+    }
+
     private func enable(product: DurableInstallationProduct) async {
         // Adapters begin disabled so a socket alone cannot create sessions.
         // The exact durable installation is the enabling boundary.
@@ -294,15 +330,10 @@ actor LaunchIntegrationAutoInstaller {
     }
 
     private func codexEntries(helperPath: URL) -> [ClaudeJSONHookEditor.Entry] {
-        CodexHookName.allCases.filter { $0 != .activity }.map { event in
-            let marker = "agent-island:codex-hooks-observation:v1:\(event.rawValue)"
-            let quotedPath = "'" + helperPath.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-            let command = quotedPath + " # " + marker
-            let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            let rendered = "{\"hooks\":[{\"type\":\"command\",\"command\":\"\(escaped)\"}]}"
-            let selector = ExactEntrySelector(key: "codex-hooks-\(event.rawValue)", renderedLine: rendered, marker: marker)
-            return ClaudeJSONHookEditor.Entry(selector: selector, event: event.rawValue, helperPath: helperPath.path)
-        }
+        // One shared renderer with the coordinator: the correctly-wrapped,
+        // guarded matcher-group element (matcher/timeout per event), never the
+        // old bare/unguarded command. `Activity` is no longer a Codex event.
+        CodexHookName.allCases.map { CodexCLIInstallationCoordinator.hookEntry(event: $0, helperPath: helperPath) }
     }
 
     private func applyCodexJSON(installationID: IntegrationInstanceID, helperPath: URL, configURL: URL, snapshot: NegotiationSnapshot, now: Date = Date()) throws -> IntegrationInstallationApplyResult {

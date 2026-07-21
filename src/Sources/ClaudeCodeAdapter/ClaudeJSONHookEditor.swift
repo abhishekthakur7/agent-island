@@ -47,11 +47,40 @@ public enum ClaudeJSONHookEditor {
         }
     }
 
+    /// A permission prompt can stay open for a long time, so only that event's
+    /// command hook carries a long timeout. Every other event omits it. Tunable.
+    public static let permissionRequestTimeoutSeconds = 86_400
+
+    /// Events that carry a tool `matcher` on their group, matching vibe-island.
+    /// Lifecycle events match all and omit the matcher entirely.
+    private static let matchedEvents: Set<ClaudeHookName> = [.preToolUse, .postToolUse, .notification, .permissionRequest]
+
+    /// Renders one correctly-wrapped matcher-group array element, matching
+    /// vibe-island: a guarded command that can never block a tool call or
+    /// session (`[ -x helper ] && helper; exit 0`), with the marker kept as a
+    /// trailing shell comment so remove()/inspect() can still find it verbatim.
+    /// Product-neutral: the caller supplies its own key/marker prefix, matcher
+    /// choice, and optional timeout, so both Claude and Codex reuse one renderer.
+    public static func wrappedEntry(event: String, keyPrefix: String, markerPrefix: String, helperPath: URL, matcher: Bool, timeoutSeconds: Int? = nil) -> Entry {
+        let marker = "\(markerPrefix):\(event)"
+        // Double-quote the helper path *inside* the single-quoted `-c` string so
+        // a spaced path (…/Application Support/Agent Island/…) stays one word.
+        let quoted = "\"" + helperPath.path + "\""
+        let guarded = "[ -x \(quoted) ] && \(quoted); exit 0"
+        // The `# <marker>` sits after the closing `'` of `/bin/sh -c '…'`, as a
+        // shell comment, and is plain ASCII so it survives JSON escaping and
+        // stays a literal substring of the command value.
+        let command = "/bin/sh -c " + shellQuote(guarded) + " # " + marker
+        let commandField = "\"command\":\"\(jsonEscape(command))\""
+        let timeoutField = timeoutSeconds.map { ",\"timeout\":\($0)" } ?? ""
+        let hookObject = "{\"type\":\"command\",\(commandField)\(timeoutField)}"
+        let matcherField = matcher ? "\"matcher\":\"*\"," : ""
+        let rendered = "{\(matcherField)\"hooks\":[\(hookObject)]}"
+        return Entry(selector: ExactEntrySelector(key: "\(keyPrefix)\(event)", renderedLine: rendered, marker: marker), event: event, helperPath: helperPath.path)
+    }
+
     public static func entry(for event: ClaudeHookName = .sessionStart, helperPath: URL) -> Entry {
-        let marker = "\(markerPrefix):\(event.rawValue)"
-        let command = shellQuote(helperPath.path) + " # " + marker
-        let rendered = "{\"type\":\"command\",\"command\":\"\(jsonEscape(command))\"}"
-        return Entry(selector: ExactEntrySelector(key: "claude-code-hooks-\(event.rawValue)", renderedLine: rendered, marker: marker), event: event.rawValue, helperPath: helperPath.path)
+        wrappedEntry(event: event.rawValue, keyPrefix: "claude-code-hooks-", markerPrefix: markerPrefix, helperPath: helperPath, matcher: matchedEvents.contains(event), timeoutSeconds: event == .permissionRequest ? permissionRequestTimeoutSeconds : nil)
     }
 
     public static func entry(eventName: String, markerPrefix: String, helperPath: URL) -> Entry {
@@ -136,6 +165,30 @@ public enum ClaudeJSONHookEditor {
         let check = inspect(at: path, entry: Entry(selector: receipt.selector, event: event, helperPath: ""))
         guard check.supported, check.markerMatches == 0 else { throw EditorError.verificationFailed }
         return ExactEntryReceipt(selector: receipt.selector, path: path.path, sourceFingerprint: verified.fingerprint, createdAt: now)
+    }
+
+    /// After our marked element is removed, delete the whole `"Event": […]`
+    /// member if its array is now empty, so no `"Event": []` is left behind.
+    /// A no-op that returns the current fingerprint when the array still has
+    /// elements or the key is already gone; it never touches an array that
+    /// still holds another owner's hooks.
+    public static func removeEmptyEventKey(event: String, at path: URL, expected: ExactEntrySourceFingerprint? = nil, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) throws -> ExactEntrySourceFingerprint {
+        guard policy.allowsMutation else { throw EditorError.policyDenied }
+        let source = ExactEntryEditor.snapshot(at: path)
+        guard source.symlinkTarget == nil else { throw EditorError.symlink }
+        if let expected, expected != source.fingerprint { throw EditorError.sourceChanged }
+        let ext = path.pathExtension.lowercased()
+        guard (ext == "json" || ext == "jsonc"), let data = source.content else { throw EditorError.unavailable }
+        let parsed = try ParsedSource(data: data, jsonc: ext == "jsonc")
+        guard parsed.root.kind == .object else { throw EditorError.unsupported }
+        guard let hooks = parsed.rootObjectMember("hooks"),
+              let member = hooks.members.first(where: { $0.key == event }),
+              member.value.kind == .array, member.value.elements.isEmpty else {
+            return source.fingerprint
+        }
+        let next = try parsed.removingMember(member, from: hooks, jsonc: ext == "jsonc")
+        try write(next, to: path, preserving: source)
+        return ExactEntryEditor.snapshot(at: path).fingerprint
     }
 
     private static func shellQuote(_ value: String) -> String {

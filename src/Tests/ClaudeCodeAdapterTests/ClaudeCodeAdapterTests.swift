@@ -266,9 +266,70 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         try Data("{\"hooks\":{}}".utf8).write(to: config)
         let helper = root.appendingPathComponent("helper")
         let plan = ClaudeCodeInstallationCoordinator().makePlan(id: "plan", installationID: IntegrationInstanceID("installation"), scope: IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config), helperPath: helper, snapshot: snapshot())
-        XCTAssertEqual(plan.entries.count, ClaudeHookName.allCases.count)
+        XCTAssertEqual(plan.entries.count, ClaudeHookName.installableEvents.count)
+        XCTAssertEqual(plan.entries.count, 12)
         XCTAssertEqual(Set(plan.entries.map(\.key)).count, plan.entries.count)
         XCTAssertTrue(plan.entries.allSatisfy { $0.marker.hasPrefix(ClaudeJSONHookEditor.markerPrefix) })
+        // Events Claude Code does not recognize (and the two unobserved ones) are never installed.
+        let installedKeys = Set(plan.entries.map(\.key))
+        for excluded in ["AskUserQuestion", "ExitPlanMode", "Wakeup", "BackgroundTask", "PermissionDenied", "ConfigChange"] {
+            XCTAssertFalse(installedKeys.contains("claude-code-hooks-\(excluded)"), "\(excluded) must not be installed")
+        }
+    }
+
+    func testRenderedEntryIsWrappedGuardedWithMarkerMatcherAndTimeout() {
+        let helper = URL(fileURLWithPath: "/Library/Application Support/Agent Island/ClaudeHookHelper")   // spaced path
+        let start = ClaudeJSONHookEditor.entry(for: .sessionStart, helperPath: helper).selector.renderedLine
+        // Wrapped matcher-group, guarded command, path double-quoted inside the -c string, marker as trailing comment.
+        XCTAssertTrue(start.hasPrefix("{\"hooks\":[{\"type\":\"command\",\"command\":\"/bin/sh -c '"))
+        XCTAssertTrue(start.contains("[ -x \\\"\(helper.path)\\\" ] && \\\"\(helper.path)\\\"; exit 0'"))
+        XCTAssertTrue(start.hasSuffix("; exit 0' # \(ClaudeJSONHookEditor.markerPrefix):SessionStart\"}]}"))
+        XCTAssertFalse(start.contains("\"matcher\""))   // lifecycle events omit the matcher
+        // Tool events carry matcher:*; PermissionRequest additionally carries the long timeout.
+        XCTAssertTrue(ClaudeJSONHookEditor.entry(for: .preToolUse, helperPath: helper).selector.renderedLine.hasPrefix("{\"matcher\":\"*\",\"hooks\":["))
+        let perm = ClaudeJSONHookEditor.entry(for: .permissionRequest, helperPath: helper).selector.renderedLine
+        XCTAssertTrue(perm.hasPrefix("{\"matcher\":\"*\",\"hooks\":[")); XCTAssertTrue(perm.contains("\"timeout\":86400"))
+        XCTAssertFalse(ClaudeJSONHookEditor.entry(for: .stop, helperPath: helper).selector.renderedLine.contains("\"timeout\""))
+    }
+
+    func testTwelveWrappedEntriesInstallWithMarkerMatchesOneAndRemovalCleansEmptyKeys() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-install-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.json"); try Data("{\n  \"other\": 1,\n  \"hooks\": {}\n}\n".utf8).write(to: config)
+        let helper = root.appendingPathComponent("Agent Island helper")
+        let coordinator = ClaudeCodeInstallationCoordinator()
+        let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config)
+        let plan = coordinator.makePlan(id: "install", installationID: IntegrationInstanceID("installation"), scope: scope, helperPath: helper, snapshot: snapshot())
+        let applied = coordinator.apply(try coordinator.approve(plan, personIdentifier: "person"), currentSnapshot: snapshot(), helperPath: helper)
+        XCTAssertEqual(applied.status, .applied)
+        let manifest = try XCTUnwrap(applied.manifest)
+        for event in ClaudeHookName.installableEvents {
+            let inspection = ClaudeJSONHookEditor.inspect(at: config, entry: ClaudeJSONHookEditor.entry(for: event, helperPath: helper))
+            XCTAssertEqual(inspection.markerMatches, 1, "\(event.rawValue) markerMatches")   // exactly one, never double-counted
+            XCTAssertEqual(inspection.exactMatches, 1, "\(event.rawValue) exactMatches")
+        }
+        XCTAssertTrue(String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self).contains("\"other\": 1"))
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: helper).fingerprint.permissionBits, 0o700)
+        // Removal deletes each owned entry and the now-empty event key it created.
+        let removalPlan = coordinator.makeRemovalPlan(id: "remove", installationID: IntegrationInstanceID("installation"), manifest: manifest, snapshot: snapshot())
+        let removal = coordinator.remove(try coordinator.approve(removalPlan, personIdentifier: "person"), manifest: manifest)
+        XCTAssertEqual(removal.outcome, .removed)
+        let after = String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self)
+        XCTAssertFalse(after.contains(ClaudeJSONHookEditor.markerPrefix)); XCTAssertFalse(after.contains("SessionStart"))   // no empty "SessionStart": [] left behind
+        XCTAssertTrue(after.contains("\"other\": 1")); XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path))
+    }
+
+    func testInspectReportsDriftWhenMarkerPresentButShapeNotExact() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ab134-drift-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("settings.json")
+        let entry = ClaudeJSONHookEditor.entry(for: .sessionStart, helperPath: root.appendingPathComponent("helper"))
+        // A legacy bare-shape entry carrying our marker: marker present, wrapped shape absent → drift.
+        let bare = "{\"type\":\"command\",\"command\":\"legacy # \(entry.selector.marker)\"}"
+        try Data("{\"hooks\":{\"SessionStart\":[\(bare)]}}".utf8).write(to: config)
+        let inspection = ClaudeJSONHookEditor.inspect(at: config, entry: entry)
+        XCTAssertEqual(inspection.markerMatches, 1)   // our marker is present
+        XCTAssertEqual(inspection.exactMatches, 0)    // but the shape is not the wrapped one → discover reports .ownedDrifted
     }
 
     func testHelperFramingAuthenticatesBoundedPayloadAndEndpointPolicy() async throws {

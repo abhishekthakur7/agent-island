@@ -125,6 +125,7 @@ public enum ClaudeHookName: String, Codable, Hashable, Sendable, CaseIterable {
     case sessionStart = "SessionStart"
     case userPromptSubmit = "UserPromptSubmit"
     case preToolUse = "PreToolUse"
+    case postToolUse = "PostToolUse"
     case permissionRequest = "PermissionRequest"
     case notification = "Notification"
     case stop = "Stop"
@@ -135,9 +136,22 @@ public enum ClaudeHookName: String, Codable, Hashable, Sendable, CaseIterable {
     case sessionEnd = "SessionEnd"
     case subagentStart = "SubagentStart"
     case subagentStop = "SubagentStop"
+    case preCompact = "PreCompact"
     case configChange = "ConfigChange"
     case wakeup = "Wakeup"
     case backgroundTask = "BackgroundTask"
+
+    /// The curated set Agent Island installs — vibe-island's exact 12 real
+    /// events. This is the *install* concern, deliberately separate from the
+    /// full `allCases` *ingest* set: the four events Claude Code does not
+    /// recognize (AskUserQuestion, ExitPlanMode, Wakeup, BackgroundTask) and
+    /// the two recognized-but-unobserved events (PermissionDenied, ConfigChange)
+    /// stay in the enum for ingest tolerance but must never be installed.
+    public static let installableEvents: [ClaudeHookName] = [
+        .preToolUse, .postToolUse, .notification, .permissionRequest,
+        .userPromptSubmit, .sessionStart, .sessionEnd, .stop, .stopFailure,
+        .subagentStart, .subagentStop, .preCompact
+    ]
 
     public init?(documentedName: String) {
         let normalized = documentedName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -589,6 +603,8 @@ public enum ClaudeHookNormalizer {
         case .preToolUse:
             let content = ClaudeProtectedObservationContent(contentID: "claude-content-" + sourceID(hook.eventIdentity), bytes: hook.payload, sessionIdentity: identity, nativeTurnID: hook.nativeTurnID, nativeAttentionRequestID: hook.nativeAttentionRequestID)
             return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: .working, ownership: hook.nativeTurnID.map { LifecycleOwnership(nativeTurnID: $0) }, suffix: "working")], protectedContent: content, sourceName: hook.name, attributedContext: context))
+        case .postToolUse:
+            return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: .working, ownership: hook.nativeTurnID.map { LifecycleOwnership(nativeTurnID: $0) }, suffix: "post-tool")], sourceName: hook.name, attributedContext: context))
         case .permissionRequest:
             guard let requestID = hook.nativeAttentionRequestID, !requestID.isEmpty else { return .failure(.missingEventIdentity) }
             let content = ClaudeProtectedObservationContent(contentID: "claude-content-" + sourceID(hook.eventIdentity), bytes: hook.payload, sessionIdentity: identity, nativeTurnID: hook.nativeTurnID, nativeAttentionRequestID: requestID)
@@ -624,6 +640,8 @@ public enum ClaudeHookNormalizer {
             guard let childID = hook.nativeSubagentRunID, !childID.isEmpty, let parentTurnID = hook.parentTurnID ?? hook.nativeTurnID, !parentTurnID.isEmpty, hook.stopEvidencePresent else { return .failure(.unprovenChildStop) }
             guard let outcome = explicitStopOutcome(from: hook.payload) else { return .failure(.unprovenChildStop) }
             return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: outcome, ownership: LifecycleOwnership(nativeTurnID: parentTurnID, nativeSubagentRunID: childID), suffix: "child-stop")], sourceName: hook.name, attributedContext: context))
+        case .preCompact:
+            return .success(ClaudeNormalizedObservation(events: [envelope(family: .sessionActivity, activity: .working, suffix: "precompact")], sourceName: hook.name, attributedContext: context))
         case .configChange:
             return .success(ClaudeNormalizedObservation(events: [envelope(family: .reconciliation, reconciliation: .nonExhaustive, suffix: "reconcile")], sourceName: hook.name, attributedContext: context))
         case .wakeup:
@@ -692,12 +710,12 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
     /// marked entry is installed per supported event; each receipt is scoped
     /// independently so a Product or policy-owned event can remain untouched.
     public func selectors(helperPath: URL) -> [ExactEntrySelector] {
-        ClaudeHookName.allCases.map { ClaudeJSONHookEditor.entry(for: $0, helperPath: helperPath).selector }
+        ClaudeHookName.installableEvents.map { ClaudeJSONHookEditor.entry(for: $0, helperPath: helperPath).selector }
     }
 
     public func discover(installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, manifest: OwnershipManifest? = nil, snapshot: NegotiationSnapshot? = nil, policy: ExactEntryWritePolicy = .allowed) -> IntegrationInstallationDiscovery {
         if isClaudeJSON(scope.url) {
-            let entries = ClaudeHookName.allCases.map { ClaudeJSONHookEditor.entry(for: $0, helperPath: helperPath) }
+            let entries = ClaudeHookName.installableEvents.map { ClaudeJSONHookEditor.entry(for: $0, helperPath: helperPath) }
             let found = entries.map { ClaudeJSONHookEditor.inspect(at: scope.url, entry: $0) }
             let inspectionState: ExactEntryInspectionState
             let reason: ExactEntryFailureReason?
@@ -708,7 +726,10 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             else if found.contains(where: { !$0.supported || $0.source.symlinkTarget != nil }) { inspectionState = .unsupported; reason = source.symlinkTarget == nil ? .unsupported : .symlinkChanged }
             else if found.contains(where: { $0.markerMatches > 1 }) { inspectionState = .shadowedManaged; reason = .ambiguous }
             else if markerCount == 0 { inspectionState = .notConfigured; reason = nil }
-            else if let manifest, found.indices.allSatisfy({ found[$0].markerMatches == 1 && manifest.proving(entries[$0].selector, at: scope.path) != nil }) { inspectionState = .ownedIntact; reason = nil }
+            // `.ownedIntact` requires the byte-exact current shape, not merely a
+            // marker: a marked-but-wrong-shape entry (drift) must report
+            // `.ownedDrifted` so a re-connect can rewrite it, never `.ownedIntact`.
+            else if let manifest, found.indices.allSatisfy({ found[$0].markerMatches == 1 && found[$0].exactMatches == 1 && manifest.proving(entries[$0].selector, at: scope.path) != nil }) { inspectionState = .ownedIntact; reason = nil }
             else if manifest != nil { inspectionState = .ownedDrifted; reason = .sourceChanged }
             else { inspectionState = .externalCandidate; reason = nil }
             let inspection = ExactEntryInspection(state: inspectionState, source: source, matchingEntryCount: markerCount, reason: reason)
@@ -873,6 +894,9 @@ public final class ClaudeCodeInstallationCoordinator: @unchecked Sendable {
             do {
                 _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: event.rawValue, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now)
                 removed.append(receipt.selector); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: manifest.sourcePath)).fingerprint
+                // Delete the now-empty event key so no `"Event": []` is left
+                // behind. Best-effort: a cleanup failure never fails removal.
+                if let cleaned = try? ClaudeJSONHookEditor.removeEmptyEventKey(event: event.rawValue, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now) { expected = cleaned }
             } catch { residual.append(receipt.selector) }
         }
         var removedArtifacts: [String] = []; var notRemovedArtifacts: [String] = []

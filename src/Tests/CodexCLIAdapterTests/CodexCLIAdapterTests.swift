@@ -114,7 +114,7 @@ final class CodexCLIAdapterTests: XCTestCase {
         guard case .delivered = await adapter.ingestOutcome(message("start-1", #"{"hook_event_name":"SessionStart","session_id":"s","event_id":"start-1","sequence":1}"#)) else { return XCTFail("source baseline must deliver") }
         guard case .unresolved(let gap) = await adapter.ingestOutcome(stop3) else { return XCTFail("gap must be unresolved") }
         XCTAssertEqual(gap.reason, .sourceGap); XCTAssertEqual(await port.terminalDeliveries, 0)
-        guard case .delivered = await adapter.ingestOutcome(message("activity-2", #"{"hook_event_name":"Activity","session_id":"s","event_id":"activity-2","sequence":2}"#)) else { return XCTFail("missing source event must deliver") }
+        guard case .delivered = await adapter.ingestOutcome(message("fill-2", #"{"hook_event_name":"PostToolUse","session_id":"s","event_id":"fill-2","sequence":2}"#)) else { return XCTFail("missing source event must deliver") }
         XCTAssertEqual(await port.terminalDeliveries, 0, "later continuity cannot fabricate the withheld terminal")
         guard case .delivered = await adapter.ingestOutcome(stop3) else { return XCTFail("only exact terminal redelivery may complete") }
         XCTAssertEqual(await port.terminalDeliveries, 1)
@@ -128,63 +128,83 @@ final class CodexCLIAdapterTests: XCTestCase {
         _ = await adapter.negotiate(version: .init(productVersion: "", documentedHooksAvailable: false)); XCTAssertEqual(await adapter.health().reason, .unsupportedVersion)
     }
 
-    func testFreshPlanApprovalApplyVerifyAndExactRemovalPreserveTOML() throws {
+    func testFreshInstallWritesGuardedWrappedHooksJSONIdempotentlyAndRemovalCleansEmptyKeys() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
-        let config = root.appendingPathComponent("config.toml"); let original = "# keep\nprofile = \"safe\"\n[profiles.work]\nmode = \"read-only\"\n"; try Data(original.utf8).write(to: config)
-        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract()); let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config); let plan = coordinator.makePlan(id: "fresh", installationID: installation, scope: scope, helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
-        XCTAssertFalse(plan.entries.contains { $0.renderedLine.hasPrefix("notify") }); XCTAssertEqual(plan.entries.count, CodexHookName.allCases.count)
-        let approval = try coordinator.approve(plan, personIdentifier: "person")
-        let applied = coordinator.apply(approval, currentSnapshot: snapshot()); XCTAssertEqual(applied.status, .applied)
-        let manifest = try XCTUnwrap(applied.manifest); let helper = root.appendingPathComponent("helper")
-        XCTAssertTrue(String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self).contains("[profiles.work]")); XCTAssertEqual(ExactEntryEditor.snapshot(at: helper).fingerprint.permissionBits, 0o700)
-        let bootstrap = String(decoding: try Data(contentsOf: helper), as: UTF8.self); XCTAssertTrue(bootstrap.contains("AGENT_ISLAND_INSTALLATION_ID='codex-install'")); XCTAssertTrue(bootstrap.contains("AGENT_ISLAND_CODEX_OBSERVATION_ONLY=1")); XCTAssertTrue(bootstrap.contains("CodexHookHelper")); XCTAssertFalse(bootstrap.contains("claude-actions.sock"))
+        // Codex reads a hooks.json with Claude's nested schema; a spaced helper path exercises quoting.
+        let config = root.appendingPathComponent("hooks.json"); let original = "{\n  \"description\": \"keep me\",\n  \"hooks\": {}\n}\n"; try Data(original.utf8).write(to: config)
+        let helper = root.appendingPathComponent("Agent Island helper")
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract()); let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config)
+        let plan = coordinator.makePlan(id: "fresh", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
+        XCTAssertEqual(plan.entries.count, 10); XCTAssertEqual(plan.entries.count, CodexHookName.allCases.count)
+        XCTAssertTrue(plan.entries.allSatisfy { $0.renderedLine.contains("\"hooks\":[") && $0.renderedLine.contains("/bin/sh -c") && $0.renderedLine.contains("exit 0") && $0.marker.hasPrefix(CodexCLIIntegration.hookMarkerPrefix) })
+        XCTAssertTrue(plan.entries.contains { $0.renderedLine.contains("\"matcher\":\"*\"") })
+        XCTAssertTrue(plan.entries.contains { $0.renderedLine.contains("\"timeout\":86400") })
+        let applied = coordinator.apply(try coordinator.approve(plan, personIdentifier: "person"), currentSnapshot: snapshot()); XCTAssertEqual(applied.status, .applied)
+        let manifest = try XCTUnwrap(applied.manifest)
+        let written = String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self)
+        XCTAssertTrue(written.contains("\"description\": \"keep me\""))   // unrelated content preserved
+        XCTAssertTrue(written.contains(helper.path))                       // spaced path present
+        XCTAssertTrue(written.contains("\"timeout\":86400"))
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: helper).fingerprint.permissionBits, 0o700)
+        let bootstrap = String(decoding: try Data(contentsOf: helper), as: UTF8.self); XCTAssertTrue(bootstrap.contains("AGENT_ISLAND_CODEX_OBSERVATION_ONLY=1")); XCTAssertTrue(bootstrap.contains("CodexHookHelper"))
+        // Idempotency: a re-discover with the manifest reports ownedIntact and refuses to re-mutate.
+        let rediscovery = coordinator.discover(installationID: installation, scope: scope, helperPath: helper, manifest: manifest, snapshot: snapshot())
+        XCTAssertEqual(rediscovery.state, .ownedIntact); XCTAssertFalse(rediscovery.safeToMutate)
+        // Exact removal deletes each entry and the now-empty event key it created.
         let removalPlan = coordinator.makeRemovalPlan(id: "remove", installationID: installation, manifest: manifest, snapshot: snapshot())
         let removal = coordinator.remove(try coordinator.approve(removalPlan, personIdentifier: "person"), manifest: manifest)
-        XCTAssertEqual(removal.status, .removed); XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data(original.utf8)); XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path))
+        XCTAssertEqual(removal.outcome, .removed)
+        let after = String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self)
+        XCTAssertFalse(after.contains(CodexCLIIntegration.hookMarkerPrefix)); XCTAssertFalse(after.contains("SessionStart"))
+        XCTAssertTrue(after.contains("\"description\": \"keep me\"")); XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path))
     }
 
-    func testExistingOrDuplicateReviewedHookDefinitionRequiresManualRemedyWithoutMutation() throws {
+    func testExternalHookCoexistsRatherThanBlockingInstall() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
-        let config = root.appendingPathComponent("config.toml"); let original = "hooks.SessionStart = [\"outside-helper\"]\n"; try Data(original.utf8).write(to: config)
-        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract()); let plan = coordinator.makePlan(id: "ambiguous", installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
-        XCTAssertEqual(plan.compatibility, .incompatible)
-        XCTAssertTrue(plan.manualRemedy.contains("manual"))
-        XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data(original.utf8))
+        let config = root.appendingPathComponent("hooks.json")
+        // A non-agent-island hook under an event is not ours; we coexist, mirroring vibe-island, rather than refuse.
+        try Data("{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"unrelated-hook\"}]}]}}".utf8).write(to: config)
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract()); let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config); let helper = root.appendingPathComponent("helper")
+        let discovery = coordinator.discover(installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
+        XCTAssertEqual(discovery.state, .notConfigured)   // an external hook carries no agent-island marker
+        let applied = coordinator.apply(try coordinator.approve(coordinator.makePlan(id: "coexist", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot()), personIdentifier: "person"), currentSnapshot: snapshot())
+        XCTAssertEqual(applied.status, .applied)
+        let written = String(decoding: ExactEntryEditor.snapshot(at: config).content ?? Data(), as: UTF8.self)
+        XCTAssertTrue(written.contains("unrelated-hook"))   // the external hook is preserved alongside ours
+        XCTAssertTrue(written.contains(CodexCLIIntegration.hookMarkerPrefix))
     }
 
-    func testDiscoveryExaminesEveryOwnedHookSelector() throws {
+    func testUnsafeHelperPathAndConfigDriftFailClosed() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
-        let config = root.appendingPathComponent("config.toml"); try Data("hooks.Stop = [\"outside-helper\"]\n".utf8).write(to: config)
-        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract())
-        let discovery = coordinator.discover(installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
-        XCTAssertEqual(discovery.state, .externalCandidate); XCTAssertFalse(discovery.safeToMutate)
-    }
-
-    func testHelperContractPathSafetyAndApplyRollbackFailClosed() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
-        let config = root.appendingPathComponent("config.toml"); try Data("# keep\n".utf8).write(to: config)
+        let config = root.appendingPathComponent("hooks.json"); try Data("{\"hooks\":{}}".utf8).write(to: config)
         let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config)
         let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract())
         let unsafe = coordinator.makePlan(id: "unsafe", installationID: installation, scope: scope, helperPath: root.appendingPathComponent("bad\"path"), snapshot: snapshot())
         XCTAssertEqual(unsafe.compatibility, .interfaceChanged); XCTAssertTrue(unsafe.entries.isEmpty)
         let helper = root.appendingPathComponent("helper")
-        let plan = coordinator.makePlan(id: "rollback", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
+        let plan = coordinator.makePlan(id: "drift", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
         let approval = try coordinator.approve(plan, personIdentifier: "person")
-        try Data("# changed\n".utf8).write(to: config)
-        let rollback = coordinator.apply(approval, currentSnapshot: snapshot())
-        XCTAssertEqual(rollback.status, .stale); XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path), "created helper must roll back when configuration cannot apply")
-        let fresh = coordinator.makePlan(id: "changed-helper", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
-        try Data("not bootstrap".utf8).write(to: helper)
-        let changed = coordinator.apply(try coordinator.approve(fresh, personIdentifier: "person"), currentSnapshot: snapshot())
-        XCTAssertEqual(changed.reason, .sourceChanged)
-        try FileManager.default.removeItem(at: helper); try FileManager.default.createSymbolicLink(atPath: helper.path, withDestinationPath: config.path)
-        let symlink = coordinator.apply(try coordinator.approve(fresh, personIdentifier: "person"), currentSnapshot: snapshot())
-        XCTAssertEqual(symlink.reason, .symlinkChanged)
+        try Data("{\"hooks\":{},\"changed\":true}".utf8).write(to: config)   // config changed after the plan
+        let drifted = coordinator.apply(approval, currentSnapshot: snapshot())
+        XCTAssertEqual(drifted.status, .blocked); XCTAssertEqual(drifted.reason, .sourceChanged)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: helper.path), "a launcher this apply created must roll back when the config cannot apply")
+    }
+
+    func testSymlinkHelperFailsClosed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let config = root.appendingPathComponent("hooks.json"); try Data("{\"hooks\":{}}".utf8).write(to: config)
+        let scope = IntegrationInstallationScope(kind: .customPath, identifier: "selected", path: config)
+        let coordinator = CodexCLIInstallationCoordinator(runtimeContract: CodexFixtureHookRuntimeContract())
+        let helper = root.appendingPathComponent("helper"); try FileManager.default.createSymbolicLink(atPath: helper.path, withDestinationPath: config.path)
+        let plan = coordinator.makePlan(id: "symlink", installationID: installation, scope: scope, helperPath: helper, snapshot: snapshot())
+        let result = coordinator.apply(try coordinator.approve(plan, personIdentifier: "person"), currentSnapshot: snapshot())
+        XCTAssertEqual(result.reason, .symlinkChanged)
+        XCTAssertEqual(ExactEntryEditor.snapshot(at: config).content, Data("{\"hooks\":{}}".utf8), "entries added before the helper check must roll back")
     }
 
     func testUnprovenRuntimeContractNeverPlansOrApplies() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
-        let config = root.appendingPathComponent("config.toml"); try Data().write(to: config)
+        let config = root.appendingPathComponent("hooks.json"); try Data("{\"hooks\":{}}".utf8).write(to: config)
         let plan = CodexCLIInstallationCoordinator().makePlan(id: "unproven", installationID: installation, scope: .init(kind: .customPath, identifier: "selected", path: config), helperPath: root.appendingPathComponent("helper"), snapshot: snapshot())
         XCTAssertEqual(plan.compatibility, .interfaceChanged)
         XCTAssertEqual(CodexCLIInstallationCoordinator().apply(try CodexCLIInstallationCoordinator().approve(plan, personIdentifier: "person"), currentSnapshot: snapshot()).status, .blocked)

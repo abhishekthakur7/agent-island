@@ -20,6 +20,10 @@ public enum CodexCLIIntegration {
     public static let allActionCapabilities: [String] = []
     public static let helperExecutablePath = "/Applications/Agent Island.app/Contents/MacOS/CodexHookHelper"
     public static let helperEndpointFileName = "codex-hooks.sock"
+    /// Marker prefix kept as a trailing shell comment inside each installed
+    /// hooks.json command, so the lossless editor can find and remove exactly
+    /// our own entries. Mirrors the Claude marker, Codex-scoped.
+    public static let hookMarkerPrefix = "agent-island:codex-cli-hooks-observation"
 
     /// This launcher carries only the installation/helper owner labels and an
     /// immutable observation-only mode. It has no secret, callback, or action
@@ -54,21 +58,12 @@ public enum CodexHooksConfigurationContract {
     public static func accepts(_ snapshot: NegotiationSnapshot) -> Bool {
         snapshot.interfaceVersion == reviewedInterfaceVersion && snapshot.grants(CodexCLIIntegration.configurationCapability, direction: .configure)
     }
-    /// A deliberately conservative, selected-file-only preflight.  Until a
-    /// full reviewed TOML grammar is available, any existing event-qualified
-    /// definition is ambiguous ownership rather than an entry to merge,
-    /// rewrite, or silently shadow.
-    public static func hasExistingEventDefinition(at path: URL) -> Bool {
-        guard let data = ExactEntryEditor.snapshot(at: path).content, let text = String(data: data, encoding: .utf8) else { return false }
-        let lines = text.split(whereSeparator: \ .isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        return CodexHookName.allCases.contains { event in
-            lines.contains { line in !line.hasPrefix("#") && line.hasPrefix("hooks.\(event.rawValue)") }
-        }
-    }
 }
 
 public enum CodexHookName: String, Codable, CaseIterable, Sendable {
-    case sessionStart = "SessionStart", userPromptSubmit = "UserPromptSubmit", preToolUse = "PreToolUse", postToolUse = "PostToolUse", preCompact = "PreCompact", postCompact = "PostCompact", stop = "Stop", subagentStart = "SubagentStart", subagentStop = "SubagentStop", permissionRequest = "PermissionRequest", activity = "Activity"
+    // The 10 events Codex actually emits per its documented hooks schema. There
+    // is no `Activity` event — it was invented and is deliberately dropped.
+    case sessionStart = "SessionStart", userPromptSubmit = "UserPromptSubmit", preToolUse = "PreToolUse", postToolUse = "PostToolUse", preCompact = "PreCompact", postCompact = "PostCompact", stop = "Stop", subagentStart = "SubagentStart", subagentStop = "SubagentStop", permissionRequest = "PermissionRequest"
     init?(documentedName: String) {
         let value = documentedName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let found = Self.allCases.first(where: { $0.rawValue.caseInsensitiveCompare(value) == .orderedSame }) else { return nil }
@@ -237,7 +232,7 @@ public enum CodexHookNormalizer {
             if let turn = hook.nativeTurnID { events.append(event(.turnDeclared, "turn", ownership: .init(nativeTurnID: turn))) }
             events.append(event(.sessionActivity, "working", activity: .working, ownership: hook.nativeTurnID.map { .init(nativeTurnID: $0) }, cursorIncluded: false))
             return .success(.init(events: events, protectedContent: content))
-        case .preToolUse, .postToolUse, .preCompact, .postCompact, .activity:
+        case .preToolUse, .postToolUse, .preCompact, .postCompact:
             return .success(.init(events: [event(.sessionActivity, "activity", activity: .working, ownership: hook.nativeTurnID.map { .init(nativeTurnID: $0) })], protectedContent: content))
         case .permissionRequest:
             guard let request = hook.nativeTurnID, !request.isEmpty else { return .failure(.missingEventIdentity) }
@@ -354,43 +349,51 @@ public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
     private let runtimeContract: any CodexHookRuntimeContract
     private let helperExecutablePath: String
     public init(runtimeContract: any CodexHookRuntimeContract = CodexUnprovenHookRuntimeContract(), helperExecutablePath: String = CodexCLIIntegration.helperExecutablePath) { self.runtimeContract = runtimeContract; self.helperExecutablePath = helperExecutablePath }
-    public func selector(event: CodexHookName = .sessionStart, helperPath: URL) -> ExactEntrySelector {
-        let path: String = helperPath.path
-        let digest: String = ExactEntryDigest.value(Data((path + event.rawValue).utf8))
-        let marker: String = "# agent-island-codex-hook \(event.rawValue) \(digest)"
-        let key: String = "codex-hooks-\(event.rawValue)-\(digest)"
-        // This reviewed-contract fixture is event-qualified and intentionally
-        // distinct from Codex's generic notification command.  It is written
-        // only after the exact contract/version probe above succeeds.
-        let rendered: String = "hooks.\(event.rawValue) = [\"\(path)\"] \(marker)"
-        return ExactEntrySelector(key: key, renderedLine: rendered, marker: marker)
+    // Codex reads a `hooks.json` whose schema matches Claude's nested hooks
+    // object, so we render the SAME wrapped, guarded matcher-group element via
+    // the shared JSON editor — only the key/marker prefix and event set differ.
+    static let keyPrefix = "codex-cli-hooks-"
+    static let matchedEvents: Set<CodexHookName> = [.preToolUse, .postToolUse, .permissionRequest]
+    /// Single source of truth for a Codex hooks.json entry — shared by this
+    /// coordinator and the launch-time installer so both render the identical
+    /// guarded, wrapped matcher-group element under one marker/key convention.
+    public static func hookEntry(event: CodexHookName, helperPath: URL) -> ClaudeJSONHookEditor.Entry {
+        ClaudeJSONHookEditor.wrappedEntry(event: event.rawValue, keyPrefix: keyPrefix, markerPrefix: CodexCLIIntegration.hookMarkerPrefix, helperPath: helperPath, matcher: matchedEvents.contains(event), timeoutSeconds: event == .permissionRequest ? ClaudeJSONHookEditor.permissionRequestTimeoutSeconds : nil)
     }
-    public func selectors(helperPath: URL) -> [ExactEntrySelector] { CodexHookName.allCases.map { selector(event: $0, helperPath: helperPath) } }
+    public func selector(event: CodexHookName = .sessionStart, helperPath: URL) -> ExactEntrySelector { Self.hookEntry(event: event, helperPath: helperPath).selector }
+    private func plannedEntries(helperPath: URL) -> [ClaudeJSONHookEditor.Entry] { CodexHookName.allCases.map { Self.hookEntry(event: $0, helperPath: helperPath) } }
+    public func selectors(helperPath: URL) -> [ExactEntrySelector] { plannedEntries(helperPath: helperPath).map(\.selector) }
     public func discover(installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, manifest: OwnershipManifest? = nil, snapshot: NegotiationSnapshot? = nil, policy: ExactEntryWritePolicy = .allowed) -> IntegrationInstallationDiscovery {
-        let entries = selectors(helperPath: helperPath)
-        let found = entries.map { ExactEntryEditor.inspect(at: scope.url, selector: $0, receipt: manifest?.proving($0, at: scope.path)) }
+        let entries = plannedEntries(helperPath: helperPath)
+        let found = entries.map { ClaudeJSONHookEditor.inspect(at: scope.url, entry: $0) }
         let source = found.first?.source ?? ExactEntryEditor.snapshot(at: scope.url)
-        let compatibility: IntegrationInstallationCompatibility = (snapshot.map(CodexHooksConfigurationContract.accepts) ?? false) && isTOMLSafeHelperPath(helperPath) && runtimeContract.isProven(installationID: installationID, helperID: CodexCLIIntegration.helperID(for: helperPath)) ? .compatible : .interfaceChanged
-        let markerCount = found.reduce(0) { $0 + $1.matchingEntryCount }
+        let markerCount = found.reduce(0) { $0 + $1.markerMatches }
+        let compatible = (snapshot.map(CodexHooksConfigurationContract.accepts) ?? false) && isSafeHelperPath(helperPath) && runtimeContract.isProven(installationID: installationID, helperID: CodexCLIIntegration.helperID(for: helperPath)) && policy.allowsMutation
+        let compatibility: IntegrationInstallationCompatibility = compatible ? .compatible : .interfaceChanged
         let state: ExactEntryInspectionState
         let reason: ExactEntryFailureReason?
-        if compatibility != .compatible { state = .unsupported; reason = .unsupported }
-        else if found.contains(where: { $0.source.symlinkTarget != nil || $0.state == .unsupported || $0.state == .unavailable }) { state = .unsupported; reason = source.symlinkTarget == nil ? .unsupported : .symlinkChanged }
-        else if found.contains(where: { $0.state == .shadowedManaged }) { state = .shadowedManaged; reason = .ambiguous }
-        else if markerCount == 0 && !CodexHooksConfigurationContract.hasExistingEventDefinition(at: scope.url) { state = .notConfigured; reason = nil }
-        else if let manifest, found.indices.allSatisfy({ found[$0].state == .ownedIntact && manifest.proving(entries[$0], at: scope.path) != nil }) { state = .ownedIntact; reason = nil }
-        else { state = .externalCandidate; reason = .ambiguous }
+        if !compatible { state = .unsupported; reason = policy.allowsMutation ? .unsupported : .policyDenied }
+        else if found.contains(where: { !$0.supported || $0.source.symlinkTarget != nil }) { state = .unsupported; reason = source.symlinkTarget == nil ? .unsupported : .symlinkChanged }
+        else if found.contains(where: { $0.markerMatches > 1 }) { state = .shadowedManaged; reason = .ambiguous }
+        else if markerCount == 0 { state = .notConfigured; reason = nil }
+        // `.ownedIntact` requires the byte-exact current shape; a marked-but-
+        // wrong-shape entry reports `.ownedDrifted` so a re-connect rewrites it.
+        else if let manifest, found.indices.allSatisfy({ found[$0].markerMatches == 1 && found[$0].exactMatches == 1 && manifest.proving(entries[$0].selector, at: scope.path) != nil }) { state = .ownedIntact; reason = nil }
+        else if manifest != nil { state = .ownedDrifted; reason = .sourceChanged }
+        else { state = .externalCandidate; reason = nil }
         let inspection = ExactEntryInspection(state: state, source: source, matchingEntryCount: markerCount, reason: reason)
-        return .init(installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, state: IntegrationInstallationDiscoveryState(rawValue: state.rawValue) ?? .unsupported, inspection: inspection, compatibility: compatibility, affectedCapabilities: [CodexCLIIntegration.configurationCapability], safeToMutate: state == .notConfigured && compatibility == .compatible && policy.allowsMutation)
+        return .init(installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, state: IntegrationInstallationDiscoveryState(rawValue: state.rawValue) ?? .unsupported, inspection: inspection, compatibility: compatibility, affectedCapabilities: [CodexCLIIntegration.configurationCapability], safeToMutate: state == .notConfigured && compatible)
     }
     public func makePlan(id: String, installationID: IntegrationInstanceID, scope: IntegrationInstallationScope, helperPath: URL, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationPlan {
         let helperID = CodexCLIIntegration.helperID(for: helperPath)
         let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: installationID, helperID: helperID, executablePath: helperExecutablePath)
         let artifact = OwnershipManifestArtifactReceipt(path: helperPath.path, kind: .generatedFile, fingerprint: ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), createdAt: now)
         let plan = coordinator.makePlan(id: id, installationID: installationID, product: CodexCLIIntegration.productNamespace, integrationMode: CodexCLIIntegration.integrationMode, scope: scope, selectors: selectors(helperPath: helperPath), snapshot: snapshot, policy: policy, now: now)
-        guard CodexHooksConfigurationContract.accepts(snapshot), isTOMLSafeHelperPath(helperPath), runtimeContract.isProven(installationID: installationID, helperID: helperID) else { return copied(plan, artifacts: [artifact], entries: isTOMLSafeHelperPath(helperPath) ? plan.entries : [], compatibility: .interfaceChanged, manualRemedy: "Verify the reviewed hooks-v1 fixture, TOML-safe helper path, and provisioned Codex observation helper contract manually; no configuration was applied.") }
-        let preflight = plan.entries.map { ExactEntryEditor.inspect(at: scope.url, selector: $0) }
-        guard preflight.allSatisfy({ $0.matchingEntryCount == 0 }) && !CodexHooksConfigurationContract.hasExistingEventDefinition(at: scope.url) else {
+        guard CodexHooksConfigurationContract.accepts(snapshot), isSafeHelperPath(helperPath), runtimeContract.isProven(installationID: installationID, helperID: helperID) else { return copied(plan, artifacts: [artifact], entries: isSafeHelperPath(helperPath) ? plan.entries : [], compatibility: .interfaceChanged, manualRemedy: "Verify the reviewed hooks-v1 fixture, JSON-safe helper path, and provisioned Codex observation helper contract manually; no configuration was applied.") }
+        // A single owned marker per event may coexist with unrelated hooks; only
+        // a duplicated own-marker (>1) is genuine ambiguity we refuse to touch.
+        let preflight = plannedEntries(helperPath: helperPath).map { ClaudeJSONHookEditor.inspect(at: scope.url, entry: $0) }
+        guard preflight.allSatisfy({ $0.markerMatches <= 1 && $0.supported }) else {
             return copied(plan, artifacts: [artifact], compatibility: .incompatible, manualRemedy: "Duplicate or externally owned Codex Hook entries require manual review; no configuration was applied.")
         }
         return copied(plan, artifacts: [artifact])
@@ -398,35 +401,92 @@ public final class CodexCLIInstallationCoordinator: @unchecked Sendable {
     public func approve(_ plan: IntegrationInstallationPlan, personIdentifier: String, at date: Date = Date()) throws -> IntegrationInstallationApproval { try coordinator.approve(plan, personIdentifier: personIdentifier, at: date) }
     public func apply(_ approval: IntegrationInstallationApproval, currentSnapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationApplyResult {
         let plan = approval.plan
-        guard plan.artifacts.count == 1, let artifact = plan.artifacts.first,
-              runtimeContract.isProven(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: URL(fileURLWithPath: artifact.path))) else { return .init(status: .blocked, reason: .notManifestProven) }
+        guard plan.action == .enable, plan.isFresh(at: now), plan.compatibility == .compatible, policy.allowsMutation,
+              currentSnapshot.productNamespace == CodexCLIIntegration.productNamespace,
+              currentSnapshot.grants(WellKnownCapability.configuration, direction: .configure),
+              let artifact = plan.artifacts.first else { return .init(status: .blocked, reason: .policyDenied) }
         let helperPath = URL(fileURLWithPath: artifact.path)
-        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: plan.installationID, helperID: CodexCLIIntegration.helperID(for: helperPath), executablePath: helperExecutablePath)
-        let before = ExactEntryEditor.snapshot(at: helperPath)
-        guard before.symlinkTarget == nil else { return .init(status: .blocked, reason: .symlinkChanged) }
-        let existed = FileManager.default.fileExists(atPath: helperPath.path)
-        if existed { guard before.fingerprint.content == artifact.fingerprint, before.fingerprint.permissionBits == 0o700 else { return .init(status: .blocked, reason: .sourceChanged) } }
-        else { do { try writePrivateHelper(bootstrap, to: helperPath) } catch { return .init(status: .unavailable, reason: .unavailable) } }
-        let result = coordinator.apply(approval, currentSnapshot: currentSnapshot, policy: policy, probe: { ExactEntryEditor.snapshot(at: helperPath).symlinkTarget == nil && ExactEntryEditor.snapshot(at: helperPath).fingerprint.content == artifact.fingerprint && ExactEntryEditor.snapshot(at: helperPath).fingerprint.permissionBits == 0o700 }, now: now)
-        if result.manifest == nil && !existed { try? FileManager.default.removeItem(at: helperPath) }
-        return result
+        let helperID = CodexCLIIntegration.helperID(for: helperPath)
+        guard !plan.entries.isEmpty, plan.entries.allSatisfy({ $0.marker.hasPrefix(CodexCLIIntegration.hookMarkerPrefix) }),
+              runtimeContract.isProven(installationID: plan.installationID, helperID: helperID) else { return .init(status: .blocked, reason: .notManifestProven) }
+        var receipts: [(receipt: ExactEntryReceipt, event: CodexHookName)] = []
+        var expected = plan.sourceFingerprint
+        do {
+            for selector in plan.entries {
+                guard let event = CodexHookName(documentedName: selector.key.replacingOccurrences(of: Self.keyPrefix, with: "")) else { throw ClaudeJSONHookEditor.EditorError.notManifestProven }
+                let entry = ClaudeJSONHookEditor.Entry(selector: selector, event: event.rawValue, helperPath: helperPath.path)
+                let receipt = try ClaudeJSONHookEditor.add(entry: entry, at: URL(fileURLWithPath: plan.sourcePath), expected: expected, policy: policy, now: now)
+                receipts.append((receipt, event)); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: plan.sourcePath)).fingerprint
+            }
+        } catch let error as ClaudeJSONHookEditor.EditorError {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            return .init(status: .blocked, reason: mapJSONError(error))
+        } catch {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            return .init(status: .unavailable, reason: .unavailable)
+        }
+        let bootstrap = CodexCLIIntegration.helperBootstrap(installationID: plan.installationID, helperID: helperID, executablePath: helperExecutablePath)
+        let helperExisted = FileManager.default.fileExists(atPath: helperPath.path)
+        do {
+            let helperSource = ExactEntryEditor.snapshot(at: helperPath)
+            if helperSource.symlinkTarget != nil { throw ClaudeJSONHookEditor.EditorError.symlink }
+            if helperExisted {
+                guard helperSource.fingerprint.content == artifact.fingerprint, helperSource.fingerprint.permissionBits == 0o700 else { throw ClaudeJSONHookEditor.EditorError.sourceChanged }
+            } else {
+                try writePrivateHelper(bootstrap, to: helperPath)
+            }
+        } catch let error as ClaudeJSONHookEditor.EditorError {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            if !helperExisted { try? FileManager.default.removeItem(at: helperPath) }
+            return .init(status: .blocked, reason: mapJSONError(error))
+        } catch {
+            rollbackJSON(receipts, sourcePath: plan.sourcePath, now: now)
+            if !helperExisted { try? FileManager.default.removeItem(at: helperPath) }
+            return .init(status: .unavailable, reason: .unavailable)
+        }
+        let source = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: plan.sourcePath))
+        let evidence = OwnershipManifestVerificationEvidence(verifiedAt: now, reread: true, probeSucceeded: true, sourceFingerprint: source.fingerprint, capabilityIDs: plan.affectedCapabilities)
+        let manifest = OwnershipManifest(id: plan.manifestID, installationID: plan.installationID.rawValue, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: receipts.map { $0.receipt }, artifacts: [artifact], productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, policyFingerprint: plan.policyFingerprint, verification: evidence, createdAt: now, updatedAt: now)
+        let installation = IntegrationInstallation(id: plan.installationID, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, manifestID: manifest.id, lifecycle: .enabled, enabledIntent: true, capabilities: plan.affectedCapabilities, health: nil)
+        return .init(status: .applied, manifest: manifest, installation: installation)
+    }
+
+    private func rollbackJSON(_ receipts: [(receipt: ExactEntryReceipt, event: CodexHookName)], sourcePath: String, now: Date) {
+        var current = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: sourcePath)).fingerprint
+        for item in receipts.reversed() {
+            guard let removed = try? ClaudeJSONHookEditor.remove(receipt: item.receipt, event: item.event.rawValue, at: URL(fileURLWithPath: sourcePath), expected: current, now: now) else { continue }
+            current = removed.sourceFingerprint
+        }
+    }
+
+    private func mapJSONError(_ error: ClaudeJSONHookEditor.EditorError) -> ExactEntryFailureReason {
+        switch error { case .sourceChanged: .sourceChanged; case .symlink: .symlinkChanged; case .policyDenied: .policyDenied; case .unsupported, .commentsInJSON: .unsupported; case .ambiguous: .ambiguous; case .notManifestProven: .notManifestProven; case .verificationFailed: .verificationFailed; case .unavailable, .invalidUTF8, .malformed: .unavailable }
     }
     public func makeRemovalPlan(id: String, installationID: IntegrationInstanceID, manifest: OwnershipManifest, snapshot: NegotiationSnapshot, policy: ExactEntryWritePolicy = .allowed, now: Date = Date()) -> IntegrationInstallationPlan { coordinator.makeRemovalPlan(id: id, installationID: installationID, manifest: manifest, snapshot: snapshot, policy: policy, now: now) }
     public func remove(_ approval: IntegrationInstallationApproval, manifest: OwnershipManifest, now: Date = Date()) -> OwnershipManifestRemovalReport {
-        // The shared coordinator removes artifacts even when a source entry
-        // drifted. Keep the private launcher until every manifest-proven hook
-        // was removed, exactly as the Claude lifecycle does.
+        // Keep the private launcher until every manifest-proven hook was
+        // removed, exactly as the Claude lifecycle does; delete any event key we
+        // empty so no `"Event": []` is left behind.
         let plan = approval.plan
         guard plan.action == .remove, plan.isFresh(at: now), plan.compatibility == .compatible, plan.sourcePath == manifest.sourcePath else { return .init(outcome: .notRemoved, reason: .sourceChanged, manifest: manifest) }
         var expected = plan.sourceFingerprint; var removed: [ExactEntrySelector] = []; var residual: [ExactEntrySelector] = []
-        for receipt in manifest.entries { do { _ = try ExactEntryEditor.remove(receipt: receipt, at: URL(fileURLWithPath: receipt.path), expected: expected, now: now); removed.append(receipt.selector); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: receipt.path)).fingerprint } catch { residual.append(receipt.selector) } }
+        for receipt in manifest.entries {
+            guard let event = CodexHookName(documentedName: receipt.selector.key.replacingOccurrences(of: Self.keyPrefix, with: "")) else { residual.append(receipt.selector); continue }
+            do {
+                _ = try ClaudeJSONHookEditor.remove(receipt: receipt, event: event.rawValue, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now)
+                removed.append(receipt.selector); expected = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: manifest.sourcePath)).fingerprint
+                if let cleaned = try? ClaudeJSONHookEditor.removeEmptyEventKey(event: event.rawValue, at: URL(fileURLWithPath: manifest.sourcePath), expected: expected, now: now) { expected = cleaned }
+            } catch { residual.append(receipt.selector) }
+        }
         var removedArtifacts: [String] = []; var notRemovedArtifacts: [String] = []
         if residual.isEmpty { for artifact in manifest.artifacts { let current = ExactEntryEditor.snapshot(at: URL(fileURLWithPath: artifact.path)); guard current.symlinkTarget == nil, current.fingerprint.content == artifact.fingerprint else { notRemovedArtifacts.append(artifact.path); continue }; do { try FileManager.default.removeItem(atPath: artifact.path); removedArtifacts.append(artifact.path) } catch { notRemovedArtifacts.append(artifact.path) } } } else { notRemovedArtifacts = manifest.artifacts.map(\.path) }
         let complete = residual.isEmpty && notRemovedArtifacts.isEmpty
         return .init(outcome: complete ? .removed : ((removed.isEmpty && removedArtifacts.isEmpty) ? .notRemoved : .partialWithResidual), removedEntries: removed, residualEntries: residual, removedArtifacts: removedArtifacts, notRemovedArtifacts: notRemovedArtifacts, reason: complete ? nil : .sourceChanged, manifest: manifest.replacing(lifecycle: complete ? .removed : .partial, at: now))
     }
 
-    private func isTOMLSafeHelperPath(_ path: URL) -> Bool { !path.path.unicodeScalars.contains { $0.value < 0x20 || $0 == "\"" || $0 == "\\" } }
+    /// A helper path safe to embed in the JSON command string and the shell
+    /// double-quoting: no control characters, quotes, or backslashes.
+    private func isSafeHelperPath(_ path: URL) -> Bool { !path.path.unicodeScalars.contains { $0.value < 0x20 || $0 == "\"" || $0 == "\\" } }
     private func writePrivateHelper(_ bootstrap: Data, to path: URL) throws { let fm = FileManager.default; guard fm.fileExists(atPath: path.deletingLastPathComponent().path), ExactEntryEditor.snapshot(at: path).symlinkTarget == nil else { throw ExactEntryEditorError.unavailable }; try bootstrap.write(to: path, options: .atomic); try fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: path.path); let snapshot = ExactEntryEditor.snapshot(at: path); guard snapshot.symlinkTarget == nil, snapshot.fingerprint.content == ExactEntryFingerprint(ExactEntryDigest.value(bootstrap)), snapshot.fingerprint.permissionBits == 0o700 else { throw ExactEntryEditorError.verificationFailed } }
     private func copied(_ plan: IntegrationInstallationPlan, artifacts: [OwnershipManifestArtifactReceipt], entries: [ExactEntrySelector]? = nil, compatibility: IntegrationInstallationCompatibility? = nil, manualRemedy: String? = nil) -> IntegrationInstallationPlan { .init(id: plan.id, installationID: plan.installationID, action: plan.action, product: plan.product, integrationMode: plan.integrationMode, scope: plan.scope, sourcePath: plan.sourcePath, entries: entries ?? plan.entries, artifacts: artifacts, compatibility: compatibility ?? plan.compatibility, productVersion: plan.productVersion, interfaceVersion: plan.interfaceVersion, policyFingerprint: plan.policyFingerprint, sourceFingerprint: plan.sourceFingerprint, permissionSummary: plan.permissionSummary, affectedCapabilities: plan.affectedCapabilities, capabilityEvidence: plan.capabilityEvidence, rollback: plan.rollback, manualRemedy: manualRemedy ?? plan.manualRemedy, nonEffects: plan.nonEffects, createdAt: plan.createdAt, expiresAt: plan.expiresAt, manifestID: plan.manifestID) }
 }
