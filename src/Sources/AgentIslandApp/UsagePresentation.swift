@@ -77,9 +77,21 @@ final class UsagePresentationModel: ObservableObject {
     func refresh(now: Date = Date()) { recompute(now: now) }
 
     private func recompute(now: Date) {
+        // Only republish when the rendered value actually changes. `@Published`
+        // fires `objectWillChange` on EVERY assignment regardless of equality,
+        // and the overlay subscribes to this model's `objectWillChange` to
+        // drive `renderIfVisible()` — which itself calls `selectActiveSession`
+        // / `refresh` (→ `recompute`). An unconditional assign here therefore
+        // closes an infinite render loop that pegs the main thread ("not
+        // responding") whenever the overlay is actually visible. `Rendered` is
+        // `Equatable`, so the guard breaks the cycle once state is stable.
+        let next = computeRendered(now: now)
+        if next != rendered { rendered = next }
+    }
+
+    private func computeRendered(now: Date) -> Rendered {
         guard preferences.isVisible else {
-            rendered = Rendered(state: .disabled, snapshot: nil, valueKind: preferences.valueKind, unavailableReason: "Usage display is off.")
-            return
+            return Rendered(state: .disabled, snapshot: nil, valueKind: preferences.valueKind, unavailableReason: "Usage display is off.")
         }
         let eligible = sources.values.filter(\.isLiveCompatible)
         let matching: [Source]
@@ -88,14 +100,12 @@ final class UsagePresentationModel: ObservableObject {
             matching = eligible.filter { $0.snapshot.provider == provider }
         case .followSelectedActiveSession:
             guard let selectedActiveSession else {
-                rendered = Rendered(state: .unavailable, snapshot: nil, valueKind: preferences.valueKind, unavailableReason: "No single selected active Agent Session has eligible Usage Snapshot evidence.")
-                return
+                return Rendered(state: .unavailable, snapshot: nil, valueKind: preferences.valueKind, unavailableReason: "No single selected active Agent Session has eligible Usage Snapshot evidence.")
             }
             matching = eligible.filter { $0.sessionIdentity == selectedActiveSession }
         }
         guard matching.count == 1, let source = matching.first else {
-            rendered = Rendered(state: .unavailable, snapshot: nil, valueKind: preferences.valueKind, unavailableReason: matching.isEmpty ? "The selected source is unavailable." : "More than one source matched; select a preferred provider.")
-            return
+            return Rendered(state: .unavailable, snapshot: nil, valueKind: preferences.valueKind, unavailableReason: matching.isEmpty ? "The selected source is unavailable." : "More than one source matched; select a preferred provider.")
         }
         let snapshot = source.snapshot
         let state: UsageSnapshotState
@@ -106,7 +116,7 @@ final class UsagePresentationModel: ObservableObject {
         } else {
             state = .fresh
         }
-        rendered = Rendered(state: state, snapshot: snapshot, valueKind: preferences.valueKind, unavailableReason: nil)
+        return Rendered(state: state, snapshot: snapshot, valueKind: preferences.valueKind, unavailableReason: nil)
     }
 }
 
@@ -168,7 +178,12 @@ final class ProviderQuotaBoardModel: ObservableObject {
     /// this from the same refresh affordance the compact cluster's `⟳` glyph
     /// (AC-1.4-c) and the popover's `⟳` (AC-1.12-a) already imply.
     func refresh(now: Date = Date()) {
-        board = port.currentBoard(at: now)
+        // Same guard as `UsagePresentationModel.recompute`: the overlay drives
+        // `renderIfVisible()` off this model's `objectWillChange`, so publish
+        // only on a real change to keep an equal board from ever re-triggering
+        // a render. `ProviderQuotaBoard` is `Equatable`.
+        let next = port.currentBoard(at: now)
+        if next != board { board = next }
     }
 
     /// Convenience passthrough so a SwiftUI view can write

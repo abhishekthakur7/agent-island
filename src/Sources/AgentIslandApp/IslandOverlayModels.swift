@@ -164,15 +164,66 @@ struct IslandOverlayGeometry: Equatable {
     let isBuiltIn: Bool
     let protectedGap: CGFloat
 
-    static func make(for screen: NSScreen, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default, shortcutAnnouncement: String? = nil) -> IslandOverlayGeometry {
-        let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
-        return make(usableFrame: screen.visibleFrame, isBuiltIn: CGDisplayIsBuiltin(CGDirectDisplayID(number)) != 0, presentation: presentation, settings: settings, shortcutAnnouncement: shortcutAnnouncement)
+    /// Physical-notch geometry for a built-in display, in global screen
+    /// coordinates. `gap` is the real notch width (the span between the two
+    /// auxiliary menu-bar areas that flank it); `physicalFrame` is
+    /// `NSScreen.frame` — the whole display including the menu-bar band that
+    /// `visibleFrame` excludes. Only the collapsed pill uses this: it must sit
+    /// at the physical top and straddle the notch, not float below the menu
+    /// bar where a `visibleFrame` anchor puts it.
+    struct NotchMetrics: Equatable {
+        let physicalFrame: CGRect
+        let gap: CGFloat
     }
 
-    static func make(usableFrame: CGRect, isBuiltIn: Bool, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default, shortcutAnnouncement: String? = nil) -> IslandOverlayGeometry {
+    static func make(for screen: NSScreen, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default, shortcutAnnouncement: String? = nil) -> IslandOverlayGeometry {
+        let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+        let isBuiltIn = CGDisplayIsBuiltin(CGDirectDisplayID(number)) != 0
+        return make(
+            usableFrame: screen.visibleFrame,
+            isBuiltIn: isBuiltIn,
+            presentation: presentation,
+            settings: settings,
+            shortcutAnnouncement: shortcutAnnouncement,
+            notch: notchMetrics(for: screen, isBuiltIn: isBuiltIn)
+        )
+    }
+
+    /// The physical notch, or `nil` when the display has none (external, or a
+    /// built-in without a notch). `safeAreaInsets.top > 0` detects a notch;
+    /// the auxiliary top areas measure its width. Both are macOS 12+.
+    static func notchMetrics(for screen: NSScreen, isBuiltIn: Bool) -> NotchMetrics? {
+        guard isBuiltIn, screen.safeAreaInsets.top > 0 else { return nil }
+        let gap: CGFloat
+        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            gap = max(0, right.minX - left.maxX)
+        } else {
+            // A notch is present (safe-area inset > 0) but the auxiliary areas
+            // are unavailable — fall back to a typical MacBook notch width
+            // rather than dropping the notch layout entirely.
+            gap = 200
+        }
+        guard gap > 0 else { return nil }
+        return NotchMetrics(physicalFrame: screen.frame, gap: gap)
+    }
+
+    static func make(usableFrame: CGRect, isBuiltIn: Bool, presentation: IslandOverlayPresentation, settings: AtlasDisplayPreferences = .default, shortcutAnnouncement: String? = nil, notch: NotchMetrics? = nil) -> IslandOverlayGeometry {
         let expanded = presentation == .expanded || presentation == .focused
         let normalized = settings.normalized()
         let scale = normalized.contentSize.scale
+
+        // Collapsed pill on a built-in NOTCHED display: anchor to the physical
+        // screen top so the two wings flank the real notch instead of floating
+        // below the menu bar (which a `visibleFrame` anchor causes), and size
+        // each wing wide enough that the agent name / "N Sessions" clear the
+        // notch without truncating. Expanded/focused still drops below the menu
+        // bar via the shared path below. `notch` is only ever non-nil from
+        // `make(for:)` on a real notched screen, so every existing caller/test
+        // that omits it keeps the exact prior behavior.
+        if let notch, isBuiltIn, !expanded {
+            return makeCollapsedNotch(notch: notch, scale: scale, settings: normalized)
+        }
+
         // Expanded presentation reserves deterministic room for a sourced
         // completion card while still respecting the user's maximum panel
         // height. The card height therefore changes real live geometry.
@@ -198,6 +249,33 @@ struct IslandOverlayGeometry: Equatable {
         return IslandOverlayGeometry(
             frame: frame,
             hitRegions: [CGRect(x: 0, y: 0, width: wingWidth, height: size.height), CGRect(x: wingWidth + gap, y: 0, width: wingWidth, height: size.height)],
+            isBuiltIn: true,
+            protectedGap: gap
+        )
+    }
+
+    /// Collapsed notch layout: a pill pinned to the physical top, split into
+    /// two content wings that flank the notch `gap` (which aligns with the
+    /// horizontally-centered physical notch). The collapsed view's flaps fill
+    /// each wing (`maxWidth: .infinity`), so a generous wing width is what
+    /// stops the agent name / "N Sessions" from truncating.
+    private static func makeCollapsedNotch(notch: NotchMetrics, scale: CGFloat, settings: AtlasDisplayPreferences) -> IslandOverlayGeometry {
+        let height = min(settings.maximumPanelHeight, 56 * scale)
+        let desiredWing = 200 * scale
+        let gap = notch.gap
+        // Never exceed the display; keep a small margin from each screen edge.
+        let maxWidth = max(gap + 2, notch.physicalFrame.width - 24)
+        let width = min(maxWidth, gap + 2 * desiredWing)
+        let x = notch.physicalFrame.midX - width / 2
+        let y = notch.physicalFrame.maxY - height
+        let frame = CGRect(x: x, y: y, width: width, height: height).integral
+        let wingWidth = max(1, (frame.width - gap) / 2)
+        return IslandOverlayGeometry(
+            frame: frame,
+            hitRegions: [
+                CGRect(x: 0, y: 0, width: wingWidth, height: frame.height),
+                CGRect(x: wingWidth + gap, y: 0, width: wingWidth, height: frame.height)
+            ],
             isBuiltIn: true,
             protectedGap: gap
         )
