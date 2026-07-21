@@ -666,14 +666,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Reachable composition API for the Integration Installation flow. The
     /// current Settings surface does not yet provide installation controls;
     /// its future flow must call this only with newly verified installation,
-    /// manifest, helper, snapshot, and Keychain credential evidence.
+    /// manifest, helper, snapshot, and derived credential evidence.
     @discardableResult
     func activateClaudeActionInstallation(
         installation: IntegrationInstallation,
         manifest: OwnershipManifest,
         helperID: String,
         snapshot: NegotiationSnapshot,
-        credentialStore: any ClaudeHookCredentialStore = KeychainClaudeHookCredentialStore()
+        credentialStore: any ClaudeHookCredentialStore = DerivedClaudeHookCredentialStore()
     ) async -> Bool {
         await claudeActionLifecycle.activate(
             installation: installation,

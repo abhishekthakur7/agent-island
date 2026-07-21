@@ -44,8 +44,8 @@ public enum ClaudeCodeIntegration {
     public static let helperExecutablePath = "/Applications/Agent Island.app/Contents/MacOS/ClaudeHookHelper"
     public static let helperBootstrap = Data("#!/bin/sh\nset -eu\nexec \"/Applications/Agent Island.app/Contents/MacOS/ClaudeHookHelper\"\n".utf8)
 
-    /// The launcher carries only non-secret owner labels. The helper resolves
-    /// its credential from the app-owned Keychain service at runtime.
+    /// The launcher carries only non-secret owner labels. The helper derives
+    /// its credential from those labels plus a compiled-in salt at runtime.
     public static func helperBootstrap(installationID: IntegrationInstanceID, helperID: String, executablePath: String = helperExecutablePath) -> Data {
         let quote: (String) -> String = { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         return Data("#!/bin/sh\nset -eu\nexport AGENT_ISLAND_INSTALLATION_ID=\(quote(installationID.rawValue))\nexport AGENT_ISLAND_HELPER_ID=\(quote(helperID))\nexec \(quote(executablePath))\n".utf8)

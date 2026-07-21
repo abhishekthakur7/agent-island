@@ -9,9 +9,6 @@ import Darwin
 #elseif canImport(Glibc)
 import Glibc
 #endif
-#if canImport(Security)
-import Security
-#endif
 
 /// Framed local IPC is deliberately transport-agnostic so the helper can be
 /// exercised without a live socket. Production composition supplies the
@@ -29,9 +26,9 @@ public enum ClaudeHookHelperError: Error, Codable, Equatable, Sendable {
     case credentialInvalid
 }
 
-/// The app provisions one short-lived Keychain generic-password entry per
-/// installation/helper tuple. The documented hook launcher never contains the
-/// secret; a missing, wrong, or rotated entry fails closed at helper startup.
+/// The app and the separate helper binary independently recompute the same
+/// per-installation/helper secret at runtime. The documented hook launcher
+/// never contains the secret; an empty value fails closed at helper startup.
 public protocol ClaudeHookCredentialStore: Sendable {
     func secret(for installationID: IntegrationInstanceID, helperID: String) -> Data?
 }
@@ -49,29 +46,25 @@ public struct InMemoryClaudeHookCredentialStore: ClaudeHookCredentialStore, Send
     }
 }
 
-#if canImport(Security)
-public struct KeychainClaudeHookCredentialStore: ClaudeHookCredentialStore, Sendable {
-    public static let service = "com.agent-island.claude-hooks"
+/// The production credential for this single-user, personal app. Both the app
+/// and the separate helper binary derive the identical secret from the public
+/// installation/helper identity plus a compiled-in salt, so no cross-process
+/// Keychain ACL prompt can hang the install-time helper probe. The value is
+/// deliberately NOT a spoofing defense — anyone who can read the binary can
+/// recompute it. It keeps the frame HMAC's integrity and identity binding
+/// intact; the real trust boundary remains the 0600 app-owned observation
+/// socket that `HookObservationServer` binds and owner-checks.
+public struct DerivedClaudeHookCredentialStore: ClaudeHookCredentialStore, Sendable {
+    private static let salt = Data("com.agent-island.claude-hooks.derived.v1".utf8)
     public init() {}
     public func secret(for installationID: IntegrationInstanceID, helperID: String) -> Data? {
-        let account = "\(installationID.rawValue)/\(helperID)"
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: Self.service, kSecAttrAccount: account, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-        return (item as? Data).flatMap { $0.isEmpty ? nil : $0 }
-    }
-
-    public func save(secret: Data, for installationID: IntegrationInstanceID, helperID: String) throws {
-        guard !secret.isEmpty else { throw ClaudeHookHelperError.credentialInvalid }
-        let account = "\(installationID.rawValue)/\(helperID)"
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: Self.service, kSecAttrAccount: account]
-        let attributes: [CFString: Any] = [kSecValueData: secret]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound { let add: [CFString: Any] = query.merging(attributes) { _, new in new }.merging([kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]) { _, new in new }; guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw ClaudeHookHelperError.credentialInvalid } }
-        else if status != errSecSuccess { throw ClaudeHookHelperError.credentialInvalid }
+        var material = Data(installationID.rawValue.utf8)
+        material.append(0)
+        material.append(Data(helperID.utf8))
+        let mac = HMAC<SHA256>.authenticationCode(for: material, using: SymmetricKey(data: Self.salt))
+        return Data(mac)
     }
 }
-#endif
 
 public struct ClaudeLocalEndpoint: Codable, Hashable, Sendable {
     public let path: String

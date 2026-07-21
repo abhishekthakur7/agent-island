@@ -19,7 +19,7 @@ import SessionDomain
         func makeRuntime() -> (CursorHooksAdapter, CursorHooksReceiver, SessionStore) {
             let store = SessionStore()
             let runtime = ApplicationRuntime(store: store, idGenerator: { UUID().uuidString }, clock: { Date(timeIntervalSince1970: 400) })
-            let adapter = CursorHooksAdapter(port: runtime, integrationInstanceID: installation, helperID: "ab138-helper", authenticator: auth, evidence: .init(productVersion: "1.7.2", reviewedCursorVersions: ["1.7.2"]))
+            let adapter = CursorHooksAdapter(port: runtime, integrationInstanceID: installation, helperID: "ab138-helper", authenticator: auth, evidence: .init(productVersion: "1.7.2"))
             return (adapter, CursorHooksReceiver(adapter: adapter), store)
         }
         func frame(_ payload: Data, nonce: String, owner: IntegrationInstanceID = installation, helper: String = "ab138-helper") -> Data? {
@@ -72,12 +72,21 @@ import SessionDomain
                 let outcome = await negativeReceiver.receive(frame: oversizedFrame())
                 let empty = await negativeStore.workingSetProjections().isEmpty
                 passed = passed && rejection(outcome) == .oversizedEnvelope && empty
-            case "malformed-duplicate-key", "incompatible-cursor-version":
+            case "malformed-duplicate-key":
                 _ = await negativeAdapter.negotiate()
                 guard let objectPayload, let wrapped = frame(objectPayload, nonce: "negative-\(name)") else { passed = false; continue }
                 let outcome = await negativeReceiver.receive(frame: wrapped)
                 let empty = await negativeStore.workingSetProjections().isEmpty
-                passed = passed && rejection(outcome) == (name == "incompatible-cursor-version" ? .unsupportedVersion : .malformedEnvelope) && empty
+                passed = passed && rejection(outcome) == .malformedEnvelope && empty
+            case "incompatible-cursor-version":
+                // Any installed Cursor version is accepted now: a newer
+                // cursor_version is delivered, and the private email is never
+                // retained in the projection.
+                _ = await negativeAdapter.negotiate()
+                guard let objectPayload, let wrapped = frame(objectPayload, nonce: "negative-\(name)") else { passed = false; continue }
+                let outcome = await negativeReceiver.receive(frame: wrapped)
+                let noEmail = !(await negativeStore.workingSetProjections()).description.contains("private@example")
+                passed = passed && isDelivered(outcome) && noEmail
             case "weak-duplicate-collision-gap":
                 _ = await negativeAdapter.negotiate()
                 let start = frame(payload("sessionStart", "fixture-a", "g1"), nonce: "collision-start")!
@@ -130,7 +139,7 @@ import SessionDomain
             let helper = root.appendingPathComponent("helper"); try Data("#!/bin/sh\nexit 0\n".utf8).write(to: helper); try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
             let scope = IntegrationInstallationScope(kind: .customPath, identifier: "test-ab138", path: hooks)
             let installer = CursorHooksInstallationCoordinator(runtimeContract: CursorFixtureHookRuntimeContract())
-            let proof = CursorHooksContractEvidence(productVersion: "1.7.2", reviewedCursorVersions: ["1.7.2"])
+            let proof = CursorHooksContractEvidence(productVersion: "1.7.2")
             let plan = installer.makePlan(id: "ab138", installationID: installation, scope: scope, helperPath: helper, evidence: proof)
             if let manifest = installer.apply(installer.approve(plan, personIdentifier: "self-check"), helperPath: helper, evidence: proof).manifest {
                 passed = passed && manifest.verification?.probeSucceeded == true && installer.verify(manifest, helperPath: helper).status == .applied && installer.remove(manifest, helperPath: helper).status == .applied

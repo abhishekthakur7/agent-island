@@ -25,8 +25,8 @@ struct CodexHookHelperMain {
         guard (try? CodexHookEnvelope.decode(body)) != nil else { exit(65) }
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
         let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent(CodexCLIIntegration.helperEndpointFileName), appOwnedRoot: root)
-        #if canImport(Security) && canImport(Network)
-        guard let secret = KeychainClaudeHookCredentialStore().secret(for: .init(installation), helperID: helper), !secret.isEmpty else { exit(77) }
+        #if canImport(Network)
+        guard let secret = DerivedClaudeHookCredentialStore().secret(for: .init(installation), helperID: helper), !secret.isEmpty else { exit(77) }
         let authenticator = ClaudeIPCAuthenticator(secret: secret)
         guard authenticator.isUsable else { exit(77) }
         let message = ClaudeHookIPCMessage(installationID: .init(installation), helperID: helper, nonce: UUID().uuidString, payload: body, issuedAt: Date(), authenticator: authenticator)

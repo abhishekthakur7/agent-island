@@ -23,11 +23,11 @@ struct CursorHookHelperMain {
         // Decode locally only to reject malformed/oversize input before it
         // crosses IPC.  It is neither logged nor retained by this process.
         guard CursorHookEnvelope.isValid(body) else { return }
-        #if canImport(Security) && canImport(Network)
+        #if canImport(Network)
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
         let endpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("cursor-hooks.sock"), appOwnedRoot: root)
         let installationID = IntegrationInstanceID(installation)
-        guard let secret = KeychainClaudeHookCredentialStore().secret(for: installationID, helperID: helper), !secret.isEmpty else {
+        guard let secret = DerivedClaudeHookCredentialStore().secret(for: installationID, helperID: helper), !secret.isEmpty else {
             if isProbe { exit(77) }
             return
         }

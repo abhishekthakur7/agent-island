@@ -7,7 +7,7 @@ import ClaudeCodeAdapter
 
 final class CursorHooksAdapterTests: XCTestCase {
     private let installation = IntegrationInstanceID("cursor-installation")
-    private let evidence = CursorHooksContractEvidence(productVersion: "1.7.2", reviewedCursorVersions: ["1.7.2"])
+    private let evidence = CursorHooksContractEvidence(productVersion: "1.7.2")
     private let auth = ClaudeIPCAuthenticator(secret: "cursor-fixture-secret")
     private func hook(_ name: String, conversation: String = "conversation", generation: String = "generation", extra: String = "") -> Data {
         Data("{\"conversation_id\":\"\(conversation)\",\"generation_id\":\"\(generation)\",\"hook_event_name\":\"\(name)\",\"cursor_version\":\"1.7.2\"\(extra)}".utf8)
@@ -67,10 +67,14 @@ final class CursorHooksAdapterTests: XCTestCase {
     }
 
     func testMalformedVersionPrivacyAndAttentionAreFailOpen() async {
-        let (port, _) = runtime(); let subject = adapter(port); _ = await subject.negotiate()
+        let (port, store) = runtime(); let subject = adapter(port); _ = await subject.negotiate()
         XCTAssertEqual(reason(await subject.receiveFixture(Data("bad".utf8))), .malformedEnvelope)
         XCTAssertEqual(reason(await subject.receiveFixture(Data(repeating: 0, count: CursorHookEnvelope.maximumBytes + 1))), .oversizedEnvelope)
-        XCTAssertEqual(reason(await subject.receiveFixture(Data("{\"conversation_id\":\"secret\",\"generation_id\":\"turn\",\"hook_event_name\":\"sessionStart\",\"cursor_version\":\"1.7.3\",\"user_email\":\"private@example.test\"}".utf8))), .unsupportedVersion)
+        // Any installed Cursor version is accepted — a differing cursor_version
+        // is delivered (works with whatever is available), and the private
+        // email is never retained in the projection.
+        delivered(await subject.receiveFixture(Data("{\"conversation_id\":\"secret\",\"generation_id\":\"turn\",\"hook_event_name\":\"sessionStart\",\"cursor_version\":\"1.7.3\",\"user_email\":\"private@example.test\"}".utf8)))
+        XCTAssertFalse((await store.workingSetProjections()).description.contains("private@example"))
         let attention = CursorAttentionPresentation(); XCTAssertEqual(attention.dispatchCount, 0); XCTAssertTrue(attention.jumpBackLevel.contains("App-only"))
     }
 

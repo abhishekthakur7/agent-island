@@ -28,12 +28,15 @@ public enum CursorHookName: String, CaseIterable, Codable, Hashable, Sendable {
 
 public struct CursorHooksContractEvidence: Hashable, Sendable, Codable {
     public let productVersion: String; public let interfaceVersion: String
-    public let reviewedCursorVersions: Set<String>; public let observedAt: Date
-    public init(productVersion: String = "unknown", interfaceVersion: String = CursorHooksIntegration.interfaceVersion, reviewedCursorVersions: Set<String> = [], observedAt: Date = Date(timeIntervalSince1970: 0)) {
-        self.productVersion = productVersion; self.interfaceVersion = interfaceVersion; self.reviewedCursorVersions = reviewedCursorVersions; self.observedAt = observedAt
+    public let observedAt: Date
+    public init(productVersion: String = "unknown", interfaceVersion: String = CursorHooksIntegration.interfaceVersion, observedAt: Date = Date(timeIntervalSince1970: 0)) {
+        self.productVersion = productVersion; self.interfaceVersion = interfaceVersion; self.observedAt = observedAt
     }
-    public var isCompatible: Bool { interfaceVersion == CursorHooksIntegration.interfaceVersion && reviewedCursorVersions.contains(productVersion) }
-    public var compatibility: NegotiationCompatibility { isCompatible ? .compatible : (interfaceVersion == CursorHooksIntegration.interfaceVersion ? .unknown : .interfaceChanged) }
+    // Work with whatever Cursor version is installed. The documented hook
+    // contract is identified by interfaceVersion, not by the CLI's release
+    // number, so no specific product version is required.
+    public var isCompatible: Bool { interfaceVersion == CursorHooksIntegration.interfaceVersion }
+    public var compatibility: NegotiationCompatibility { isCompatible ? .compatible : .interfaceChanged }
     public var probe: NegotiationProbeEvidence { .init(compatibility: compatibility, productVersion: productVersion, interfaceVersion: interfaceVersion, setup: isCompatible ? .loaded : .unavailable, observedAt: observedAt) }
 }
 
@@ -144,7 +147,7 @@ public actor CursorHooksAdapter {
     private func normalizeAndDeliver(_ data: Data, at receiptTime: Date = Date()) async -> CursorHookIntakeOutcome {
         let input: CursorEnvelope
         do { input = try CursorHookEnvelope.decode(data) } catch let rejection as CursorHookRejection { return .degraded(.init(rejection, observedAt: receiptTime)) } catch { return .degraded(.init(.malformedEnvelope, observedAt: receiptTime)) }
-        guard evidence.isCompatible, input.version == evidence.productVersion else { return .unavailable(.init(.unsupportedVersion, observedAt: receiptTime)) }
+        guard evidence.isCompatible else { return .unavailable(.init(.unsupportedVersion, observedAt: receiptTime)) }
         guard let snapshot, activationEpoch > 0, snapshot.grants(CursorHooksIntegration.observationCapability, direction: .observe) else { return .degraded(.init(.orphanBeforeActivation, observedAt: receiptTime)) }
         let identity = AgentSessionIdentity(productNamespace: CursorHooksIntegration.productNamespace, nativeSessionID: .init(input.identity.conversationID))
         guard input.name == .sessionStart || activeSessions.contains(identity) else { return .degraded(.init(.orphanBeforeActivation, observedAt: receiptTime)) }

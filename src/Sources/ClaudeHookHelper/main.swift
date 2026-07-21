@@ -19,9 +19,9 @@ struct ClaudeHookHelperMain {
             .appendingPathComponent("Library/Application Support/Agent Island/IPC", isDirectory: true)
         let observationEndpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-hooks.sock"), appOwnedRoot: root)
         let actionEndpoint = ClaudeLocalEndpoint(path: root.appendingPathComponent("claude-actions.sock"), appOwnedRoot: root)
-        #if canImport(Security)
-        guard let runtime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: KeychainClaudeHookCredentialStore(), endpoint: observationEndpoint),
-              let actionRuntime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: KeychainClaudeHookCredentialStore(), endpoint: actionEndpoint) else { exit(77) }
+        #if canImport(Network)
+        guard let runtime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: DerivedClaudeHookCredentialStore(), endpoint: observationEndpoint),
+              let actionRuntime = try? ClaudeHookHelperRuntime(installationID: IntegrationInstanceID(installation), helperID: helper, credentialStore: DerivedClaudeHookCredentialStore(), endpoint: actionEndpoint) else { exit(77) }
         #else
         exit(69)
         #endif

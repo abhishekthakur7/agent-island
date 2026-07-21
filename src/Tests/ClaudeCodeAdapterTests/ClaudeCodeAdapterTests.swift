@@ -31,11 +31,52 @@ final class ClaudeCodeAdapterTests: XCTestCase {
         XCTAssertFalse(ClaudeCodeIntegration.allObservationCapabilities.contains(WellKnownCapability.sessionAction))
     }
 
-    func testVersionEvidenceFailsClosedForUnknownAndNewerVersions() {
-        XCTAssertEqual(ClaudeHooksVersionEvidence(productVersion: "not-a-version").support, .unknown)
-        XCTAssertEqual(ClaudeHooksVersionEvidence(productVersion: "2.0.0").support, .newerThanReviewed)
-        XCTAssertFalse(ClaudeHooksVersionEvidence(productVersion: "2.0.0").isObservationCompatible)
+    func testVersionEvidenceAcceptsAnyProductVersionAndGatesOnlyOnInterface() {
+        // Work with whatever Claude Code version is installed — the documented
+        // contract is identified by interfaceVersion, not the CLI release. Only
+        // an interfaceVersion mismatch is unsupported.
+        XCTAssertEqual(ClaudeHooksVersionEvidence(productVersion: "not-a-version").support, .known)
+        XCTAssertEqual(ClaudeHooksVersionEvidence(productVersion: "2.0.0").support, .known)
+        XCTAssertTrue(ClaudeHooksVersionEvidence(productVersion: "2.0.0").isObservationCompatible)
         XCTAssertEqual(ClaudeHooksVersionEvidence(productVersion: "1.0.0", interfaceVersion: "hooks-v2").support, .unsupported)
+    }
+
+    func testDerivedCredentialIsDeterministicIdentityBoundAndNonEmpty() {
+        let installation = IntegrationInstanceID("agent-island-claude-user-v1")
+        // The app and the separate helper binary each create their own store;
+        // the whole point of the derived credential is that they agree with no
+        // shared Keychain read, so simulate both sides with distinct instances.
+        let appSide = DerivedClaudeHookCredentialStore()
+        let helperSide = DerivedClaudeHookCredentialStore()
+
+        let appSecret = appSide.secret(for: installation, helperID: "helper-a")
+        let helperSecret = helperSide.secret(for: installation, helperID: "helper-a")
+        XCTAssertEqual(appSecret, helperSecret)
+        XCTAssertEqual(appSecret?.count, 32)
+        XCTAssertEqual(appSecret?.isEmpty, false)
+
+        // Identity binding: a different installation or helper yields a
+        // different secret, so a frame minted for one tuple cannot authenticate
+        // against another.
+        XCTAssertNotEqual(appSecret, appSide.secret(for: installation, helperID: "helper-b"))
+        XCTAssertNotEqual(appSecret, appSide.secret(for: IntegrationInstanceID("other"), helperID: "helper-a"))
+    }
+
+    func testDerivedCredentialAuthenticatesHelperFrameEndToEnd() throws {
+        let installation = IntegrationInstanceID("agent-island-claude-user-v1")
+        let store = DerivedClaudeHookCredentialStore()
+        // Helper side builds the frame from its independently derived secret.
+        let helperAuth = ClaudeIPCAuthenticator(secret: store.secret(for: installation, helperID: "helper-a")!)
+        let payload = Data("{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s\",\"event_id\":\"e\",\"sequence\":1}".utf8)
+        let issued = Date(timeIntervalSince1970: 200)
+        let message = ClaudeHookIPCMessage(installationID: installation, helperID: "helper-a", nonce: UUID().uuidString, payload: payload, issuedAt: issued, authenticator: helperAuth)
+
+        // App side re-derives the same secret and accepts the frame; a frame
+        // bound to a different helper fails the identity check.
+        let appAuth = ClaudeIPCAuthenticator(secret: store.secret(for: installation, helperID: "helper-a")!)
+        XCTAssertTrue(message.isAuthenticated(using: appAuth, expectedInstallationID: installation, expectedHelperID: "helper-a", receivedAt: issued))
+        let otherAuth = ClaudeIPCAuthenticator(secret: store.secret(for: installation, helperID: "helper-b")!)
+        XCTAssertFalse(message.isAuthenticated(using: otherAuth, expectedInstallationID: installation, expectedHelperID: "helper-a", receivedAt: issued))
     }
 
     func testAuthenticatedNonceAndBoundedHookDecode() throws {

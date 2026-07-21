@@ -39,7 +39,10 @@ public struct CodexHooksVersionEvidence: Codable, Hashable, Sendable {
     public init(productVersion: String, interfaceVersion: String = CodexCLIIntegration.interfaceVersion, documentedHooksAvailable: Bool, observedAt: Date = Date()) {
         self.productVersion = productVersion; self.interfaceVersion = interfaceVersion; self.documentedHooksAvailable = documentedHooksAvailable; self.observedAt = observedAt
     }
-    public var supported: Bool { documentedHooksAvailable && interfaceVersion == CodexCLIIntegration.interfaceVersion && !productVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    // Work with whatever Codex version is installed. The documented hook
+    // contract is identified by interfaceVersion and the presence of the
+    // documented hooks, not by the CLI's release number.
+    public var supported: Bool { documentedHooksAvailable && interfaceVersion == CodexCLIIntegration.interfaceVersion }
 }
 
 /// The configuration grammar below is a reviewed adapter contract fixture,
@@ -439,7 +442,7 @@ public struct CodexUnprovenHookRuntimeContract: CodexHookRuntimeContract {
 public struct CodexFixtureHookRuntimeContract: CodexHookRuntimeContract { public let proven: Bool; public init(proven: Bool = true) { self.proven = proven }; public func isProven(installationID: IntegrationInstanceID, helperID: String) -> Bool { proven } }
 
 /// Production composition may use this verifier after it has provisioned the
-/// owner-scoped Keychain credential and its private Codex observation socket.
+/// owner-scoped derived credential and its private Codex observation socket.
 /// A missing executable, credential, socket, owner, permission, or symlink is
 /// deliberately indistinguishable from an unproven contract to the installer.
 public struct CodexProvisionedHookRuntimeContract: CodexHookRuntimeContract, Sendable {

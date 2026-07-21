@@ -4,7 +4,6 @@ import CodexCLIAdapter
 import CursorHooksAdapter
 import Foundation
 import LocalProductDiscovery
-import Security
 import SessionDomain
 
 /// The bounded launch-time exception defined by ADR 0009. It may add a new,
@@ -16,7 +15,7 @@ actor LaunchIntegrationAutoInstaller {
     private let detector: any ProductInstallationIdentityVerifying
     private let router = HookObservationAdapterRouter()
     private lazy var observations = HookObservationProductionComposition(router: router)
-    private let credentialStore = KeychainClaudeHookCredentialStore()
+    private let credentialStore = DerivedClaudeHookCredentialStore()
     private var claudeAdapter: ClaudeCodeAdapter?
     private var codexAdapter: CodexCLIAdapter?
     private let homeDirectory: URL
@@ -238,7 +237,7 @@ actor LaunchIntegrationAutoInstaller {
             router.register(codex: adapter)
             outcome = await adapter.negotiate(version: .init(productVersion: version, documentedHooksAvailable: true))
         case .cursor:
-            let evidence = CursorHooksContractEvidence(productVersion: version, reviewedCursorVersions: [version], observedAt: Date())
+            let evidence = CursorHooksContractEvidence(productVersion: version, observedAt: Date())
             let adapter = CursorHooksAdapter(port: port, integrationInstanceID: installationID, helperID: helperID, authenticator: authenticator, evidence: evidence)
             router.register(cursor: CursorHooksReceiver(adapter: adapter))
             outcome = await adapter.negotiate()
@@ -260,7 +259,7 @@ actor LaunchIntegrationAutoInstaller {
         case .codex:
             return try applyCodexJSON(installationID: installationID, helperPath: helperPath, configURL: configURL, snapshot: snapshot)
         case .cursor:
-            let evidence = CursorHooksContractEvidence(productVersion: version, reviewedCursorVersions: [version], observedAt: Date())
+            let evidence = CursorHooksContractEvidence(productVersion: version, observedAt: Date())
             let coordinator = CursorHooksInstallationCoordinator(runtimeContract: CursorProvisionedHookRuntimeContract(credentialStore: credentialStore, endpoint: endpoint(for: product), executablePath: helperPath.path))
             let discovery = coordinator.discover(installationID: installationID, scope: scope, helperPath: helperPath, evidence: evidence)
             guard discovery.state == .notConfigured, discovery.safeToMutate else { throw LaunchInstallationError.configurationRefused(discovery.inspection.reason) }
@@ -359,11 +358,12 @@ actor LaunchIntegrationAutoInstaller {
     }
 
     private func credential(for installationID: IntegrationInstanceID, helperID: String) throws -> Data {
-        if let existing = credentialStore.secret(for: installationID, helperID: helperID), !existing.isEmpty { return existing }
-        var secret = Data(count: 32)
-        let status = secret.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!) }
-        guard status == errSecSuccess else { throw LaunchInstallationError.credentialUnavailable }
-        try credentialStore.save(secret: secret, for: installationID, helperID: helperID)
+        // The secret is derived deterministically from the installation/helper
+        // identity, so both the app and the separate helper binary recompute it
+        // identically with no Keychain access and no cross-process ACL prompt.
+        guard let secret = credentialStore.secret(for: installationID, helperID: helperID), !secret.isEmpty else {
+            throw LaunchInstallationError.credentialUnavailable
+        }
         return secret
     }
 
@@ -385,8 +385,8 @@ actor LaunchIntegrationAutoInstaller {
             payload = Data("{\"hook_event_name\":\"SessionStart\",\"session_id\":\"agent-island-probe\",\"event_id\":\"agent-island-probe\",\"sequence\":1}".utf8)
         case .cursor:
             environment["AGENT_ISLAND_CURSOR_OBSERVATION_ONLY"] = "1"
-            // A deliberately unsupported version proves helper -> Keychain ->
-            // authenticated socket delivery without creating a live session.
+            // A deliberately unsupported version proves helper -> derived
+            // credential -> authenticated socket delivery without a live session.
             payload = Data("{\"hook_event_name\":\"sessionStart\",\"conversation_id\":\"agent-island-probe\",\"generation_id\":\"agent-island-probe\",\"cursor_version\":\"0.0.0\"}".utf8)
         }
         process.environment = environment

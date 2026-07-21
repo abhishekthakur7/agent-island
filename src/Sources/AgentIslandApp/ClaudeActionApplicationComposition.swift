@@ -49,7 +49,7 @@ final class ClaudeActionApplicationComposition {
 /// The retained installation-flow action endpoint controller. The current
 /// integration installation flow can call `activate` after it has proved an
 /// enabled owned manifest and supplied a current action-capability snapshot
-/// plus the Keychain-backed credential. Any later disable, helper loss,
+/// plus the derived credential. Any later disable, helper loss,
 /// removal, or capability change calls `retireCurrentInstallation`; absence
 /// never starts a listener. There is no setup UI caller yet.
 @MainActor
@@ -60,7 +60,7 @@ final class ClaudeActionIntegrationLifecycle {
 
     /// Concrete installation-flow hook.  It accepts only the current enabled
     /// installation and its reread/probed active manifest, then obtains the
-    /// same per-helper secret that the generated helper reads from Keychain.
+    /// same per-helper secret that the generated helper derives locally.
     /// The secret is used only to build the in-memory authenticator and is
     /// never written to preferences, diagnostics, or the hook command.
     @discardableResult
@@ -69,7 +69,7 @@ final class ClaudeActionIntegrationLifecycle {
         manifest: OwnershipManifest,
         helperID: String,
         snapshot: NegotiationSnapshot,
-        credentialStore: any ClaudeHookCredentialStore = KeychainClaudeHookCredentialStore()
+        credentialStore: any ClaudeHookCredentialStore = DerivedClaudeHookCredentialStore()
     ) async -> Bool {
         guard installation.lifecycle == .enabled,
               installation.enabledIntent,
