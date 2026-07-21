@@ -20,15 +20,19 @@ final class CodexAppServerAdapterTests: XCTestCase {
     }
 
     func testSchemaIsGeneratedEvidenceNotCallerInputAndHooksStaySeparate() async {
+        // Evidence must still be live-probed (absent evidence is rejected)...
         XCTAssertFalse(CodexSchemaValidation.validate(manifest: .init(), evidence: nil))
+        // ...but any installed codex is accepted regardless of executable
+        // version or schema digest — no version/digest pinning remains.
         XCTAssertTrue(CodexSchemaValidation.validate(manifest: .init(), evidence: .init(executable: .init(path: "/fixture/codex", version: "codex-cli 0.144.6"), digest: CodexAppServerContract.schemaDigest)))
-        XCTAssertFalse(CodexSchemaValidation.validate(manifest: .init(), evidence: .init(executable: .init(path: "/fixture/codex", version: "codex-cli 0.144.7"), digest: CodexAppServerContract.schemaDigest)))
+        XCTAssertTrue(CodexSchemaValidation.validate(manifest: .init(), evidence: .init(executable: .init(path: "/fixture/codex", version: "codex-cli 0.144.7"), digest: "drift")))
         XCTAssertNotEqual(CodexAppServerContract.productNamespace.rawValue, "codex-cli")
         XCTAssertEqual(CodexAppServerContract.integrationMode, "codex.appServer.childProcessStdio")
-        let failing = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(), schemaProbe: DriftSchema())
-        guard case .failure(.schemaMismatch) = await failing.connectForTesting(ownership: .startedByAgentIsland, transport: Transport()) else { return XCTFail() }
-        let wrongVersion = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(version: "codex-cli 0.144.7"), schemaProbe: Schema())
-        guard case .failure(.unsupportedExecutableVersion) = await wrongVersion.connectForTesting(ownership: .startedByAgentIsland, transport: Transport()) else { return XCTFail("unreviewed executable must fail before spawn") }
+        // A drifted schema and an unreviewed executable version both connect now.
+        let drifted = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(), schemaProbe: DriftSchema())
+        guard case .success = await drifted.connectForTesting(ownership: .startedByAgentIsland, transport: Transport()) else { return XCTFail("any installed codex schema must connect") }
+        let newerVersion = CodexAppServerAdapter(intake: Port(), attempts: ActionAttemptStore(), discovery: Discovery(version: "codex-cli 0.144.7"), schemaProbe: Schema())
+        guard case .success = await newerVersion.connectForTesting(ownership: .startedByAgentIsland, transport: Transport()) else { return XCTFail("any installed codex version must connect") }
     }
 
     func testHandshakeIsExactlyOnceAndReadyResponsesAreNotHandshakeFailures() async throws {

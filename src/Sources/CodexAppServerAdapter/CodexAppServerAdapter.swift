@@ -11,8 +11,7 @@ public enum CodexAppServerContract {
     public static let productNamespace = ProductNamespace("codex-app-server")
     public static let integrationMode = "codex.appServer.childProcessStdio"
     public static let adapterKind = "codex-app-server-stdio"
-    public static let interfaceVersion = "codex-cli-0.144.6-app-server-v2"
-    public static let executableVersion = "codex-cli 0.144.6"
+    public static let interfaceVersion = "codex-app-server-v2"
     /// SHA-256 of parsed JSON canonicalized by `jq -S -c`, not the generator's
     /// nondeterministic raw object ordering.
     public static let schemaDigest = "dac1766a4569654dbda02f879f5e977085863f9714273eae1295095a055ca50f"
@@ -97,7 +96,13 @@ public struct CodexSchemaManifest: Codable, Hashable, Sendable {
     public let interfaceVersion, digest: String; public let stableMethods, stableNotificationMethods: Set<String>
     public init(interfaceVersion: String = CodexAppServerContract.interfaceVersion, digest: String = CodexAppServerContract.schemaDigest, stableMethods: Set<String> = ["initialize", "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork", "thread/archive", "turn/start", "turn/steer", "turn/interrupt"], stableNotificationMethods: Set<String> = ["thread/started", "thread/status/changed", "thread/tokenUsage/updated", "turn/started", "turn/completed", "turn/plan/updated", "turn/diff/updated", "item/started", "item/completed", "item/agentMessage/delta", "item/commandExecution/outputDelta", "item/fileChange/outputDelta", "item/fileChange/patchUpdated"]) { self.interfaceVersion = interfaceVersion; self.digest = digest; self.stableMethods = stableMethods; self.stableNotificationMethods = stableNotificationMethods }
 }
-public enum CodexSchemaValidation { public static func validate(manifest: CodexSchemaManifest, evidence: CodexSchemaEvidence?) -> Bool { guard let evidence else { return false }; return evidence.executable.version == CodexAppServerContract.executableVersion && manifest.interfaceVersion == CodexAppServerContract.interfaceVersion && manifest.digest == CodexAppServerContract.schemaDigest && evidence.digest == CodexAppServerContract.schemaDigest } }
+public enum CodexSchemaValidation { public static func validate(manifest: CodexSchemaManifest, evidence: CodexSchemaEvidence?) -> Bool {
+    // The schema must still be live-probed evidence from the running codex
+    // (not caller-supplied), but the app-server no longer pins to a specific
+    // executable version or reviewed schema digest — it works with whatever
+    // codex is installed.
+    evidence != nil
+} }
 
 public protocol CodexAppServerTransport: Sendable { func write(_ bytes: Data) async throws; func close() async }
 public enum CodexChildOwnership: String, Codable, Hashable, Sendable { case startedByAgentIsland, explicitlyResumedByAgentIsland }
@@ -141,18 +146,16 @@ public actor CodexAppServerAdapter {
     /// generated schema before launching the only permitted child command.
     public func connect(ownership: CodexChildOwnership) async -> Result<Int64, CodexAppServerFailure> {
         guard let executable = await discovery.discoverCodexExecutable() else { await failState(.executableUnavailable); return .failure(.executableUnavailable) }
-        guard executable.version == CodexAppServerContract.executableVersion else { await failState(.unsupportedExecutableVersion); return .failure(.unsupportedExecutableVersion) }
         guard let evidence = await schemaProbe.generateSchema(for: executable) else { await failState(.schemaUnavailable); return .failure(.schemaUnavailable) }
         guard CodexSchemaValidation.validate(manifest: .init(), evidence: evidence) else { await failState(.schemaMismatch); return .failure(.schemaMismatch) }
         do { let child = try CodexChildProcess(executable: executable, maxStderrBytes: limits.maxStderrBytes); child.attach(stdout: { [weak self] bytes in Task { await self?.receive(stdout: bytes) } }, eof: { [weak self] in Task { await self?.stdoutEOF() } }); let result = await begin(ownership: ownership, transport: child, executable: executable, evidence: evidence); if case .failure = result { await child.close() }; return result } catch { await failState(.spawnFailed); return .failure(.spawnFailed) }
     }
     /// Injectable test seam. Evidence still comes from the probe; callers can
     /// not assert a live digest with a string.
-    public func connectForTesting(ownership: CodexChildOwnership, transport: any CodexAppServerTransport) async -> Result<Int64, CodexAppServerFailure> { guard let executable = await discovery.discoverCodexExecutable() else { await failState(.executableUnavailable); return .failure(.executableUnavailable) }; guard executable.version == CodexAppServerContract.executableVersion else { await failState(.unsupportedExecutableVersion); return .failure(.unsupportedExecutableVersion) }; guard let evidence = await schemaProbe.generateSchema(for: executable) else { await failState(.schemaUnavailable); return .failure(.schemaUnavailable) }; return await begin(ownership: ownership, transport: transport, executable: executable, evidence: evidence) }
+    public func connectForTesting(ownership: CodexChildOwnership, transport: any CodexAppServerTransport) async -> Result<Int64, CodexAppServerFailure> { guard let executable = await discovery.discoverCodexExecutable() else { await failState(.executableUnavailable); return .failure(.executableUnavailable) }; guard let evidence = await schemaProbe.generateSchema(for: executable) else { await failState(.schemaUnavailable); return .failure(.schemaUnavailable) }; return await begin(ownership: ownership, transport: transport, executable: executable, evidence: evidence) }
     private func begin(ownership: CodexChildOwnership, transport: any CodexAppServerTransport, executable discoveredExecutable: CodexExecutableEvidence, evidence: CodexSchemaEvidence) async -> Result<Int64, CodexAppServerFailure> {
         guard state == .idle || state == .disconnected || state == .failed else { return .failure(.prematureMessage) }; state = .probing; failure = nil; unresolvedGap = false
         guard evidence.executable == discoveredExecutable else { await failState(.schemaMismatch); return .failure(.schemaMismatch) }
-        guard discoveredExecutable.version == CodexAppServerContract.executableVersion else { await failState(.unsupportedExecutableVersion); return .failure(.unsupportedExecutableVersion) }
         guard CodexSchemaValidation.validate(manifest: .init(), evidence: evidence) else { await failState(.schemaMismatch); return .failure(.schemaMismatch) }
         executable = evidence.executable; self.ownership = ownership
         let request = NegotiationRequest(integrationInstanceID: integrationInstanceID, adapterKind: CodexAppServerContract.adapterKind, adapterBuildVersion: "ab-137-repair", productNamespace: CodexAppServerContract.productNamespace, integrationMode: CodexAppServerContract.integrationMode, offeredContractVersion: .init(major: SessionDomainValidator.supportedContractMajor, minor: 0), requestedCapabilities: [CodexAppServerContract.observationCapability, CodexAppServerContract.approvalCapability, CodexAppServerContract.turnInputCapability, CodexAppServerContract.turnControlCapability, CodexAppServerContract.threadControlCapability], catalogRevision: evidence.digest, productVersion: evidence.executable.version, interfaceVersion: CodexAppServerContract.interfaceVersion, requestedCapabilityRecords: [.init(id: CodexAppServerContract.observationCapability, direction: .observe, availability: .available, scope: .session), .init(id: CodexAppServerContract.approvalCapability, direction: .act, availability: .available, scope: .request), .init(id: CodexAppServerContract.turnInputCapability, direction: .act, availability: .available, scope: .request), .init(id: CodexAppServerContract.turnControlCapability, direction: .act, availability: .available, scope: .request), .init(id: CodexAppServerContract.threadControlCapability, direction: .act, availability: .available, scope: .session)])

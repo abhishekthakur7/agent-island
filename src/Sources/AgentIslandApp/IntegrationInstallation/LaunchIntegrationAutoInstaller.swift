@@ -98,9 +98,6 @@ actor LaunchIntegrationAutoInstaller {
         guard case .verified(let identity) = await detector.verifyInstallationIdentity(product: productCLI, explicitPath: nil) else {
             return .refused("The installed product could not be trusted for automatic hook setup.")
         }
-        guard ReviewedIntegrationContractCatalog.supports(product, version: identity.version) else {
-            return .refused("Version \(identity.version) has no reviewed automatic hook contract.")
-        }
         guard detector.revalidateInstallationIdentity(identity) == .valid else {
             return .refused("The product executable changed during launch detection.")
         }
@@ -312,7 +309,6 @@ actor LaunchIntegrationAutoInstaller {
     private func applyCodexJSON(installationID: IntegrationInstanceID, helperPath: URL, configURL: URL, snapshot: NegotiationSnapshot, now: Date = Date()) throws -> IntegrationInstallationApplyResult {
         guard configURL.lastPathComponent == "hooks.json", configURL.path.hasSuffix("/.codex/hooks.json"),
               snapshot.productNamespace == CodexCLIIntegration.productNamespace,
-              snapshot.productVersion == "0.144.6",
               snapshot.grants(WellKnownCapability.configuration, direction: .configure),
               case .success = endpoint(for: .codex).validate(),
               credentialStore.secret(for: installationID, helperID: CodexCLIIntegration.helperID(for: helperPath))?.isEmpty == false
@@ -416,7 +412,15 @@ actor LaunchIntegrationAutoInstaller {
 
     private func helperLauncherPath(for product: DurableInstallationProduct, store: DurableInstallationStore) throws -> URL {
         let directory = store.directory.appendingPathComponent("helpers", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+        // The app-owned helpers directory persists across launches and is
+        // shared by every product's install pass, so its creation must be
+        // idempotent. Creating it unconditionally throws EEXIST on the second
+        // product and on every relaunch, which previously failed the whole
+        // install before any adapter could be enabled. Mirror the check-then-
+        // create idiom used by `ensurePrivateParent`; re-assert 0o700 either way.
+        if !FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+        }
         try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: directory.path)
         return directory.appendingPathComponent("\(product.rawValue)-hook")
     }
@@ -474,16 +478,6 @@ private enum LaunchInstallationError: Error {
     case ownedStateDrifted
     case recoveryRequired
     case configurationRefused(ExactEntryFailureReason?)
-}
-
-private enum ReviewedIntegrationContractCatalog {
-    static func supports(_ product: DurableInstallationProduct, version: String) -> Bool {
-        switch product {
-        case .claude: version == "2.1.205"
-        case .codex: version == "0.144.6"
-        case .cursor: version == "3.12.17"
-        }
-    }
 }
 
 private extension InstallationConfigurationTarget {

@@ -112,13 +112,10 @@ public struct ClaudeHooksVersionEvidence: Codable, Hashable, Sendable {
     }
 
     public static func evaluate(productVersion: String, interfaceVersion: String) -> ClaudeVersionSupport {
-        guard let version = ClaudeCodeVersion(productVersion) else { return .unknown }
-        guard interfaceVersion == ClaudeCodeIntegration.interfaceVersion else { return .unsupported }
-        // The documented Hooks v1 contract has been reviewed through 1.x. A
-        // later major is new Product evidence and must not be guessed at.
-        if version.major > 1 { return .newerThanReviewed }
-        if version.major < 1 { return .unsupported }
-        return .known
+        // Work with whatever Claude Code version is installed. The documented
+        // Hooks v1 contract is identified by interfaceVersion, not by the CLI's
+        // release number, so no specific product version is required.
+        interfaceVersion == ClaudeCodeIntegration.interfaceVersion ? .known : .unsupported
     }
 
     public var isObservationCompatible: Bool { support == .known && interfaceVersion == ClaudeCodeIntegration.interfaceVersion }
