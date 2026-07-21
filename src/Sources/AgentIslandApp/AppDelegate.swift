@@ -49,6 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let launchIntegrationAutoInstaller: LaunchIntegrationAutoInstaller
     private let notificationSettings = NotificationPolicySettingsModel()
     private let usageSettings = UsageSettingsModel()
+    /// AB-161 §1.4: the AB-157 multi-provider quota board model. Defaults to
+    /// `UnavailableProviderQuotaPort` (its own default) — the one shipping
+    /// port, which always returns an empty board — because no real provider
+    /// quota source exists in this codebase yet (see
+    /// `ProviderQuotaAcquisition.swift`'s doc comment for the sourcing gap).
+    /// Wiring a real source later is a one-line change here.
+    private let quotaBoardModel = ProviderQuotaBoardModel()
     private lazy var settingsCoordinator = AtlasSettingsWindowCoordinator { [unowned self] in
         AnyView(AgentIslandSettingsView(
             model: self.atlasSettings,
@@ -79,11 +86,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let horizon = HorizonController()
     private lazy var overlay = IslandOverlayController(presentation: presentation)
     private var statusItem: NSStatusItem?
+    /// AB-162 §1.12: the status item's right-click menu. Assigned to
+    /// `statusItem.menu` only transiently, inside `handleStatusItemClick`,
+    /// so a left click reaches the popover instead of the menu — see that
+    /// method's doc comment.
+    private var statusItemMenu: NSMenu?
+    /// AB-162 §1.12: the menu-bar usage popover, replacing the status
+    /// item's previous "always show `NSMenu`" behavior for left-clicks.
+    private var usagePopover: NSPopover?
     private var settingsCancellable: AnyCancellable?
     private var displaySettingsCancellable: AnyCancellable?
     private var displayAvailabilityCancellable: AnyCancellable?
     private var shortcutStatusCancellable: AnyCancellable?
     private var shortcutFeedbackCancellable: AnyCancellable?
+    /// AB-154: keeps `overlay.isMuted` mirrored to the real global mute
+    /// (`notificationSettings.immediateMute`) whenever it changes from the
+    /// Settings window, so the Overlay's mute icon reflects edits made
+    /// there too — not just its own toggle.
+    private var muteCancellable: AnyCancellable?
     private var terminationInFlight = false
     private var recoveryObservers: [NSObjectProtocol] = []
 
@@ -534,6 +554,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { await launchIntegrationAutoInstaller.start() }
         installMenu()
         overlay.showSettings = { [weak self] in self?.showSettings(nil) }
+        // AB-154: wire the Overlay header's mute toggle to the real global
+        // mute — `NotificationPolicySettingsModel.immediateMute`, i.e.
+        // `SoundPolicy.immediateMute` — not a new, separate mute flag. The
+        // explicit initial assignment covers the very first render before
+        // the subscription below has a chance to run; the subscription then
+        // keeps the Overlay's glyph in sync with any later edit made
+        // directly in the Settings window's own "Mute now" toggle
+        // (`AtlasSettingsSections.swift`).
+        overlay.isMuted = notificationSettings.immediateMute
+        overlay.onToggleMute = { [weak self] in self?.notificationSettings.immediateMute.toggle() }
+        muteCancellable = notificationSettings.$policy
+            .map(\.sound.immediateMute)
+            .removeDuplicates()
+            .sink { [weak self] muted in self?.overlay.isMuted = muted }
         // This is the production Overlay click path. It permits navigation
         // only when one visible Agent Session is explicitly unambiguous; the
         // Host composition then revalidates its source-proven association.
@@ -543,6 +577,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         applyAtlasDisplayPreferences(atlasSettings.display)
         overlay.bootstrapShortcutPreferences(atlasSettings.shortcuts)
         overlay.setUsagePresentation(usageSettings.presentation)
+        overlay.setQuotaBoardModel(quotaBoardModel)
+        // AB-161 §1.4 AC-1.4-g / AB-162 §1.12: the "View usage details"
+        // hover affordance opens the real menu-bar usage popover, built by
+        // `installUsagePopover()` (called from `installMenu()` above).
+        overlay.onOpenUsageDetails = { [weak self] in self?.openUsagePopover() }
         atlasSettings.setShortcutRegistrationHandler { [weak self] preferences in
             guard let self else {
                 return .rejected(.registrationUnavailable, .unavailable("Overlay registration coordinator is unavailable."), nil)
@@ -809,10 +848,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(item)
         NSApp.mainMenu = menu
 
+        // AB-162 §1.12: `appMenu` is no longer assigned directly to
+        // `statusItem.menu` (which would make AppKit show it on every
+        // click, left or right). It is kept for the right-click path only
+        // — see `handleStatusItemClick`, which preserves reachability of
+        // every item here, including Quit.
+        statusItemMenu = appMenu
+
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "Agent Island")
-        statusItem.menu = appMenu
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(handleStatusItemClick(_:))
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         self.statusItem = statusItem
+
+        installUsagePopover()
+    }
+
+    /// AB-162 AC-1.12-a/e: builds the popover once, hosting `UsagePopoverView`
+    /// over the SAME `quotaBoardModel` instance AB-161 already feeds to the
+    /// overlay (`overlay.setQuotaBoardModel(quotaBoardModel)` above) — not a
+    /// second model. `.appearance` is forced to `.darkAqua` and the hosted
+    /// view's layer is given an opaque `IslandTheme.surface` backing so the
+    /// popover reads as the overlay's opaque dark surface rather than
+    /// `NSPopover`'s default translucent vibrant chrome.
+    private func installUsagePopover() {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .darkAqua)
+        let hosting = NSHostingController(rootView: UsagePopoverView(
+            quotaModel: quotaBoardModel,
+            onRefresh: { [weak quotaBoardModel] in quotaBoardModel?.refresh() },
+            onSettings: { [weak self] in self?.showSettings(nil) }
+        ))
+        hosting.view.wantsLayer = true
+        hosting.view.layer?.backgroundColor = NSColor(IslandTheme.surface).cgColor
+        popover.contentViewController = hosting
+        usagePopover = popover
+    }
+
+    /// AB-162: left-click opens/closes the usage popover; right-click shows
+    /// the preserved `appMenu` (Show/Collapse, Automatic Reveal, Engage
+    /// Keyboard, Settings…, Cursor Host Setup…, Quit). `statusItem.menu` is
+    /// assigned only for the duration of that synthetic right-click so a
+    /// later left-click reaches this handler again instead of the menu.
+    @objc private func handleStatusItemClick(_ sender: Any?) {
+        guard let statusItem, let button = statusItem.button else { return }
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            guard let statusItemMenu else { return }
+            statusItem.menu = statusItemMenu
+            button.performClick(nil)
+            statusItem.menu = nil
+        } else {
+            toggleUsagePopover(relativeTo: button)
+        }
+    }
+
+    private func toggleUsagePopover(relativeTo button: NSStatusBarButton) {
+        guard let popover = usagePopover else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    /// AB-162: the destination AB-161's `overlay.onOpenUsageDetails` seam
+    /// re-points to (see `applicationDidFinishLaunching`) — the "View usage
+    /// details" hover affordance now opens this popover instead of Settings.
+    /// Falls back to Settings only if the status item somehow has no button
+    /// (e.g. the menu bar is full and AppKit hid it), so the affordance
+    /// never becomes a dead end.
+    private func openUsagePopover() {
+        guard let statusItem, let button = statusItem.button else {
+            showSettings(nil)
+            return
+        }
+        guard let popover = usagePopover else { return }
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
     }
 
     @objc private func showCursorHostSetup(_ sender: Any?) {

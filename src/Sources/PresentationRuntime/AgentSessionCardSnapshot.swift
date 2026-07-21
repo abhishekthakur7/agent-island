@@ -20,6 +20,15 @@ public struct AgentSessionCardSnapshot: Identifiable, Sendable, Equatable {
     public let turns: [TurnProjection]
     public let subagentRuns: [SubagentRunProjection]
     public let ledgerRevision: Int64
+    /// AB-160: the second, explicitly-separate evidence path (AB-156's
+    /// `TranscriptEvidenceProjection`) carried through to the presentation
+    /// boundary for the first time. `nil` means exactly what it means on
+    /// `SessionProjection` — no transcript was read for this session (most
+    /// runtime paths today, since `LocalTranscriptEvidenceReader` exists in
+    /// `Sources/TranscriptEvidenceReader/` but is not yet wired into the
+    /// projection pipeline that produces `SessionProjection` — see the
+    /// AB-160 report). Never defaulted to a placeholder bag.
+    public let transcriptEvidence: TranscriptEvidenceProjection?
 
     public init(projection: SessionProjection) {
         self.id = "\(projection.identity.productNamespace.rawValue)::\(projection.identity.nativeSessionID.rawValue)"
@@ -36,5 +45,11 @@ public struct AgentSessionCardSnapshot: Identifiable, Sendable, Equatable {
         self.turns = projection.turns
         self.subagentRuns = projection.subagentRuns
         self.ledgerRevision = projection.ledgerRevision
+        self.transcriptEvidence = projection.transcriptEvidence
     }
+
+    /// Convenience mirroring `SessionProjection.model` — the transcript-
+    /// reported model string, real only, never the hook-parsed value and
+    /// never a fabricated fallback like "Opus 4.8".
+    public var model: String? { transcriptEvidence?.modelFromTranscript }
 }

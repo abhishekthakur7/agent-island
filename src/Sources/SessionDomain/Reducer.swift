@@ -121,7 +121,7 @@ public enum SessionReducer {
 
     public static func applyRestartBoundary(_ projection: SessionProjection) -> SessionProjection {
         guard !projection.execution.isTerminal else { return projection }
-        return SessionProjection(identity: projection.identity, execution: .unresolved, observation: projection.observation == .unavailable ? .unavailable : .degraded, displayTitle: projection.displayTitle, hostLabel: projection.hostLabel, sourceLastUpdated: projection.sourceLastUpdated, ledgerRevision: projection.ledgerRevision, attention: projection.attention, lineage: projection.lineage, turns: projection.turns, subagentRuns: projection.subagentRuns)
+        return SessionProjection(identity: projection.identity, execution: .unresolved, observation: projection.observation == .unavailable ? .unavailable : .degraded, displayTitle: projection.displayTitle, hostLabel: projection.hostLabel, sourceLastUpdated: projection.sourceLastUpdated, ledgerRevision: projection.ledgerRevision, attention: projection.attention, lineage: projection.lineage, turns: projection.turns, subagentRuns: projection.subagentRuns, transcriptEvidence: projection.transcriptEvidence)
     }
 
     private static func advanced(_ state: ExecutionState, with kind: SessionActivityKind, ambiguous: inout Bool) -> ExecutionState {

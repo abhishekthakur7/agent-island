@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SwiftUI
 import SessionDomain
 
 /// A volatile, typed display boundary for Usage Snapshots. It deliberately
@@ -127,6 +128,117 @@ struct UsageSettingsRepository {
 
     func save(_ value: UsageDisplayPreferences) {
         if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: key) }
+    }
+}
+
+/// AB-157: the presentation-layer home for the multi-provider
+/// `ProviderQuotaBoard` (`SessionDomain/ProviderQuotaState.swift`) — the
+/// richer model behind §1.4's usage cluster, §1.12's menu-bar popover, and
+/// §1.12.1's Metrics tab. It mirrors `UsagePresentationModel`'s shape (an
+/// `ObservableObject` holding no `SessionStore`/notification/queue/
+/// navigation port) but for a `ProviderQuotaPort` instead of a per-Adapter
+/// `UsageSnapshot` stream, since provider quota state is account-scoped
+/// rather than negotiated per Agent Session.
+///
+/// This ticket does not wire this model into the overlay or the menu-bar
+/// popover — that is AB-161 (§1.4 usage cluster) and AB-162 (§1.12 popover +
+/// Metrics tab). It exists now so those tickets have one ready observable
+/// object and one call site (`refresh()`) to drive their views from, instead
+/// of each independently deciding how a `ProviderQuotaPort` becomes
+/// published SwiftUI state.
+///
+/// The default `port` is `UnavailableProviderQuotaPort` — see
+/// `ProviderQuotaAcquisition.swift` for the sourcing gap that stands behind
+/// that default. Wiring a real source later is a one-line change at whatever
+/// call site constructs this model (see that file's "extension point" doc
+/// comment); nothing here needs to change, because every field
+/// `ProviderQuotaBoard` exposes is already independently optional.
+@MainActor
+final class ProviderQuotaBoardModel: ObservableObject {
+    @Published private(set) var board: ProviderQuotaBoard
+
+    private let port: ProviderQuotaPort
+
+    init(port: ProviderQuotaPort = UnavailableProviderQuotaPort(), now: Date = Date()) {
+        self.port = port
+        self.board = port.currentBoard(at: now)
+    }
+
+    /// Re-polls `port` for the latest board. AB-161/162 are expected to call
+    /// this from the same refresh affordance the compact cluster's `⟳` glyph
+    /// (AC-1.4-c) and the popover's `⟳` (AC-1.12-a) already imply.
+    func refresh(now: Date = Date()) {
+        board = port.currentBoard(at: now)
+    }
+
+    /// Convenience passthrough so a SwiftUI view can write
+    /// `model.snapshot(for: .claude)` instead of `model.board.snapshot(for:)`.
+    func snapshot(for provider: QuotaProvider) -> ProviderQuotaSnapshot? {
+        board.snapshot(for: provider)
+    }
+}
+
+// MARK: - AB-161 §1.4 UI-facing presentation helpers
+
+/// AB-161 §1.4 AC-1.4-a: the plain monospaced brand-mark character + tint
+/// each provider leads its usage-cluster entry with. `SessionDomain` must
+/// never import SwiftUI (see `ProviderQuotaState.swift`'s doc comment), so
+/// this UI-facing mapping lives here instead — the app layer's one
+/// presentation home for `ProviderQuotaBoard`/`ProviderQuotaBoardModel`.
+///
+/// There are no dedicated brand-mark glyph views (unlike the pixel-drawn
+/// glyphs in `IslandGlyphs.swift`) — per the ticket, a small tinted mono
+/// character is the intentionally lightweight approach. Claude's `✳` and its
+/// `claudeBrand` tint, and Cursor's "mono cube" framing, are named directly
+/// by the ticket doc; Codex's exact mark and OpenCode's exact square are not
+/// pinned to a literal character anywhere in the doc/images (only "a mark"/
+/// "a square"), so `◆` (Codex) and `▪` (OpenCode) are judgment calls — kept
+/// here, one place, so §1.12's popover (AB-162) reuses the identical marks
+/// instead of re-deriving its own.
+extension QuotaProvider {
+    var brandMarkGlyph: String {
+        switch self {
+        case .claude: return "✳"
+        case .codex: return "◆"
+        case .cursor: return "◨"
+        case .openCode: return "▪"
+        }
+    }
+
+    var brandMarkColor: Color {
+        switch self {
+        case .claude: return IslandTheme.claudeBrand
+        case .codex: return IslandTheme.codexBrand
+        case .cursor: return IslandTheme.cursorBrand
+        case .openCode: return IslandTheme.openCodeBrand
+        }
+    }
+}
+
+extension QuotaWindowState {
+    /// AB-161 §1.4 AC-1.4-e: the compact time-until-reset string the
+    /// detailed focused-session form renders (`8m`, `3d3h`). `nil` when
+    /// there is no `timeUntilReset` to format — the caller renders `--` for
+    /// that case, matching this module's "absence, never a fabricated
+    /// value" rule.
+    var compactTimeUntilReset: String? {
+        guard let timeUntilReset else { return nil }
+        return Self.formatCompact(duration: timeUntilReset)
+    }
+
+    private static func formatCompact(duration seconds: TimeInterval) -> String {
+        let totalMinutes = max(0, Int((seconds / 60).rounded()))
+        if totalMinutes < 60 {
+            return "\(totalMinutes)m"
+        }
+        let totalHours = totalMinutes / 60
+        if totalHours < 24 {
+            let minutes = totalMinutes % 60
+            return minutes > 0 ? "\(totalHours)h\(minutes)m" : "\(totalHours)h"
+        }
+        let days = totalHours / 24
+        let hours = totalHours % 24
+        return hours > 0 ? "\(days)d\(hours)h" : "\(days)d"
     }
 }
 

@@ -14,6 +14,12 @@ final class IslandOverlayPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         level = .statusBar
+        // AC-1.1-d: lock the panel to dark regardless of the system
+        // appearance, so Light Mode / increased contrast can never invert
+        // the opaque near-black surface into a system gray. Mirrors
+        // agent-notch's window setup
+        // (`/Users/abhishekthakur/Developer/agent-notch/main.swift:742`).
+        appearance = NSAppearance(named: .darkAqua)
         // A panel belongs to the current Space only. In particular, do not add
         // canJoinAllSpaces/fullScreenAuxiliary: an Island Overlay never tracks
         // or crosses Spaces as though they were a durable Host identity.

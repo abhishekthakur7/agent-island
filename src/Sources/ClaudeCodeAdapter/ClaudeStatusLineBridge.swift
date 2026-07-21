@@ -5,6 +5,48 @@ import SessionDomain
 /// never replaces a person's configured Status Line, and is not a claim about
 /// any other Agent Product. Its one marked JSON/JSONC entry is installed only
 /// from a fresh, explicitly approved Integration Installation plan.
+///
+/// ## Consumption status (AB-163 §1.6 gap note)
+///
+/// This type only installs/owns the `statusLine` config entry
+/// (`ClaudeStatusLineBridgeEditor.selector()`, below) — Claude Code then
+/// invokes `.../AgentIslandUsageStatusLine` with a JSON payload on stdin on
+/// its own schedule. **Nothing in this package consumes that payload today**:
+/// there is no `AgentIslandUsageStatusLine` executable target in
+/// `Package.swift`, no code parses the JSON, and no IPC/store hands parsed
+/// output back to the long-running app. AB-163 (the Horizon session row's
+/// line-2 metadata strip) needed real `cost`/`context %`/`lines added-
+/// removed` data and, per that ticket's instructions, verified the exact
+/// field names against Claude Code's own statusline documentation
+/// (`https://code.claude.com/docs/en/statusline.md`, "Full JSON schema")
+/// rather than guessing them:
+///
+/// ```text
+/// cost.total_cost_usd                                   — session cost, USD
+/// cost.total_lines_added, cost.total_lines_removed      — diff stat
+/// context_window.used_percentage                       — context % used
+/// workspace.git_worktree, worktree.branch               — branch (see below)
+/// session_id                                            — correlation key
+/// ```
+///
+/// `workspace.git_worktree`/`worktree.branch` also unblock the session row's
+/// **branch** field (a separate, still-unsourced field today — no
+/// cwd/git-branch property exists on `SessionProjection`/
+/// `AgentSessionCardSnapshot`).
+///
+/// Turning this into real data requires: (1) the `AgentIslandUsageStatusLine`
+/// executable target itself (parses stdin, still prints a display line back
+/// to Claude Code's terminal footer so installing it doesn't regress a
+/// person's visible status line), (2) a way for that short-lived,
+/// per-invocation process to persist its parsed fields somewhere the
+/// long-running app can read (no such IPC/store exists today), and (3)
+/// `session_id`-keyed correlation to the right `SessionProjection`/
+/// `AgentSessionCardSnapshot`. That is a second evidence path on the scale of
+/// AB-156 (transcript reading) — a dedicated ticket, not something AB-163
+/// could scope into a line-2 layout change. Until it ships, the affected
+/// line-2 fields (context %, cost, diff, branch) render their correct
+/// glyph/colour/format but cleanly omit for lack of a real value — see
+/// `HorizonSessionMetadataStrip` in `HorizonMonitorView.swift`.
 public final class ClaudeStatusLineBridgeInstallationCoordinator: @unchecked Sendable {
     public static let integrationMode = "claudeCode.documentedStatusLineUsage"
 

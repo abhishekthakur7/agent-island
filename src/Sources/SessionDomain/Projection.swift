@@ -88,6 +88,12 @@ public struct SessionProjection: Sendable, Equatable, Codable {
     public let hostLabel: String?
     public let sourceLastUpdated: Date?
     public let ledgerRevision: Int64
+    /// Second, explicitly-separate evidence path (AB-156): best-effort
+    /// evidence read directly from the Agent Product's own transcript file,
+    /// never a `NormalizedEventFact`. `nil` means no transcript was read for
+    /// this session. See `TranscriptEvidenceProjection`'s doc comment and
+    /// `docs/adr/0001-transcript-reading-second-evidence-path.md`.
+    public let transcriptEvidence: TranscriptEvidenceProjection?
 
     public init(
         identity: AgentSessionIdentity,
@@ -100,7 +106,8 @@ public struct SessionProjection: Sendable, Equatable, Codable {
         attention: AttentionState = .none,
         lineage: LineageState = .current,
         turns: [TurnProjection] = [],
-        subagentRuns: [SubagentRunProjection] = []
+        subagentRuns: [SubagentRunProjection] = [],
+        transcriptEvidence: TranscriptEvidenceProjection? = nil
     ) {
         self.identity = identity
         self.execution = execution
@@ -113,7 +120,23 @@ public struct SessionProjection: Sendable, Equatable, Codable {
         self.hostLabel = hostLabel
         self.sourceLastUpdated = sourceLastUpdated
         self.ledgerRevision = ledgerRevision
+        self.transcriptEvidence = transcriptEvidence
     }
+
+    /// Convenience accessor for the transcript-derived model string, when
+    /// transcript evidence has been read for this session. This is the
+    /// "carry `model` through to the projection" adjacent win called for by
+    /// AB-156: it is deliberately sourced only from `transcriptEvidence`, not
+    /// from `ClaudeAttributedContext.model` (the hook-parsed value), which
+    /// today does not reach `NormalizedEventFact`/`SessionProjection` at all.
+    /// Threading the hook-proven model through would require adding a field
+    /// to `RawEventEnvelope`/`NormalizedEventFact` and a line in
+    /// `SessionReducer` — a small, precedented change (mirrors
+    /// `displayTitle`/`hostLabel`), but one that touches shared
+    /// fact/validation/reducer files outside this ticket's granted
+    /// ownership. Flagged for the consuming ticket (§1.6) rather than done
+    /// here; see the AB-156 report.
+    public var model: String? { transcriptEvidence?.modelFromTranscript }
 
     public var visibleLifecycle: VisibleLifecycleState {
         if attention == .pending { return .needsAttention }

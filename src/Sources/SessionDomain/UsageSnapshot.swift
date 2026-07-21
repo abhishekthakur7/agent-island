@@ -4,6 +4,21 @@ import Foundation
 /// is deliberately not billing, an estimate, session identity, ordering, or
 /// input to monitoring, filtering, notification, queue, Action Attempt, or
 /// Jump Back behavior.
+///
+/// ## Relationship to `ProviderQuotaState.swift` (AB-157)
+///
+/// This type remains exactly what it always was: one provider, one
+/// `usedPercent`/`remainingPercent`, one `resetsAt` — the shape
+/// `UsagePresentationModel`/`UsageSnapshotHeader`/`AppDelegate` already
+/// depend on and continue to render today. AB-157 added a genuinely richer,
+/// **additive sibling model** (`ProviderQuotaSnapshot` / `ProviderQuotaBoard`
+/// in `ProviderQuotaState.swift`) for the multi-provider, multi-window,
+/// token-metered, and Metrics-tab-depth data the overlay redesign's §1.4/
+/// §1.12/§1.12.1 need — a shape this type cannot express (it has no concept
+/// of multiple named windows or multiple providers rendered together). This
+/// type is not deprecated or extended in place by that work; it is simply a
+/// narrower, older concept that happens to predate it. Do not add
+/// window/provider-array fields here — add them to the sibling type instead.
 public struct UsageSnapshot: Codable, Equatable, Hashable, Sendable {
     public let sourceID: String
     public let provider: String

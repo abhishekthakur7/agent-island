@@ -21,6 +21,24 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published var revealOnAttention = true
     @Published var clickBehavior: AtlasClickBehavior = .inspectExpand
     @Published var displayPreferences: AtlasDisplayPreferences = .default
+    /// AB-154: mirrors the real global mute
+    /// (`NotificationPolicySettingsModel.immediateMute`, i.e.
+    /// `SoundPolicy.immediateMute`) into the Overlay's header. The
+    /// composition root (`AppDelegate`) keeps this in sync from two
+    /// directions — a tap on the Overlay's own mute icon, routed back out
+    /// through `onToggleMute` below, and an edit made directly in the
+    /// Settings window via a `notificationSettings.$policy` subscription.
+    /// Unlike the other `@Published` prefs above (each re-rendered by a
+    /// single external caller that already remembers to call
+    /// `reconcilePresentation()`), this one can change from either of those
+    /// two independent directions, so the `didSet` triggers the redraw
+    /// itself rather than relying on every caller to remember to.
+    @Published var isMuted: Bool = false {
+        didSet {
+            guard oldValue != isMuted else { return }
+            applyState()
+        }
+    }
     @Published private(set) var displayStatus = "Looking for a selected display…"
     @Published private(set) var selectionAvailability: IslandDisplayAvailability = .selectionUnavailable
     @Published private(set) var lastClickOutcome: PresentationClickOutcome?
@@ -41,6 +59,12 @@ final class IslandOverlayController: NSObject, ObservableObject {
     @Published private(set) var shortcutInvocationAnnouncement: String?
     private var usagePresentation: UsagePresentationModel?
     private var usageCancellable: AnyCancellable?
+    /// AB-161 §1.4: the AB-157 multi-provider quota board model, injected by
+    /// `setQuotaBoardModel(_:)`. `nil` until composition wires one in, at
+    /// which point `renderIfVisible()` falls back to `.empty(observedAt:)` —
+    /// the same honest-empty default `ProviderQuotaBoard` itself defines.
+    private var quotaBoardModel: ProviderQuotaBoardModel?
+    private var quotaBoardCancellable: AnyCancellable?
 
     private let presentation: PresentationRuntime
     private let shortcutRegistrar: ShortcutRegistrationCoordinator
@@ -86,6 +110,18 @@ final class IslandOverlayController: NSObject, ObservableObject {
     func setUsagePresentation(_ model: UsagePresentationModel) {
         usagePresentation = model
         usageCancellable = model.objectWillChange.sink { [weak self] _ in
+            DispatchQueue.main.async { self?.renderIfVisible() }
+        }
+        renderIfVisible()
+    }
+
+    /// AB-161 §1.4: composition injects AB-157's multi-provider quota board
+    /// model the same way `setUsagePresentation` injects the older
+    /// single-provider one — the Overlay only ever reads a display-ready
+    /// `ProviderQuotaBoard`, never an Agent Adapter or account credential.
+    func setQuotaBoardModel(_ model: ProviderQuotaBoardModel) {
+        quotaBoardModel = model
+        quotaBoardCancellable = model.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async { self?.renderIfVisible() }
         }
         renderIfVisible()
@@ -213,22 +249,46 @@ final class IslandOverlayController: NSObject, ObservableObject {
             lastClickOutcome = .inspectedOrExpanded
             toggleOverlay()
         case .jumpBack:
-            let outcome = jumpBackAction?()
-            lastClickOutcome = PresentationClickPolicy.resolve(action: .jumpBack, jumpBackOutcome: outcome)
-            jumpBackAnnouncement = outcome?.presentationLabel ?? "Jump Back: unavailable. No Host navigation route is installed."
-            // Announce exactly the same redacted achieved-level wording shown
-            // in the expanded Overlay. This is local presentation only.
-            NSAccessibility.post(
-                element: NSApp as Any,
-                notification: .announcementRequested,
-                userInfo: [.announcement: jumpBackAnnouncement ?? "Jump Back unavailable"]
-            )
-            // The result contains the achieved Host level and redacted reason;
-            // immediately redraw so the visible and VoiceOver feedback agree.
-            stateMachine.reduce(.hoverEntered)
-            applyState()
-            renderIfVisible()
+            performJumpBack()
         }
+    }
+
+    /// AB-160 §1.10: the focused session card's `⌃G ↗` jump control calls
+    /// this directly. It is a distinct entry point from `primaryClick()`
+    /// deliberately — `clickBehavior` is the person's general preference for
+    /// what the collapsed *pill* does when clicked (`.inspectExpand` is the
+    /// default), and gating an explicit, always-rendered jump affordance
+    /// behind that unrelated preference would mean the button silently does
+    /// nothing (or just collapses the panel) unless the person happened to
+    /// opt into "Jump Back" as their general click behavior. Per §1.11 there
+    /// is no entitlement/paywall gate on Jump — this is the one other gate a
+    /// person could hit, and it is not what an explicit jump button should
+    /// respect. This still performs only the real, existing Jump Back
+    /// mechanism (`jumpBackAction`, wired by `AppDelegate` to
+    /// `jumpBackForVisibleSession()`) and reports exactly the outcome that
+    /// mechanism honestly returns — including "ambiguous"/"unavailable" when
+    /// more than one session is visible or no Host association exists. It
+    /// never claims a jump succeeded that didn't.
+    func jumpToFocusedSession() {
+        performJumpBack()
+    }
+
+    private func performJumpBack() {
+        let outcome = jumpBackAction?()
+        lastClickOutcome = PresentationClickPolicy.resolve(action: .jumpBack, jumpBackOutcome: outcome)
+        jumpBackAnnouncement = outcome?.presentationLabel ?? "Jump Back: unavailable. No Host navigation route is installed."
+        // Announce exactly the same redacted achieved-level wording shown
+        // in the expanded Overlay. This is local presentation only.
+        NSAccessibility.post(
+            element: NSApp as Any,
+            notification: .announcementRequested,
+            userInfo: [.announcement: jumpBackAnnouncement ?? "Jump Back unavailable"]
+        )
+        // The result contains the achieved Host level and redacted reason;
+        // immediately redraw so the visible and VoiceOver feedback agree.
+        stateMachine.reduce(.hoverEntered)
+        applyState()
+        renderIfVisible()
     }
 
     func autoReveal() {
@@ -697,6 +757,7 @@ final class IslandOverlayController: NSObject, ObservableObject {
         usagePresentation?.selectActiveSession(selectedUsageSession)
         usagePresentation?.refresh()
         let usage = usagePresentation?.rendered ?? UsagePresentationModel.Rendered(state: .unavailable, snapshot: nil, valueKind: .remaining, unavailableReason: "No Usage Snapshot source is connected.")
+        let quotaBoard = quotaBoardModel?.board ?? .empty(observedAt: Date())
         let root = IslandOverlayView(
             presentation: stateMachine.state.presentation,
             geometry: geometry,
@@ -709,12 +770,18 @@ final class IslandOverlayController: NSObject, ObservableObject {
             shortcutInvocationAnnouncement: shortcutInvocationAnnouncement,
             jumpBackAnnouncement: jumpBackAnnouncement,
             usage: usage,
+            quotaBoard: quotaBoard,
+            onRefreshQuotaBoard: { [weak self] in self?.quotaBoardModel?.refresh() },
+            onOpenUsageDetails: { [weak self] in self?.onOpenUsageDetails?() },
             onPrimaryClick: { [weak self] in self?.primaryClick() },
+            onJumpToSession: { [weak self] in self?.jumpToFocusedSession() },
             lastClickOutcome: lastClickOutcome,
             onExpand: { [weak self] in self?.toggleOverlay() },
             onCollapse: { [weak self] in self?.collapse() },
             onSettings: { [weak self] in self?.showSettings?() },
-            onEngageKeyboard: { [weak self] in self?.engageKeyboard() }
+            onEngageKeyboard: { [weak self] in self?.engageKeyboard() },
+            isMuted: isMuted,
+            onToggleMute: { [weak self] in self?.onToggleMute?() }
         )
         if panel == nil {
             let panel = IslandOverlayPanel(contentRect: geometry.frame)
@@ -736,6 +803,18 @@ final class IslandOverlayController: NSObject, ObservableObject {
     /// Set by the AppKit shell so the overlay never needs to know how the
     /// independently activating Settings window is constructed.
     var showSettings: (() -> Void)?
+    /// AB-154: set by the AppKit shell, exactly like `showSettings` above.
+    /// Flips the real global mute (`NotificationPolicySettingsModel.immediateMute`).
+    /// The Overlay itself owns no mute/sound subsystem — it only asks.
+    var onToggleMute: (() -> Void)?
+    /// AB-161 §1.4 AC-1.4-g: set by the AppKit shell, exactly like
+    /// `showSettings`/`onToggleMute` above. Opens the detailed usage view
+    /// (§1.12 — AB-162's menu-bar popover, not yet built). Left `nil` by
+    /// default renders as a harmless no-op tap on the "View usage details"
+    /// hover affordance; the composition root wires this to Settings for now
+    /// (see `AppDelegate.swift`) as the nearest existing destination until
+    /// AB-162 ships the real popover.
+    var onOpenUsageDetails: (() -> Void)?
 
     private func removeOverlayRegionsAndWindow() {
         // Order matters: make invisible regions non-interactive/non-AX before

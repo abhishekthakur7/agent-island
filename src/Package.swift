@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "OrcaHostAdapter", targets: ["OrcaHostAdapter"]),
         .library(name: "ClaudeActionRouting", targets: ["ClaudeActionRouting"]),
         .library(name: "LocalProductDiscovery", targets: ["LocalProductDiscovery"]),
+        .library(name: "TranscriptEvidenceReader", targets: ["TranscriptEvidenceReader"]),
         .executable(name: "ClaudeHookHelper", targets: ["ClaudeHookHelper"]),
         .executable(name: "CodexHookHelper", targets: ["CodexHookHelper"]),
         .executable(name: "CursorHookHelper", targets: ["CursorHookHelper"]),
@@ -36,6 +37,7 @@ let package = Package(
         .executable(name: "AB144SelfCheck", targets: ["AB144SelfCheck"]),
         .executable(name: "AB145SelfCheck", targets: ["AB145SelfCheck"]),
         .executable(name: "AB146SelfCheck", targets: ["AB146SelfCheck"]),
+        .executable(name: "AB156SelfCheck", targets: ["AB156SelfCheck"]),
         .library(name: "PresentationRuntime", targets: ["PresentationRuntime"]),
         .executable(name: "AgentIslandApp", targets: ["AgentIslandApp"]),
     ],
@@ -143,6 +145,16 @@ let package = Package(
         // This target has no store, adapter, or presentation dependency.
         .target(name: "LocalProductDiscovery"),
 
+        // AB-156: read-only local evidence from Claude/Codex CLI transcript
+        // files (~/.claude/projects, ~/.codex/sessions) — a second,
+        // explicitly separate evidence path from the documented-hook
+        // Adapters. Deliberately its own target, not a dependency of
+        // ClaudeCodeAdapter/CodexCLIAdapter (which are documented
+        // "never receives... a transcript reader" boundaries) or of
+        // SessionStore/ProtectedStore. It depends only on SessionDomain, for
+        // the pure `TranscriptEvidenceProjection` types it produces.
+        .target(name: "TranscriptEvidenceReader", dependencies: ["SessionDomain"]),
+
         // Application-owned documented-hook helper. It has no Product action,
         // transcript, or store dependency; it only validates stdin and sends
         // authenticated bounded frames through the local IPC abstraction.
@@ -162,6 +174,7 @@ let package = Package(
         .executableTarget(name: "AB144SelfCheck", dependencies: ["SessionDomain", "ClaudeCodeAdapter"]),
         .executableTarget(name: "AB145SelfCheck", dependencies: ["SessionDomain", "ApplicationRuntime", "SessionStore", "ProtectedStore", "AdapterFixtureKit"]),
         .executableTarget(name: "AB146SelfCheck", dependencies: ["SessionDomain", "ApplicationRuntime", "SessionStore", "PresentationRuntime"]),
+        .executableTarget(name: "AB156SelfCheck", dependencies: ["SessionDomain", "TranscriptEvidenceReader"]),
 
         // Main-actor projection subscriber. Depends on PresentationPort +
         // SessionDomain only, so it cannot call an Adapter/Product client or
@@ -191,7 +204,12 @@ let package = Package(
                 "CursorHostAdapter",
                 "WarpHostAdapter",
                 "OrcaHostAdapter",
-            ]
+            ],
+            // AB-152: bundled Codex Pets spritesheets (opaque binary .webp
+            // assets — `.copy`, not `.process`, so SwiftPM doesn't attempt to
+            // optimize/re-encode them). Accessed at runtime via
+            // `Bundle.module.url(forResource:withExtension:subdirectory:"pets")`.
+            resources: [.copy("Resources/pets")]
         ),
 
         .testTarget(name: "SessionDomainTests", dependencies: ["SessionDomain"]),
