@@ -212,16 +212,19 @@ struct IslandOverlayGeometry: Equatable {
         let normalized = settings.normalized()
         let scale = normalized.contentSize.scale
 
-        // Collapsed pill on a built-in NOTCHED display: anchor to the physical
-        // screen top so the two wings flank the real notch instead of floating
-        // below the menu bar (which a `visibleFrame` anchor causes), and size
-        // each wing wide enough that the agent name / "N Sessions" clear the
-        // notch without truncating. Expanded/focused still drops below the menu
-        // bar via the shared path below. `notch` is only ever non-nil from
-        // `make(for:)` on a real notched screen, so every existing caller/test
-        // that omits it keeps the exact prior behavior.
-        if let notch, isBuiltIn, !expanded {
-            return makeCollapsedNotch(notch: notch, scale: scale, settings: normalized)
+        // Built-in NOTCHED display: anchor to the physical screen top so the
+        // wings flank the real notch instead of floating below the menu bar
+        // (which a `visibleFrame` anchor causes). BOTH collapsed and expanded
+        // share this physical-top anchor + notch center, so a hover-expand
+        // grows the panel *in place* rather than jumping to a different
+        // position — a mismatch would move the panel out from under the cursor
+        // and cause an expand/collapse flicker. `notch` is only ever non-nil
+        // from `make(for:)` on a real notched screen, so every existing
+        // caller/test that omits it keeps the exact prior behavior.
+        if let notch, isBuiltIn {
+            return expanded
+                ? makeExpandedNotch(notch: notch, scale: scale, settings: normalized)
+                : makeCollapsedNotch(notch: notch, scale: scale, settings: normalized, shortcutAnnouncement: shortcutAnnouncement)
         }
 
         // Expanded presentation reserves deterministic room for a sourced
@@ -259,13 +262,37 @@ struct IslandOverlayGeometry: Equatable {
     /// horizontally-centered physical notch). The collapsed view's flaps fill
     /// each wing (`maxWidth: .infinity`), so a generous wing width is what
     /// stops the agent name / "N Sessions" from truncating.
-    private static func makeCollapsedNotch(notch: NotchMetrics, scale: CGFloat, settings: AtlasDisplayPreferences) -> IslandOverlayGeometry {
-        let height = min(settings.maximumPanelHeight, 56 * scale)
+    private static func makeCollapsedNotch(notch: NotchMetrics, scale: CGFloat, settings: AtlasDisplayPreferences, shortcutAnnouncement: String?) -> IslandOverlayGeometry {
+        let announcementHeight = shortcutAnnouncement == nil ? 0 : 42 * scale
+        let height = min(settings.maximumPanelHeight, max(56 * scale, 56 * scale + announcementHeight))
         let desiredWing = 200 * scale
+        return notchFrame(notch: notch, height: height, minWing: desiredWing, maxWing: desiredWing)
+    }
+
+    /// Expanded notch layout: shares the collapsed pill's physical-top anchor
+    /// and notch center so a hover-expand grows in place (no jump → no
+    /// flicker), unfolding out of the notch. The two content panels (session
+    /// surface + header) flank the notch gap, which aligns with the physical
+    /// notch — so nothing renders behind it. Wings get real room for the
+    /// session list; total width still never exceeds the display.
+    private static func makeExpandedNotch(notch: NotchMetrics, scale: CGFloat, settings: AtlasDisplayPreferences) -> IslandOverlayGeometry {
+        let completionDrivenHeight = settings.completionCardHeight + (120 * scale)
+        let height = min(settings.maximumPanelHeight, max(320 * scale, completionDrivenHeight))
+        // Each wing wants at least the session list's readable width; honor the
+        // person's maximum-panel-width preference as a floor for the total too.
+        let minWing = max(300 * scale, (settings.maximumPanelWidth - notch.gap) / 2)
+        return notchFrame(notch: notch, height: height, minWing: minWing, maxWing: minWing)
+    }
+
+    /// Shared physical-top, notch-centered frame + two flanking wing hit
+    /// regions. `minWing`/`maxWing` bound each wing's width; the whole pill is
+    /// `gap + 2 * wing`, clamped to the display (small side margins) and
+    /// centered on the notch.
+    private static func notchFrame(notch: NotchMetrics, height: CGFloat, minWing: CGFloat, maxWing: CGFloat) -> IslandOverlayGeometry {
         let gap = notch.gap
-        // Never exceed the display; keep a small margin from each screen edge.
-        let maxWidth = max(gap + 2, notch.physicalFrame.width - 24)
-        let width = min(maxWidth, gap + 2 * desiredWing)
+        let maxTotal = max(gap + 2, notch.physicalFrame.width - 24)
+        let wing = min(maxWing, max(minWing, (maxTotal - gap) / 2))
+        let width = min(maxTotal, gap + 2 * wing)
         let x = notch.physicalFrame.midX - width / 2
         let y = notch.physicalFrame.maxY - height
         let frame = CGRect(x: x, y: y, width: width, height: height).integral
